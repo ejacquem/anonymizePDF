@@ -528,6 +528,16 @@ function renderRecap() {
     else if (f.leftovers.length) pills.push(`<span class="pill bad">⚠ ${f.leftovers.length} left</span>`);
     else pills.push(`<span class="pill ok">✓ clean</span>`);
     if (f.warnings.length) pills.push(`<span class="pill warn">warning</span>`);
+    const black = f.blackouts || [];
+    if (black.length) {
+      const count = (k) => black.filter((b) => b.kind === k).length;
+      const parts = [["photo", "photo"], ["qr code", "QR code"], ["signature", "signature"]].filter(([k]) => count(k))
+        .map(([k, label]) => `${count(k)} ${label}${count(k) > 1 ? "s" : ""}`);
+      pills.push(`<span class="pill" title="Covered with a black box (cannot be replaced by fake text)">■ ${esc(parts.join(", "))}</span>`);
+    }
+    for (const m of f.mrz || []) {
+      pills.push(`<span class="pill" title="Machine readable zone, page ${m.page}: rebuilt from the fake values">MRZ ${esc(m.format || "")} ${esc(m.action)}</span>`);
+    }
     h += `<details class="file" ${(f.leftovers.length || f.error) ? "open" : ""}><summary><b>${esc(f.file)}</b> ${pills.join(" ")}
       <button class="mini" data-open="${esc(f.file)}">view</button></summary>`;
     if (f.error) h += `<div class="note bad">Error: ${esc(f.error)}</div>`;

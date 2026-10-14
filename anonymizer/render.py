@@ -363,6 +363,29 @@ def scan_text_layout(original: str, new: str, box, limit_x: float | None = None,
     return font, (x0, y1 - descent)
 
 
+def _mrz_font(char_w: float):
+    """A monospaced font whose character advance is char_w pixels (OCR-B if installed, else Consolas / Courier)."""
+    reg = _registry_fonts()
+    path = next((reg[k] for k in ("ocrb", "ocrbregular", "ocrb10bt", "ocrbstd", "consolas", "couriernew") if k in reg),
+                "cour.ttf")
+    probe = ImageFont.truetype(path, 100)
+    adv = probe.getlength("<" * 10) / 10
+    return ImageFont.truetype(path, max(int(round(100 * char_w / adv)), 6))
+
+
+def draw_mrz(img, draw, info: dict, zone: tuple, lines: list[str]):
+    """Paint the MRZ zone with the paper colour and write the new lines at the old positions."""
+    bg = background_color(img, zone)
+    ink = ink_color(img, info["lines"][0])
+    draw.rectangle(zone, fill=bg)
+    font = _mrz_font(info["char_w"])
+    h = info["height"]
+    pitch = (info["lines"][1][3] - info["lines"][0][3]) if len(info["lines"]) > 1 else 1.8 * h
+    for i, text in enumerate(lines):
+        baseline = info["lines"][0][3] + i * pitch
+        draw.text((info["x"], baseline), text, font=font, anchor="ls", fill=ink)
+
+
 def ink_color(img, box):
     """Colour of the text inside `box` (median of its darkest pixels), so blue or grey text stays blue or grey."""
     W, H = img.size

@@ -12,19 +12,20 @@ import datetime as dt
 import io
 import json
 import re
+import random
 import time
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import yaml
 from PIL import ImageDraw
 
-from . import render
+from . import fields, ocr, regions, render
 from .fake import Faker, match_case
-from . import ocr
 from .ocr import ocr_words, render_page
-from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, detect_all, digital_words, fitz, plan_page, term_regex,
-                  words_to_text, norm_value)
+from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz, plan_page,
+                  term_regex, words_to_text, norm_value)
 
 CONFIG_NAME = "anon_config.yaml"
 REPORT_NAME = "anon_report.json"
@@ -36,7 +37,7 @@ SUFFIX = "_anonymized"
 
 ACTIVE_TYPES = ["IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "BE_NATIONAL_NUMBER", "BE_VAT",
                 "BE_STRUCTURED_COMM", "STREET_ADDRESS", "POSTAL_CITY", "ACCOUNT_NUMBER", "BANK_CODE",
-                "CARD_NUMBER", "SEPA_CREDITOR_ID", "CONTRACT_REF"]
+                "CARD_NUMBER", "SEPA_CREDITOR_ID", "CONTRACT_REF", "DOC_NUMBER", "BIRTH_PLACE"]
 # their digit groups are also replaced alone (>= 5 digits; >= 4 for the visible ends of a masked card number,
 # which OCR may read without the stars: "6703 **** 4471" or "Carte 6703")
 SPLIT_TYPES = {"ACCOUNT_NUMBER": 5, "BANK_CODE": 5, "CARD_NUMBER": 4}
@@ -48,6 +49,10 @@ votre vos titulaire numéro numero téléphone telephone période periode synth�
 virement prélèvement prelevement retrait chèque cheque paiement facture contrat client clients conseiller conseillère
 conseillere service services monsieur madame mademoiselle bank account statement balance dear mister miss
 rekening saldo datum klant overschrijving factuur mevrouw heer
+signature handtekening unterschrift nom surname prénom prénoms prenom prenoms given names name sexe sex
+nationalité nationalite nationality naissance birth lieu place document expiry expiration délivrance delivrance
+issue adresse address domicile taille height autorité autorite authority passeport passport identité identite
+identity carte card république republique française francaise naam voornamen geslacht nationaliteit
 """.split())
 _BIRTH_RX = re.compile(r"(?i)(\bn[ée]e?\s*(?:le|à|a|en|:)\b|\bn[ée]e?\s*:|naissance|naiss\.|geboren|geboorte|birth|\bborn\b|\bdob\b)")
 _HONORIFIC_START = re.compile(rf"^{_HONORIFIC}\s+")
@@ -67,6 +72,44 @@ def pdf_mode(doc) -> tuple[str, int]:
 def _first_names() -> set[str]:
     from .fake import FIRST_NAMES
     return {x.casefold() for x in FIRST_NAMES}
+
+
+_LABEL_TYPES = {"surname": ("PERSON", "last"), "given": ("PERSON", "first"), "birth_date": ("DATE", None),
+                "birth_place": ("BIRTH_PLACE", None), "doc_number": ("DOC_NUMBER", None)}
+
+
+def _add_labeled(found: dict, words: list[dict], ocr_page: bool, file: str, pno: int):
+    """Values written under / after a label (identity documents): 'Nom / Surname' -> 'LEFÈVRE'."""
+    labeled = fields.find_labeled(words)
+    sex = next((f["value"].strip()[:1].upper() for f in labeled if f["kind"] == "sex"
+                and f["value"].strip()[:1].upper() in "MF"), None)
+    for f in labeled:
+        value = " ".join(f["value"].split()).strip(" :")
+        if f["kind"] == "address":
+            # same types as the address detectors, so both find the same entry (and the same fake)
+            typ = "POSTAL_CITY" if re.match(r"(?:[A-Z]{1,2}-)?\d{4,5}\s+\S", value) else "STREET_ADDRESS"
+            kind = None
+        elif f["kind"] in _LABEL_TYPES:
+            typ, kind = _LABEL_TYPES[f["kind"]]
+        else:
+            continue
+        if typ == "DATE" and ocr_page:
+            value = ocr.fix_digits(value)
+        if len(value) < 2 or (typ == "DATE" and not fields.mrz_date(value)):
+            continue
+        key = (typ, norm_value(value))
+        e = found.setdefault(key, {"type": typ, "value": value, "count": 0, "files": set(), "pages": set(),
+                                   "birth": False, "ner": False, "honorific": False, "title": ""})
+        e["count"] += 1
+        e["files"].add(file)
+        e["pages"].add(pno)
+        e["labeled"] = True
+        if kind:
+            e["kind"] = kind
+        if sex:
+            e["sex"] = sex
+        if f["kind"] == "birth_date":
+            e["birth"] = True
 
 
 def accept_person(value: str, honorific: bool, from_ner: bool) -> bool:
@@ -125,10 +168,23 @@ def parse_config(text: str) -> dict:
         raise ValueError("style.mode must be 'replace' or 'blackbox'")
     if style["digital_fill"] not in ("none", "white"):
         raise ValueError("style.digital_fill must be 'none' or 'white'")
+    blackout = data.get("blackout")
+    blackout = blackout if isinstance(blackout, dict) else {}
+    mrz = str(data.get("mrz") or "regenerate")
+    if mrz == "blackout":                              # older option: the MRZ is now always rebuilt
+        mrz = "regenerate"
+    if mrz not in ("regenerate", "keep"):
+        raise ValueError("mrz must be 'regenerate' or 'keep'")
     return {
         "terms": terms, "types": types, "regex": regex,
         "case_sensitive": bool(data.get("case_sensitive", False)),
         "style": style, "ocr_lang": data.get("ocr_lang"),
+        # missing in older configs: on (the safe choice)
+        "blackout": {"photos": bool(blackout.get("photos", True)),
+                     "photos_only_on_id_documents": bool(blackout.get("photos_only_on_id_documents", True)),
+                     "signatures": bool(blackout.get("signatures", True)),
+                     "qr_codes": bool(blackout.get("qr_codes", True))},
+        "mrz": mrz,
         "match_case": bool(data.get("match_case", True)),
     }
 
@@ -189,6 +245,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                 if m.type == "DATE":
                     ctx = text[max(0, m.start - 35):m.end + 8]
                     e["birth"] = e["birth"] or bool(_BIRTH_RX.search(ctx))
+            _add_labeled(found, words, ocr_page, pdf.name, pno)
 
     faker = Faker(secret_key)        # None: this computer's secret key (anonymizer.secret)
     active: list[dict] = []
@@ -198,10 +255,14 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     # persons first: full names (active) + their separate parts
     persons = [e for e in found.values() if e["type"] == "PERSON"]
 
-    def gender(e):  # from the first name, else from the title (Mme / M. ...) found before the name
-        toks = e["value"].split()
-        firsts = [t for t, k in zip(toks, faker.name_kinds(toks)) if k == "first"]
-        return faker.gender_of(firsts[0], e["title"]) if firsts else None
+    def gender(e):  # 'Sexe / Sex' field, else the first name, else the title (Mme / M. ...) before the name
+        if e.get("sex"):
+            return e["sex"].lower()
+        toks = [t.strip(",;.") for t in e["value"].split()]
+        kinds = [e["kind"]] * len(toks) if e.get("kind") else faker.name_kinds(toks)
+        firsts = [t for t, k in zip(toks, kinds) if k == "first"]
+        # 'Camille, Hélène': Camille is unisex, Hélène decides
+        return next((g for g in (faker.gender_of(t, e["title"]) for t in firsts) if g), None)
 
     # full names before names with an initial ('Élodie Vermeulen' before 'É. Vermeulen'), so the initial
     # can follow the replacement of the full first name
@@ -209,12 +270,14 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         return any(re.fullmatch(r"[^\W\d_]\.?", t) for t in e["value"].split())
 
     for e in sorted(persons, key=lambda e: (has_initial(e), -e["count"])):
-        if accept_person(e["value"], e["honorific"], e["ner"]):
+        if e.get("labeled") or accept_person(e["value"], e["honorific"], e["ner"]):
             g = gender(e)
-            active.append({**e, "replace": faker.person(e["value"], g), "note": ""})
+            active.append({**e, "replace": faker.person(e["value"], g, e.get("kind")),
+                           "note": "under a label" if e.get("labeled") else ""})
             toks = e["value"].split()
             tokens_added.add(norm_value(e["value"]))
-            for tok, kind in zip(toks if len(toks) > 1 else [], faker.name_kinds(toks)):
+            kinds = [e["kind"]] * len(toks) if e.get("kind") else faker.name_kinds(toks)
+            for tok, kind in zip(toks if len(toks) > 1 else [], kinds):
                 clean = tok.strip(",.;:")
                 if len(clean) < 4 or clean.casefold() in _STOP or kind == "particle":
                     continue
@@ -252,6 +315,9 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
             off.append({**e, "replace": faker.suggest(t, e["value"]), "note": "NER guess"})
 
     _align_contained_numbers(active)
+    # a value already replaced (e.g. a name under a label) is not suggested again as an uncertain NER guess
+    active_values = {norm_value(a["value"]) for a in active}
+    off = [o for o in off if norm_value(o["value"]) not in active_values]
     text = render_config(rel, pdfs, active, off, default_ocr_lang)
     stats = {"files": len(pdfs), "active": len(active), "inactive": len(off), "seconds": round(time.time() - t0, 1)}
     log(f"Done: {len(active)} active replacement(s), {len(off)} suggestion(s) left commented out "
@@ -310,6 +376,12 @@ def render_config(rel: str, pdfs: list[Path], active: list[dict], off: list[dict
         "  mode: replace              # replace = new text in place | blackbox = black box only",
         "  digital_fill: none         # digital PDFs: none = keep the page background | white = white rectangle",
         "                             # (scans are always painted over with the sampled paper colour)",
+        "blackout:                    # black boxes over what cannot be replaced by fake text",
+        "  photos: true               # identity photos (and the faded 'ghost' copy on passports / ID cards)",
+        "  photos_only_on_id_documents: true   # true: only on pages that look like a passport / ID card / permit",
+        "  signatures: true           # handwritten signatures next to a 'Signature' label",
+        "  qr_codes: true             # QR codes and other 2D barcodes (they can contain personal data)",
+        "mrz: regenerate              # machine readable zone (passport, ID card): regenerate in the same format | keep",
         "",
         "replacements:",
     ]
@@ -343,11 +415,47 @@ def render_config(rel: str, pdfs: list[Path], active: list[dict], off: list[dict
 # 2. anonymize
 # ---------------------------------------------------------------------------
 
+def _fake_text(text: str, cfg: dict, tolerant: bool = True) -> str:
+    """Apply the config's replacements to a short piece of text (a field value)."""
+    out = text
+    for m in sorted(apply_config(text, {**pii_cfg(cfg), "ocr_tolerant": tolerant}, [], Numberer()),
+                    key=lambda m: m.start, reverse=True):
+        out = out[:m.start] + _adjust(cfg, m) + out[m.end:]
+    return out
+
+
+def _new_mrz(words: list[dict], mrz: dict, cfg: dict) -> list[str]:
+    """New MRZ lines in the same format as the old one (passport 2x44, ID card 3x30, 2x36, old French ID card),
+    from the page's fields AFTER replacement, so it matches the visible page. What is not readable on the page
+    gets a value of the right shape (the MRZ then looks right but is not exact); names fall back on the
+    config's person replacements. Nothing of the original is copied except the document type and country."""
+    values: dict = {}
+    for f in fields.find_labeled(words):
+        values.setdefault(f["kind"], f["value"])
+    fake = {k: _fake_text(v, cfg) for k, v in values.items()}
+    first = mrz.get("first") or ""
+    if first[:2].replace("<", "").isalpha() and len(first) >= 5:
+        fake["doc_code"] = first[:2]
+        fake.setdefault("country", first[2:5].replace("<", ""))
+    if not fake.get("surname") and not fake.get("given"):
+        persons = [v for k, v in cfg["terms"].items() if cfg["types"].get(norm_value(k)) == "PERSON"]
+        if persons:                                    # e.g. 'Benoît BEAUMONT' -> surname / given name
+            toks = max(persons, key=len).split()
+            fake["surname"], fake["given"] = toks[-1], " ".join(toks[:-1])
+    rng = random.Random("|".join(f"{k}={v}" for k, v in sorted(fake.items())))
+    return fields.build_mrz(mrz["format"], fake, rng)
+
+
+def _inside(box, areas) -> bool:
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    return any(a[0] <= cx <= a[2] and a[1] <= cy <= a[3] for a in areas)
+
+
 def _adjust(cfg: dict, m) -> str:
     return match_case(m.value, m.replacement or "") if cfg["match_case"] else (m.replacement or "")
 
 
-def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list]:
+def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list, dict]:
     doc = fitz.open(pdf)
     pc = pii_cfg(cfg)
     blackbox = cfg["style"]["mode"] == "blackbox"
@@ -355,29 +463,54 @@ def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list]:
     fill = (0, 0, 0) if blackbox else (1, 1, 1) if cfg["style"]["digital_fill"] == "white" else False
     fonts = render.FontBook(doc)
     numberer, records, empty = Numberer(), [], []
+    extras: dict = {"blackouts": [], "mrz": []}
     for pno, page in enumerate(doc, start=1):
         words = digital_words(page)
         if len(words) < 3:
             empty.append(pno)
+        bo = cfg["blackout"]
+        want_photos = bo["photos"] and (not bo["photos_only_on_id_documents"] or fields.is_id_document(words))
+        black = [("photo", r) for r in (regions.find_photos_digital(page) if want_photos else [])]
+        black += [("qr code", r) for r in (regions.find_codes_digital(page) if bo["qr_codes"] else [])]
+        black += [("signature", r) for r in
+                  (regions.find_signatures_digital(page, words) if bo["signatures"] else [])]
         plan = plan_page(words, pc, [], numberer)
-        if not plan:
-            continue
-        spans = render.page_spans(page)            # read fonts before the text is removed
-        styles = [render.style_at(spans, boxes[0]) for _, boxes in plan]
-        limits = [render.free_right(words, boxes[0], page.rect.width) for _, boxes in plan]
-        for m, boxes in plan:
-            m.replacement = _adjust(cfg, m)
-            for b in boxes:
-                page.add_redact_annot(fitz.Rect(b), fill=fill)
-            records.append({"page": pno, "original": m.value, "replacement": m.replacement})
-        render.apply_redactions(page)
-        if not blackbox:
-            for (m, boxes), style, limit in zip(plan, styles, limits):
-                if m.replacement:
-                    render.insert_replacement(page, boxes[0], m.replacement, style, fonts, limit)
+        if plan:
+            _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno)
+        if black:
+            # second pass: black boxes that also remove the image pixels / drawings underneath
+            for _, r in black:
+                page.add_redact_annot(fitz.Rect(r), fill=(0, 0, 0))
+            try:
+                page.apply_redactions(images=2, graphics=1)   # image pixels blanked, covered drawings removed
+            except TypeError:
+                page.apply_redactions(images=2)
+            extras["blackouts"] += [{"page": pno, "kind": k, "box": [round(v, 1) for v in r]} for k, r in black]
     if fonts.used:
         log("   fonts: " + ", ".join(f"{n} {k}" for k, n in sorted(fonts.used.items()))
             + "  (embedded = same font as the PDF, system = same font from this PC, standard = closest PDF font)")
+    _finish_digital(doc, out)
+    return records, empty, extras
+
+
+def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno):
+    """Text replacements of one digital page (fonts read before the text is removed)."""
+    spans = render.page_spans(page)            # read fonts before the text is removed
+    styles = [render.style_at(spans, boxes[0]) for _, boxes in plan]
+    limits = [render.free_right(words, boxes[0], page.rect.width) for _, boxes in plan]
+    for m, boxes in plan:
+        m.replacement = _adjust(cfg, m)
+        for b in boxes:
+            page.add_redact_annot(fitz.Rect(b), fill=fill)
+        records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+    render.apply_redactions(page)
+    if not blackbox:
+        for (m, boxes), style, limit in zip(plan, styles, limits):
+            if m.replacement:
+                render.insert_replacement(page, boxes[0], m.replacement, style, fonts, limit)
+
+
+def _finish_digital(doc, out: Path):
     for page in doc:
         for annot in list(page.annots() or []):
             page.delete_annot(annot)
@@ -391,14 +524,14 @@ def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list]:
             pass
     doc.save(out, garbage=4, deflate=True, clean=True)
     doc.close()
-    return records, empty
 
 
-def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
+def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list, dict]:
     src, dst = fitz.open(pdf), fitz.open()
     pc = pii_cfg(cfg)
     blackbox = cfg["style"]["mode"] == "blackbox"
     numberer, records = Numberer(), []
+    extras: dict = {"blackouts": [], "mrz": []}
     for pno, page in enumerate(src, start=1):
         t0 = time.time()
         img = render_page(page, 300)
@@ -406,6 +539,21 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
         plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer)
         draw = ImageDraw.Draw(img)
         pad = 3
+        # areas handled as a whole (found before anything is painted): MRZ, photos, signatures
+        bo = cfg["blackout"]
+        mrz = fields.find_mrz(words, np.asarray(img.convert("L")))
+        zone = fields.mrz_zone(mrz) if mrz else None
+        id_page = fields.is_id_document(words, bool(mrz))
+        want_photos = bo["photos"] and (id_page or not bo["photos_only_on_id_documents"])
+        photos = [regions.trim_to_text(b, words) for b in regions.find_photos(img, 300)] if want_photos else []
+        codes = regions.find_codes(img, 300) if bo["qr_codes"] else []
+        # photos / codes / MRZ are not signature ink (a photo often sits right above the signature label);
+        # photos are searched for this even when they are not blacked out on this page
+        not_ink = ([zone] if zone else []) + codes + (photos or regions.find_photos(img, 300))
+        signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
+        if cfg["mrz"] == "keep":
+            mrz = zone = None
+        covered = photos + codes + signs + ([zone] if zone else [])
         # measure everything before painting (ink colour, free space on the right)
         bold = render.BoldMeter(img, words)
         looks = [(render.ink_color(img, boxes[0]), render.free_right(words, boxes[0], img.width),
@@ -413,6 +561,9 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
         n_bold = sum(1 for look in looks if look[2])
         for (m, boxes), (ink, limit, is_bold) in zip(plan, looks):
             m.replacement = _adjust(cfg, m)
+            if _inside(boxes[0], covered):             # under a black box or in the MRZ: handled below
+                records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+                continue
             for i, b in enumerate(boxes):
                 box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
                 fill = (0, 0, 0) if blackbox else render.background_color(img, box)
@@ -424,6 +575,18 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
                     color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
                     draw.text(xy, m.replacement, font=font, anchor="ls", fill=color)
             records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+        if mrz:
+            lines = _new_mrz(words, mrz, cfg)
+            render.draw_mrz(img, draw, mrz, zone, lines)
+            extras["mrz"].append({"page": pno, "action": "regenerated", "format": mrz["format"], "lines": lines})
+            log(f"   page {pno}: machine readable zone (MRZ, {mrz['format']}) regenerated")
+        for kind, boxes_ in (("photo", photos), ("qr code", codes), ("signature", signs)):
+            for b in boxes_:
+                draw.rectangle(b, fill=(0, 0, 0))
+                extras["blackouts"].append({"page": pno, "kind": kind,   # box in PDF points, like digital
+                                            "box": [round(v * 72 / 300, 1) for v in b]})
+        if photos or codes or signs:
+            log(f"   page {pno}: blacked out {len(photos)} photo(s), {len(codes)} QR code(s), {len(signs)} signature(s)")
         log(f"   page {pno}/{len(src)}: OCR {len(words)} words, {len(plan)} replacement(s)"
             f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
         buf = io.BytesIO()
@@ -432,7 +595,7 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
         newp.insert_image(newp.rect, stream=buf.getvalue())
     dst.set_metadata({})
     dst.save(out, garbage=4, deflate=True)
-    return records
+    return records, extras
 
 
 def verify_output(path: Path, cfg: dict, ocr_lang: str, use_ocr: bool) -> list[dict]:
@@ -502,15 +665,19 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                                          f"processed as '{mode}'")
             log(f"[{i}/{len(pdfs)}] {pdf.name}: {entry['pages']} page(s), {mode} mode")
             if mode == "digital":
-                records, empty = _digital(pdf, out, cfg, log)
+                records, empty, extras = _digital(pdf, out, cfg, log)
                 if empty:
                     entry["warnings"].append(f"pages without text layer (not processed): {empty[:10]}")
             else:
                 if not ocr.available():
                     raise RuntimeError("scanned PDF but no OCR engine is available (Tesseract or Windows OCR)")
                 log(f"   OCR engine: {ocr.describe(ocr_lang)}")
-                records = _scan_pdf(pdf, out, cfg, ocr_lang, log)
+                records, extras = _scan_pdf(pdf, out, cfg, ocr_lang, log)
             entry["items"] = summarize(records, cfg)
+            entry["blackouts"] = extras["blackouts"]
+            entry["mrz"] = extras["mrz"]
+            if extras["blackouts"] and mode == "digital":
+                log(f"   blacked out: " + ", ".join(f"{b['kind']} p.{b['page']}" for b in extras["blackouts"]))
             entry["replaced"] = len(records)
             log(f"   {len(records)} replacement(s), verifying...")
             entry["leftovers"] = verify_output(out, cfg, ocr_lang, use_ocr=(mode == "scan" or ocr_verify))

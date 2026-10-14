@@ -12,10 +12,13 @@ anonymizer/
   fake.py                fake replacement values (same length, same format)
   render.py              drawing replacement text on digital pages and scanned images
   secret.py              secret key for the fake values (created once per PC, outside the repo)
+  fields.py              identity documents: values under a label (Nom / Surname ...), MRZ
+  regions.py             photos and signatures to black out
 static/                  frontend (index.html, app.js, style.css)
 docs/                    config.example.yaml, PROJECT_CONTEXT.md
-sample_data/             fake PDFs to try it on (Dossier Test 0: simple FR statement, Dossier Test 1: harder BE one)
-tools/                   make_test_statement.py: regenerates Dossier Test 1
+sample_data/             fake PDFs to try it on (Dossier Test 0: simple FR statement, Dossier Test 1: harder BE one,
+                         Dossier Test 3: French passport scan, Dossier Test 4: French ID card front + back, SPECIMEN)
+tools/                   make_test_statement.py / make_test_passport.py / make_test_idcard.py: regenerate Test 1 / 3 / 4
 ```
 
 ## Install
@@ -82,6 +85,16 @@ replacements:
 * **Dates are off by default**, except dates that look like a birth date (next to "né le", "naissance", "geboren"…).
 * Detected organisations / places / uncertain names are listed commented out.
 * Optional `regex:` rules for your own patterns. `style.mode: blackbox` paints black boxes instead of text.
+* Identity documents (passport, ID card): values written under a label (`Nom / Surname`, `Prénoms`, `Date de
+  naissance`, `Lieu de naissance`, `N° du document`, `Adresse`) are found from their position; `Sexe` keeps the gender.
+* `blackout:` what cannot be replaced by fake text is covered with a black box (all on by default):
+  * `photos`: identity photos and the faded "ghost" copy; with `photos_only_on_id_documents: true` (default) only
+    on pages that look like an identity document (MRZ, Nom / Prénoms / Date de naissance labels, "passeport"...);
+  * `signatures`: handwriting next to a "Signature" / "Handtekening" label (a label, not a sentence);
+  * `qr_codes`: QR codes and other 2D barcodes (scans and digital PDFs).
+* `mrz: regenerate` (default) rebuilds the machine readable zone in the same format as the original (passport
+  2 x 44, ID card 3 x 30, 2 x 36, old French ID card) from the fake values, so the names and numbers match the rest of
+  the page; what cannot be read is filled with values of the right shape. `keep` leaves it (it then shows real data).
 * `style.digital_fill: none` (default) writes the new text on the page background; `white` puts a white rectangle
   behind it (digital PDFs only; scans are always painted over with the paper colour).
 * `match_case: true` keeps UPPER / lower case of the original (`MARCHAND` → `BEAUMONT`).

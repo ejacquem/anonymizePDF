@@ -34,12 +34,18 @@ anonymizePDF/
     fake.py              Faker: deterministic fake values (same length/format)
     render.py            insert_replacement(), apply_redactions() (digital), fit_font(), background_color() (scan)
     secret.py            per-PC secret key for the fake values (HMAC), stored outside the repo
+    fields.py            find_labeled() (value under / after a label, by position), MRZ: find_mrz(), build_td3()
+    regions.py           find_photos() / find_signatures() for scans and digital PDFs, trim_to_text()
   static/                index.html, app.js, style.css
   docs/                  config.example.yaml, PROJECT_CONTEXT.md (this file)
   sample_data/Dossier Test 0/  fake FR bank statement (Helvetica, digital + clean scan)
   sample_data/Dossier Test 1/  fake BE bank statement (Calibri/Georgia/Consolas subsetted, tinted boxes, 2 holders,
                                signature + stamp; scan tilted, yellowed, noisy), built by tools/make_test_statement.py
-  tools/                 make_test_statement.py (regenerates Dossier Test 1, needs Windows fonts)
+  sample_data/Dossier Test 3/  fake French passport, A4 flatbed scan only (photo + ghost image, signature, MRZ,
+                               guilloche, SPECIMEN mark)
+  sample_data/Dossier Test 4/  fake French ID card (2021 model) front + back on one A4 scan (photo + ghost, signature,
+                               address, QR-like code, TD1 MRZ)
+  tools/                 make_test_statement.py / make_test_passport.py / make_test_idcard.py (Test 1 / 3 / 4)
   requirements.txt, README.md, .gitignore, .gitattributes
 ```
 The original numbered CLI scripts (`1_detect.py` ... `4_anonymize_scan.py`) were removed; their helpers live in `render.py`.
@@ -83,8 +89,41 @@ replacements:
   - {find: "Thomas Marchand", replace: "Alexis Beaumont", type: PERSON}
   # - {find: "30/09/2024", replace: "22/03/2025", type: DATE}   # commented = not replaced
 regex: []                 # optional: - {pattern: '...', replace: '...'}
+blackout: {photos: true, photos_only_on_id_documents: true, signatures: true, qr_codes: true}  # default on
+mrz: regenerate           # regenerate (same format, never blacked out) | keep; old value 'blackout' = regenerate
 ```
 `find` is matched case-insensitively, with flexible whitespace and word boundaries; longer matches win; terms win over regex.
+
+## 8b. Identity documents (passport / ID card)
+
+- `fields.find_labeled(words)`: label lines (FR/EN/NL, '/' may be OCR'd as 'I') and the value line right below
+  (or after ':'). Kinds: surname, given, birth_date, birth_place, doc_number, sex, expiry, country. At scan time
+  they become active entries (PERSON with forced kind first/last, DATE birth, BIRTH_PLACE, DOC_NUMBER); the
+  `Sexe` value sets the gender of those names. Dates '14 05 1992' (spaces) are a DATE format too.
+- MRZ (scans): never read back (Windows OCR reads part of passport line 1 and none of an ID card's 3 lines), always
+  rebuilt in the SAME format, never blacked out. `find_mrz`: one line found by OCR chevrons, or (OCR read nothing)
+  `_mrz_by_image`: 2-3 bands of the same height / start / pitch with >= 19 evenly spaced characters that no OCR
+  word covers; extra lines above / below must also look like MRZ (`_mrz_like`). Format from lines + characters
+  (ink column runs): 3 lines = TD1 (3x30), 'P' or > 40 chars = TD3 (2x44), 'IDFRA' = FR_ID (old French card 2x36),
+  else TD2 (2x36). `_new_mrz`: labeled fields after replacement (`_fake_text`), doc code / country from the OCR'd
+  first line, names fall back on the config's PERSON replacements, missing values random of the right shape
+  (`build_mrz`, check digits valid). Drawn in OCR-B if installed, else Consolas. Sex not readable -> '<'.
+  Report: `mrz: [{page, action, format, lines}]`.
+- Photos (scans): darker than the local paper (max filter ~15 mm at 50 dpi, diff > 16; the brightest 1 % - scanner
+  bed / plain paper - is not used as reference, so a card on a white bed is compared with its own background),
+  opening 2.5 mm (removes text / guilloche / big letters), closing 3.5 mm, portrait-shaped components 8-60 x
+  10-75 mm with clearly dark parts (10th percentile < paper - 35: hair / eyes, not a tinted area), then
+  `trim_to_text`. Finds the photo and the faded ghost image. Digital: embedded images with a photo shape.
+  Only on ID pages by default (`fields.is_id_document`: MRZ, >= 2 identity labels, or an ID keyword).
+- QR / 2D codes (`find_codes`, 100 dpi): dark modules merged by a 0.75 mm closing into a mostly solid square
+  7-60 mm, density 0.3-0.75 and >= 0.45 black/white transitions per mm both ways. Digital: the page is rendered at
+  150 dpi and searched the same way (image or vector codes). Signature search ignores photos, codes and the MRZ.
+- Signatures: next to a label (`is_signature_label`: 'signature' / 'handtekening' / 'unterschrift' among the first
+  two words of the line, or a line of <= 4 words: not a sentence); ink that is not normal-height OCR text, not a ruled line, not in the
+  MRZ; seeds near the label then grows through strokes <= 3 mm apart (`_grow`), so long strokes are covered
+  but a distant stamp is not. The label is spared only if the strokes do not touch it (privacy first).
+  Digital: drawings / images grown the same way (frames and rules skipped), redacted with images=2, graphics=1.
+- Report: `blackouts: [{page, kind, box (PDF points)}]`; Recap shows '■ 2 photos, 1 signature' and 'MRZ ...'.
 
 ## 8. Detection
 
@@ -143,6 +182,12 @@ This fixed text inside bordered boxes that psm 3 garbled.
 - **Not tested**: real browser rendering, the browser PDF viewer inside the panes, Windows runtime (except the user's install).
 
 ## 12. Known limits / ideas
+
+- ID documents: Windows OCR drops isolated letters (the 'F' of Sexe) and sometimes whole labels, so the rebuilt MRZ
+  then has '<' for sex. The MRZ is only exact where the page's fields were read; otherwise right format, other
+  values. An MRZ in a digital text layer is not handled yet. Bold is not detected on ID documents (most text there is bold, so no regular reference).
+  Signatures need a 'Signature' label nearby; photo detection is a shape heuristic (logos with a portrait shape
+  could be blacked out: `blackout.photos: false` to disable).
 
 - Scans depend on OCR quality (handwriting, stamps, signatures missed). Names are heuristic (hence the review step).
 - The leftover check only searches for values present in the config.

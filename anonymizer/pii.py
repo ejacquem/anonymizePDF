@@ -170,6 +170,8 @@ DETECTORS = [
     ("BIC", re.compile(r"\b[A-Z]{4}(?:BE|FR|NL|DE|LU|GB|IT|ES|CH|AT|US|IE|PT)[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b"), None),
     ("DATE", re.compile(r"(?<!\d)(?:0?[1-9]|[12]\d|3[01])[./\-](?:0?[1-9]|1[0-2])[./\-](?:19|20)\d{2}(?!\d)"), None),
     ("DATE", re.compile(r"(?<!\d)(?:19|20)\d{2}-\d{2}-\d{2}(?!\d)"), None),
+    # identity documents: '14 05 1992' (not inside a longer run of numbers such as a phone number)
+    ("DATE", re.compile(r"(?<!\d)(?<!\d )(?:0[1-9]|[12]\d|3[01]) (?:0[1-9]|1[0-2]) (?:19|20)\d{2}(?! ?\d)"), None),
     ("DATE", re.compile(rf"(?<!\d)\d{{1,2}}(?:er)?\s+(?i:{_MONTHS})\s+(?:19|20)\d{{2}}"), None),
     ("PHONE", re.compile(r"(?<![\w+])(?:\+|00)\d{1,3}[ .\-/]?(?:\(0\)[ .\-/]?)?\d(?:[ .\-/]?\d){6,10}(?!\d)"), _v_phone),
     ("PHONE", re.compile(r"(?<![\w+])0[1-9]\d{0,2}(?:[ .\-/]?\d{2,3}){2,4}(?!\d)"), _v_phone),

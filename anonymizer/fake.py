@@ -82,11 +82,22 @@ Kerk Molen Bos Linde Dorp Beuk Berk Eik Hoek Park Veld Brug School Hei Duin Wei 
 Wilgen Populier Tuin Kasteel Station Vijver Polder Beek Dijk Haven Meers Lelie Kruid Appel
 """.split()
 
-CITIES = """
+FR_CITIES = """
 Metz Brest Nancy Dijon Tours Nantes Rennes Amiens Angers Limoges Annecy Reims Rouen Nîmes Caen Pau Arles Albi
+Lyon Lille Laval Vannes Quimper Lorient Niort Poitiers Orléans Blois Chartres Troyes Colmar Mulhouse Besançon
+Valence Grenoble Chambéry Bayonne Tarbes Agen Périgueux Cahors Rodez Montauban Béziers Sète Toulon Cannes Antibes
+""".split()
+BE_CITIES = """
 Namur Mons Arlon Huy Spa Ath Tielt Aalst Lier Genk Hasselt Ieper Leuven Brugge Mechelen Dendermonde Tongeren
 Charleroi Tournai Verviers Waremme Wavre Nivelles Dinant Bastogne Courtrai Roeselare Turnhout Sint-Truiden
 """.split()
+CITIES = FR_CITIES + BE_CITIES
+
+
+def cities_for(code: str) -> list[str]:
+    """Towns of the right country for a postcode: 5 digits = France, 4 digits = Belgium, unknown = both."""
+    digits = "".join(c for c in code if c.isdigit())
+    return FR_CITIES if len(digits) == 5 else BE_CITIES if len(digits) == 4 else CITIES
 
 COMMON_EMAIL_DOMAINS = {
     "gmail.com", "outlook.com", "hotmail.com", "hotmail.fr", "yahoo.com", "yahoo.fr", "icloud.com", "live.com",
@@ -308,7 +319,19 @@ class Faker:
                 kinds.append("first" if i == 0 and len(parts) > 1 else "last")
         return kinds
 
-    def person(self, value: str, gender: str | None = None) -> str:
+    def person(self, value: str, gender: str | None = None, kind: str | None = None) -> str:
+        """kind: 'first' / 'last' forces every token (values under a 'Prénoms' / 'Nom' label).
+        Punctuation around tokens is kept: 'Camille, Hélène' -> 'Sophie, Nadia'."""
+        pieces = [re.fullmatch(r"([^\w]*)(.*?)([,;.]*)", t).groups() for t in value.split()]
+        if kind and len(pieces) > 0:
+            core = [p[1] for p in pieces]
+            outs = [pre + (self.name_token(c, kind, gender=gender) if c else "") + post
+                    for (pre, c, post) in pieces]
+            if kind == "first":
+                core_keys = [_pkey(c) for c in core if c]
+                for k in core_keys:
+                    self.first_of_last.setdefault("", []).append(k)
+            return " ".join(outs)
         parts = value.split()
         kinds = self.name_kinds(parts)
         last_keys = [_pkey(t) for t, k in zip(parts, kinds) if k == "last"]
@@ -438,7 +461,9 @@ class Faker:
         return "".join(next(it) if c.isdigit() else c for c in value)
 
     def date(self, value: str) -> str:
-        rng = self.rng("date", value)
+        # same fake for the same date whatever the separator ('14/05/1992', '14 05 1992', '14.05.1992')
+        canon = re.fullmatch(r"(\d{1,2})[./\- ](\d{1,2})[./\- ]((?:19|20)\d{2})", value)
+        rng = self.rng("date", "/".join(f"{int(g):02d}" for g in canon.groups()) if canon else value)
 
         def shift_year(y: str) -> str:
             n = int(y) + rng.choice([-3, -2, -1, 1, 2, 3])
@@ -448,7 +473,7 @@ class Faker:
             n = rng.randint(1, 28)
             return f"{n:02d}" if len(d) == 2 else str(n)
 
-        m = re.fullmatch(r"(\d{1,2})([./\-])(\d{1,2})\2((?:19|20)\d{2})", value)
+        m = re.fullmatch(r"(\d{1,2})([./\- ])(\d{1,2})\2((?:19|20)\d{2})", value)
         if m:
             d, sep, mo, y = m.groups()
             new_mo = rng.randint(1, 12)
@@ -513,8 +538,22 @@ class Faker:
         if new_code[0] == "0":
             new_code = str(rng.randint(1, 9)) + new_code[1:]
         city = m.group("city")
-        new_city = self._pick(CITIES, len(city), rng, {_norm(city)}) or self.scramble(city, rng)
+        new_city = self._pick(cities_for(code), len(city), rng, {_norm(city)}) or self.scramble(city, rng)
         return f"{m.group('pre')}{new_code}{m.group('sp')}{_style_token(city.split()[0], new_city)}"
+
+    def birth_place(self, value: str) -> str:
+        """'ROUEN (76)' -> 'BREST (29)': town from the list (same length, same case), digits changed."""
+        rng = self.rng("birthplace", value)
+        m = re.fullmatch(r"(?P<city>[^\d(]+?)(?P<rest>\s*\(?\s*\d.*)?", value.strip())
+        if not m:
+            return self.city(value)
+        city = m.group("city").strip()
+        # 'RENNES (35)': a French department number -> a French town
+        pool = FR_CITIES if re.search(r"\(\s*\d{2,3}\s*\)", m.group("rest") or "") else CITIES
+        new = self._pick(pool, len(city), rng, {city}) or self.scramble(city, rng)
+        new = new.upper() if city.isupper() else _style_token(city, new)
+        rest = self.digits(m.group("rest"), rng) if m.group("rest") else ""
+        return new + rest
 
     def city(self, value: str) -> str:
         rng = self.rng("city", value)
@@ -555,6 +594,10 @@ class Faker:
             return self.digit_groups(value)          # masks ('****', 'x') and separators are kept
         if typ == "SEPA_CREDITOR_ID":
             return self.sepa_creditor(value)
+        if typ == "DOC_NUMBER":                        # '21CK48329' -> same pattern, other letters and digits
+            return self.scramble(value, self.rng("doc", value))
+        if typ == "BIRTH_PLACE":
+            return self.birth_place(value)
         if typ == "BE_NATIONAL_NUMBER":
             return self.be_national_number(value)
         if typ == "BE_STRUCTURED_COMM":
@@ -564,7 +607,8 @@ class Faker:
         if typ == "DATE":
             return self.date(value)
         if typ == "STREET_ADDRESS":
-            return self.street(value)
+            new = self.street(value)
+            return new.upper() if value.isupper() else new
         if typ == "POSTAL_CITY":
             return self.postal_city(value)
         if typ == "LOCATION":
