@@ -586,8 +586,8 @@ async function init() {
     $("#root").textContent = info.root;
     $("#env").innerHTML =
       (info.ocr
-        ? `<span class="ok">OCR ready (${esc(info.ocr_lang)})</span> · `
-        : `<span class="bad" title="The Tesseract program is not installed (pip install tesseract does NOT install it).&#10;Windows: winget install UB-Mannheim.TesseractOCR, then restart app.py.&#10;Or set TESSERACT_CMD to the full path of tesseract.exe.">OCR missing: install the Tesseract program (hover for help)</span> · `) +
+        ? `<span class="ok">OCR: ${esc(info.ocr_engine)}</span> · `
+        : `<span class="bad" title="No OCR engine, scanned PDFs cannot be processed.&#10;Without admin rights: pip install -r requirements.txt (Windows built-in OCR).&#10;Or install the Tesseract program (winget install UB-Mannheim.TesseractOCR).">OCR missing (hover for help)</span> · `) +
       `<span class="${info.spacy_models.length ? "ok" : "bad"}">names model: ${info.spacy_models.length ? esc(info.spacy_models.join(", ")) : "none (rules only)"}</span>`;
     await loadTree();
     renderRecap();

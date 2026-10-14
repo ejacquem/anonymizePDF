@@ -2,15 +2,13 @@
 """
 PII detection and text/box helpers. Everything runs locally.
 
-- word extraction (digital PDFs via PyMuPDF, scans via Tesseract OCR)
+- word extraction from digital PDFs (PyMuPDF); scans are read by anonymizer.ocr
 - PII detectors (regex + checksum validators, optional spaCy NER for names)
 - config handling ("terms", "regex", "auto") and placeholder numbering
 """
 from __future__ import annotations
 
-import difflib
 import re
-import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -310,10 +308,32 @@ class Numberer:
         return template.replace("{n}", str(d[norm_value(value)]))
 
 
-def term_regex(term: str, case_sensitive: bool = False) -> re.Pattern:
-    """Literal term -> regex. Whitespace is flexible, word boundaries respected."""
+# characters OCR often confuses; with ocr=True each one matches any of its group
+_OCR_GROUPS = ["0OoDQ", "1lIi|!", "5Ss", "8B", "2Zz", "eéèêë", "aàâä", "iîï", "oôö", "uùûü", "cç"]
+_OCR_ALIKE: dict[str, str] = {}
+for _g in _OCR_GROUPS:
+    for _c in _g:
+        _OCR_ALIKE[_c] = _OCR_ALIKE.get(_c, "") + _g
+for _c in "ÉÈÊËÀÂÄÎÏÔÖÙÛÜÇ":
+    _OCR_ALIKE[_c] = _OCR_ALIKE.get(_c.lower(), _c.lower()) + _c
+
+
+def _ocr_piece(word: str) -> str:
+    out = []
+    for i, c in enumerate(word):
+        alike = _OCR_ALIKE.get(c)
+        out.append("[" + re.escape("".join(dict.fromkeys(c + alike))) + "]" if alike else re.escape(c))
+        if c.isdigit() and i + 1 < len(word) and word[i + 1].isdigit():
+            out.append("[ ]?")          # OCR sometimes splits a number in two
+    return "".join(out)
+
+
+def term_regex(term: str, case_sensitive: bool = False, ocr: bool = False) -> re.Pattern:
+    """Literal term -> regex. Whitespace is flexible, word boundaries respected.
+    ocr=True (text read by OCR): also accept the usual misreadings (0/O, 1/l/I, 5/S, 8/B, missing accents)."""
     term = str(term).strip()
-    body = r"\s*".join(re.escape(p) for p in term.split())
+    piece = _ocr_piece if ocr and len(term) >= 4 else re.escape
+    body = r"\s*".join(piece(p) for p in term.split())
     pre = r"(?<!\w)" if re.match(r"\w", term) else ""
     post = r"(?!\w)" if re.search(r"\w$", term) else ""
     return re.compile(pre + body + post, 0 if case_sensitive else re.I)
@@ -326,10 +346,11 @@ def config_terms(cfg: dict) -> dict[str, str]:
 def apply_config(text: str, cfg: dict, ner, numberer: Numberer) -> list[Match]:
     """All matches to anonymize in `text`, each with its final replacement string."""
     cs = bool(cfg.get("case_sensitive", False))
+    ocr = bool(cfg.get("ocr_tolerant", False))
     ms: list[Match] = []
 
     for term, rep in config_terms(cfg).items():
-        for m in term_regex(term, cs).finditer(text):
+        for m in term_regex(term, cs, ocr).finditer(text):
             ms.append(Match(m.start(), m.end(), "TERM", m.group(), source=0, replacement=rep))
 
     for i, rule in enumerate(cfg.get("regex") or []):
@@ -368,114 +389,6 @@ def digital_words(page) -> list[dict]:
         for w in page.get_text("words")
         if w[4].strip()
     ]
-
-
-def tesseract_available() -> bool:
-    """True if the Tesseract program can be found: TESSERACT_CMD env var, PATH, or the usual Windows install folders.
-
-    The pip packages (pytesseract, tesseract) do NOT contain the program itself.
-    """
-    import os
-
-    local = os.environ.get("LOCALAPPDATA")
-    candidates = [os.environ.get("TESSERACT_CMD"), shutil.which("tesseract"),
-                  r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-                  r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-                  local and str(Path(local) / "Programs" / "Tesseract-OCR" / "tesseract.exe")]
-    for c in candidates:
-        if c and Path(c).exists():
-            try:
-                import pytesseract
-                pytesseract.pytesseract.tesseract_cmd = str(c)
-            except ImportError:
-                pass
-            return True
-    return False
-
-
-def render_page(page, dpi: int = 300):
-    from PIL import Image
-
-    pix = page.get_pixmap(dpi=dpi, alpha=False)
-    return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-
-
-def _tess_words(img, lang, psm, min_conf, tag):
-    import pytesseract
-
-    cfg = f"--psm {psm}" if psm else ""
-    d = pytesseract.image_to_data(img, lang=lang, config=cfg, output_type=pytesseract.Output.DICT)
-    words = []
-    for i, t in enumerate(d["text"]):
-        t = t.strip()
-        if not t:
-            continue
-        try:
-            conf = float(d["conf"][i])
-        except (TypeError, ValueError):
-            conf = -1
-        if conf < min_conf:
-            continue
-        x, y, w, h = d["left"][i], d["top"][i], d["width"][i], d["height"][i]
-        words.append({"text": t, "box": (x, y, x + w, y + h), "conf": conf,
-                      "line": (tag, d["block_num"][i], d["par_num"][i], d["line_num"][i])})
-    return words
-
-
-def ocr_words(img, lang: str = "eng", min_conf: float = 0, second_pass: bool = True) -> list[dict]:
-    """Words from Tesseract OCR (boxes in image pixels).
-
-    Tesseract's default layout analysis (psm 3) sometimes skips or garbles text inside
-    boxes / side columns. With second_pass=True a second run in 'uniform block' mode
-    (psm 6) is made, and for every line it reads better (higher mean confidence, or text
-    the first pass missed entirely) the first-pass words are replaced by the second-pass line."""
-    words = _tess_words(img, lang, None, min_conf, "a")
-    if not second_pass:
-        return words
-    pass2 = _tess_words(img, lang, 6, min_conf, "b")
-
-    # psm 6 reads straight across columns: cut each line wherever there is a wide horizontal gap
-    raw: dict = {}
-    for w in pass2:
-        raw.setdefault(w["line"], []).append(w)
-    lines: dict = {}
-    for key, lw in raw.items():
-        lw.sort(key=lambda w: w["box"][0])
-        height = max(w["box"][3] - w["box"][1] for w in lw)
-        seg = 0
-        for prev, w in zip([None] + lw[:-1], lw):
-            if prev is not None and w["box"][0] - prev["box"][2] > 1.2 * height:
-                seg += 1
-            w["line"] = key + (seg,)
-            lines.setdefault(w["line"], []).append(w)
-
-    def center_in(w, box, m=3):
-        cx, cy = (w["box"][0] + w["box"][2]) / 2, (w["box"][1] + w["box"][3]) / 2
-        return box[0] - m <= cx <= box[2] + m and box[1] - m <= cy <= box[3] + m
-
-    drop, added = set(), []
-    for lw in lines.values():
-        bbox = (min(w["box"][0] for w in lw), min(w["box"][1] for w in lw),
-                max(w["box"][2] for w in lw), max(w["box"][3] for w in lw))
-        overlapped = [i for i, w in enumerate(words) if i not in drop and center_in(w, bbox)]
-        if not overlapped:
-            added += lw                                   # text pass 1 did not see at all
-            continue
-        m1 = sum(words[i]["conf"] for i in overlapped) / len(overlapped)
-        m2 = sum(w["conf"] for w in lw) / len(lw)
-        if m1 < 80 and m2 > m1 + 10:                      # pass 1 read this area badly (garbage)
-            drop.update(overlapped)
-            added += lw
-        elif m2 >= 60:
-            # both passes are "confident" but may disagree (e.g. words split differently):
-            # keep both readings so a detector can match on either one
-            def squash(ws):
-                return re.sub(r"\W", "", "".join(w["text"] for w in ws).casefold())
-            a = squash(sorted((words[i] for i in overlapped), key=lambda w: (w["box"][1] // 15, w["box"][0])))
-            b = squash(sorted(lw, key=lambda w: w["box"][0]))
-            if difflib.SequenceMatcher(None, a, b).ratio() < 0.98:
-                added += lw
-    return [w for i, w in enumerate(words) if i not in drop] + added
 
 
 def words_to_text(words: list[dict]):

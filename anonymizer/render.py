@@ -232,7 +232,7 @@ def apply_redactions(page):
 # scanned pages (PIL images)
 # ---------------------------------------------------------------------------
 
-_FONT_CANDIDATES = ["DejaVuSans.ttf", "Arial.ttf", "arial.ttf", "Helvetica.ttc", "LiberationSans-Regular.ttf"]
+_FONT_CANDIDATES = ["arial.ttf", "Arial.ttf", "Helvetica.ttc", "LiberationSans-Regular.ttf", "DejaVuSans.ttf"]
 
 
 def load_font(size: int):
@@ -255,6 +255,38 @@ def fit_font(text, max_w, h):
             return f
         size -= 1
     return load_font(8)
+
+
+def scan_text_layout(original: str, new: str, box, limit_x: float | None = None):
+    """Font and baseline position so that `new` looks like `original` did in `box` (unpadded word box):
+    same ink height (the size is measured on the original text, so tight OCR boxes give the right size)
+    and same baseline. Shrinks only if `new` would run past `limit_x` (next word / margin)."""
+    x0, y0, x1, y1 = box
+    probe = load_font(100)
+    _, top, _, bottom = probe.getbbox(original or new, anchor="ls")   # top < 0 (above baseline)
+    ink = bottom - top
+    size = max(int(round(100 * (y1 - y0) / ink)), 6) if ink > 0 else max(int((y1 - y0) * 0.8), 8)
+    font = load_font(size)
+    descent = max(font.getbbox(original or new, anchor="ls")[3], 0)   # part of the original below the baseline
+    avail = max(x1 - x0, 1)
+    if limit_x is not None:
+        avail = max(avail, min(limit_x - x0, avail * 1.35))
+    while size > 6 and font.getlength(new) > avail:
+        size -= 1
+        font = load_font(size)
+    return font, (x0, y1 - descent)
+
+
+def ink_color(img, box):
+    """Colour of the text inside `box` (median of its darkest pixels), so blue or grey text stays blue or grey."""
+    W, H = img.size
+    x0, y0, x1, y1 = [int(v) for v in box]
+    crop = np.asarray(img.crop((max(x0, 0), max(y0, 0), min(x1, W), min(y1, H)))).reshape(-1, 3)
+    if not len(crop):
+        return (0, 0, 0)
+    lum = crop @ np.array([0.299, 0.587, 0.114])
+    dark = crop[lum <= np.percentile(lum, 10)]
+    return tuple(int(v) for v in np.median(dark, axis=0))
 
 
 def background_color(img, box):

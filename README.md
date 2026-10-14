@@ -7,7 +7,8 @@ Everything runs on your machine. Nothing is uploaded anywhere.
 app.py                   web app (Flask, 127.0.0.1 only)
 anonymizer/
   engine.py              scan folder -> draft config -> anonymize -> verify -> report
-  pii.py                 detectors (IBAN, phone, e-mail, addresses, names...), OCR and text/box helpers
+  pii.py                 detectors (IBAN, phone, e-mail, addresses, names...), matching and text/box helpers
+  ocr.py                 OCR of scanned pages: Tesseract or Windows built-in OCR
   fake.py                fake replacement values (same length, same format)
   render.py              drawing replacement text on digital pages and scanned images
 static/                  frontend (index.html, app.js, style.css)
@@ -24,7 +25,18 @@ pip install -r requirements.txt
 python -m spacy download fr_core_news_md      # names model; use nl_core_news_md for Dutch, you can install both
 ```
 
-Scanned PDFs need **Tesseract OCR** with the language packs you use (fra, nld, eng):
+Scanned PDFs need an OCR engine. Two are supported; the app uses Tesseract if it is installed, else Windows OCR
+(force one with `--ocr-engine tesseract|windows`). The header of the app shows which one is active.
+
+**Windows OCR – no admin rights needed** (recommended on a locked-down PC). It is built into Windows 10/11; the
+`winrt-*` packages in `requirements.txt` are all it needs. It reads the OCR languages installed with Windows. Check
+that French is there (PowerShell, no admin):
+```powershell
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]; [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages | Select-Object LanguageTag
+```
+If `fr-FR` (or `nl-NL`) is missing, it has to be added in Windows language settings (usually needs admin / IT).
+
+**Tesseract – needs an installation** (admin rights on Windows), with the language packs you use (fra, nld, eng):
 * Windows: `winget install UB-Mannheim.TesseractOCR` (or the UB-Mannheim installer, tick the extra languages).
   Note: `pip install tesseract` / `pytesseract` do **not** install the program itself. It is found automatically in
   `C:\Program Files\Tesseract-OCR`; otherwise set the env var `TESSERACT_CMD` to the full path of `tesseract.exe`.

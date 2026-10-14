@@ -20,7 +20,8 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from anonymizer import engine as eng
-from anonymizer.pii import fitz, load_ner, tesseract_available
+from anonymizer import ocr
+from anonymizer.pii import fitz, load_ner
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 STATE = {"root": None, "ocr_lang": "fra+eng", "spacy_models": None, "ner": None}
@@ -67,7 +68,8 @@ def info():
         models = [m for m in _PREFERRED_MODELS if is_package(m)]
     except Exception:  # noqa: BLE001
         pass
-    return jsonify({"root": str(STATE["root"]), "ocr": tesseract_available(), "ocr_lang": STATE["ocr_lang"],
+    return jsonify({"root": str(STATE["root"]), "ocr": ocr.available(), "ocr_engine": ocr.describe(STATE["ocr_lang"]),
+                    "ocr_lang": STATE["ocr_lang"],
                     "spacy_models": models})
 
 
@@ -308,15 +310,20 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", required=True, help="folder containing the client folders / PDFs")
     ap.add_argument("--port", type=int, default=5000)
-    ap.add_argument("--ocr-lang", default="fra+eng", help="Tesseract languages, e.g. nld+fra+eng")
+    ap.add_argument("--ocr-lang", default="fra+eng", help="OCR languages (Tesseract codes), e.g. nld+fra+eng")
+    ap.add_argument("--ocr-engine", choices=ocr.ENGINES, default=None,
+                    help="auto (default: Tesseract if installed, else Windows OCR) | tesseract | windows")
     ap.add_argument("--spacy-model", action="append", help="spaCy model(s) for names; default = installed ones")
     args = ap.parse_args()
 
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
         raise SystemExit(f"--root is not a folder: {root}")
+    if args.ocr_engine:
+        ocr.set_engine(args.ocr_engine)
     STATE.update(root=root, ocr_lang=args.ocr_lang, spacy_models=args.spacy_model)
-    print(f"Root: {root}\nOpen http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
+    print(f"Root: {root}\nOCR: {ocr.describe(args.ocr_lang) or 'none (scanned PDFs cannot be processed)'}")
+    print(f"Open http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
     app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)
 
 

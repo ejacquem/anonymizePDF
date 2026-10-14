@@ -21,8 +21,10 @@ from PIL import ImageDraw
 
 from . import render
 from .fake import Faker, match_case
-from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, detect_all, digital_words, fitz, ocr_words, plan_page,
-                        render_page, tesseract_available, term_regex, words_to_text, norm_value)
+from . import ocr
+from .ocr import ocr_words, render_page
+from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, detect_all, digital_words, fitz, plan_page, term_regex,
+                  words_to_text, norm_value)
 
 CONFIG_NAME = "anon_config.yaml"
 REPORT_NAME = "anon_report.json"
@@ -143,7 +145,9 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, salt: s
     pdfs = list_pdfs(folder)
     if not pdfs:
         raise ValueError("No PDF in this folder")
-    can_ocr = tesseract_available()
+    can_ocr = ocr.available()
+    if can_ocr:
+        log(f"OCR engine for scanned pages: {ocr.describe(default_ocr_lang)}")
     found: dict = {}
     for fi, pdf in enumerate(pdfs, start=1):
         doc = fitz.open(pdf)
@@ -151,13 +155,16 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, salt: s
         log(f"[{fi}/{len(pdfs)}] {pdf.name}: {len(doc)} page(s), {mode}")
         for pno, page in enumerate(doc, start=1):
             words = digital_words(page)
-            if len(words) < 3:
+            ocr_page = len(words) < 3
+            if ocr_page:
                 if not can_ocr:
-                    log(f"   page {pno}: no text layer and Tesseract is not installed -> skipped")
+                    log(f"   page {pno}: no text layer and no OCR engine available -> skipped")
                     continue
                 words = ocr_words(render_page(page, 300), default_ocr_lang)
                 log(f"   page {pno}: OCR ({len(words)} words)")
             text, _ = words_to_text(words)
+            if ocr_page:
+                text = ocr.fix_digits(text)           # '04 72 OO 11 22' -> '04 72 00 11 22' (same length)
             for m in detect_all(text, ner):
                 value = " ".join(m.value.split())
                 if m.type == "PERSON":
@@ -368,20 +375,24 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
         t0 = time.time()
         img = render_page(page, 300)
         words = ocr_words(img, ocr_lang)
-        plan = plan_page(words, pc, [], numberer)
+        plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer)
         draw = ImageDraw.Draw(img)
         pad = 3
-        for m, boxes in plan:
+        # measure everything before painting (ink colour, free space on the right)
+        looks = [(render.ink_color(img, boxes[0]), render.free_right(words, boxes[0], img.width))
+                 for _, boxes in plan]
+        for (m, boxes), (ink, limit) in zip(plan, looks):
             m.replacement = _adjust(cfg, m)
             for i, b in enumerate(boxes):
                 box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
                 fill = (0, 0, 0) if blackbox else render.background_color(img, box)
                 draw.rectangle(box, fill=fill)
                 if not blackbox and i == 0 and m.replacement:
-                    font = render.fit_font(m.replacement, box[2] - box[0], box[3] - box[1])
+                    font, xy = render.scan_text_layout(m.value, m.replacement, b, limit)
                     lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
-                    draw.text((box[0], (box[1] + box[3]) / 2), m.replacement, font=font, anchor="lm",
-                              fill=(0, 0, 0) if lum > 128 else (255, 255, 255))
+                    ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
+                    color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
+                    draw.text(xy, m.replacement, font=font, anchor="ls", fill=color)
             records.append({"page": pno, "original": m.value, "replacement": m.replacement})
         log(f"   page {pno}/{len(src)}: OCR {len(words)} words, {len(plan)} replacement(s) ({time.time() - t0:.0f}s)")
         buf = io.BytesIO()
@@ -396,10 +407,11 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
 def verify_output(path: Path, cfg: dict, ocr_lang: str, use_ocr: bool) -> list[dict]:
     """Search the anonymized file for any original value that survived."""
     rxs = [(f, term_regex(f, cfg["case_sensitive"])) for f in cfg["terms"] if len(f) >= 3]
+    ocr_rxs = [(f, term_regex(f, cfg["case_sensitive"], ocr=True)) for f in cfg["terms"] if len(f) >= 3]
     left: list[dict] = []
 
-    def check(where: str, text: str):
-        for find, rx in rxs:
+    def check(where: str, text: str, tolerant: bool = False):
+        for find, rx in (ocr_rxs if tolerant else rxs):
             n = len(rx.findall(text))
             if n:
                 left.append({"where": where, "find": find, "count": n})
@@ -410,9 +422,9 @@ def verify_output(path: Path, cfg: dict, ocr_lang: str, use_ocr: bool) -> list[d
             check(f"metadata.{k}", str(v))
     for pno, page in enumerate(doc, start=1):
         check(f"p.{pno} text layer", words_to_text(digital_words(page))[0])
-    if use_ocr and tesseract_available():
+    if use_ocr and ocr.available():
         for pno, page in enumerate(doc, start=1):
-            check(f"p.{pno} OCR", words_to_text(ocr_words(render_page(page, 300), ocr_lang))[0])
+            check(f"p.{pno} OCR", words_to_text(ocr_words(render_page(page, 300), ocr_lang))[0], tolerant=True)
     doc.close()
     return left
 
@@ -463,8 +475,9 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 if empty:
                     entry["warnings"].append(f"pages without text layer (not processed): {empty[:10]}")
             else:
-                if not tesseract_available():
-                    raise RuntimeError("scanned PDF but Tesseract is not installed")
+                if not ocr.available():
+                    raise RuntimeError("scanned PDF but no OCR engine is available (Tesseract or Windows OCR)")
+                log(f"   OCR engine: {ocr.describe(ocr_lang)}")
                 records = _scan_pdf(pdf, out, cfg, ocr_lang, log)
             entry["items"] = summarize(records, cfg)
             entry["replaced"] = len(records)
