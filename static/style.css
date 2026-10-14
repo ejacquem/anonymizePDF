@@ -65,7 +65,10 @@ main.native .viewer .pages { display: none; }
 main.native .viewer iframe.loaded { display: block; }
 main.native .zoom .mini { display: none; }
 .page { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .35); flex: none; }
-.page img { display: block; width: 100%; height: 100%; }
+.page img { display: block; width: 100%; height: 100%; -webkit-user-drag: none; user-select: none; }
+/* image mode: click + drag to move around the page */
+main:not(.native) .viewer .pages { cursor: grab; user-select: none; }
+.viewer.panning, .viewer.panning * { cursor: grabbing !important; }
 .page .pno { position: absolute; right: 6px; bottom: 4px; font-size: 11px; color: #888; }
 .page.failed::after { content: "page could not be rendered"; position: absolute; inset: 0; display: flex;
   align-items: center; justify-content: center; color: #c0392b; font-size: 12px; }

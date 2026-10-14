@@ -97,7 +97,22 @@ const viewers = {
 };
 const VIEWERS = ["orig", "anon"];
 let pageObserver = null;
-let scrollLock = false;
+// Scroll positions the program set itself, per pane. The scroll event they trigger is ignored, so syncing
+// one pane does not bounce back to the other. (No timer / animation frame: works even in a hidden tab.)
+const programmatic = { orig: null, anon: null };
+
+function setScroll(which, left, top) {
+  const b = viewers[which].box;
+  b.scrollLeft = left;
+  b.scrollTop = top;
+  programmatic[which] = { left: b.scrollLeft, top: b.scrollTop };   // values after the browser's clamping
+}
+
+function isProgrammatic(which) {
+  const b = viewers[which].box, p = programmatic[which];
+  programmatic[which] = null;
+  return !!p && Math.abs(b.scrollLeft - p.left) < 1 && Math.abs(b.scrollTop - p.top) < 1;
+}
 
 function other(which) { return which === "orig" ? "anon" : "orig"; }
 
@@ -117,6 +132,7 @@ function loadPageImage(el) {
   if (!img) {
     img = document.createElement("img");
     img.alt = "";
+    img.draggable = false;          // no browser image drag: click + drag pans the view instead
     img.onerror = () => el.classList.add("failed");
     img.onload = () => el.classList.remove("failed");
     el.prepend(img);
@@ -211,13 +227,8 @@ function setZoom(scale, anchor) {
     keep[which] = { x: (b.scrollLeft + ax) * k - ax, y: (b.scrollTop + ay) * k - ay };
   }
   VIEWERS.forEach(sizePages);
-  scrollLock = true;
-  for (const which of VIEWERS) {
-    viewers[which].box.scrollLeft = keep[which].x;
-    viewers[which].box.scrollTop = keep[which].y;
-  }
+  for (const which of VIEWERS) setScroll(which, keep[which].x, keep[which].y);
   if (anchor) syncScroll(anchor.which);
-  requestAnimationFrame(() => { scrollLock = false; });
   updateZoomLabel();
   clearTimeout(setZoom.timer);
   setZoom.timer = setTimeout(refreshVisibleImages, 200);
@@ -269,21 +280,42 @@ function syncScroll(fromWhich) {
   const frac = sp[i].offsetHeight ? (y - sp[i].offsetTop) / sp[i].offsetHeight : 0;
   const t = dp[Math.min(i, dp.length - 1)];
   const sx = src.scrollWidth - src.clientWidth, dx = dst.scrollWidth - dst.clientWidth;
-  scrollLock = true;
-  dst.scrollTop = t.offsetTop + frac * t.offsetHeight;
-  dst.scrollLeft = sx > 0 ? (src.scrollLeft / sx) * dx : 0;
-  requestAnimationFrame(() => { scrollLock = false; });
+  setScroll(other(fromWhich), sx > 0 ? (src.scrollLeft / sx) * dx : 0, t.offsetTop + frac * t.offsetHeight);
 }
 
 for (const which of VIEWERS) {
   const box = viewers[which].box;
-  box.addEventListener("scroll", () => { if (!scrollLock) syncScroll(which); });
+  box.addEventListener("scroll", () => { if (!isProgrammatic(which)) syncScroll(which); });
   box.addEventListener("wheel", (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
     const r = box.getBoundingClientRect();
     stepZoom(e.deltaY < 0 ? 1 : -1, { which, x: e.clientX - r.left, y: e.clientY - r.top });
   }, { passive: false });
+
+  // click + drag moves the view (image mode); the other pane follows through the scroll sync above
+  box.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || nativeMode() || !viewers[which].pages.length) return;
+    const r = box.getBoundingClientRect();
+    if (e.clientX - r.left >= box.clientWidth || e.clientY - r.top >= box.clientHeight) return;  // on a scrollbar
+    e.preventDefault();
+    box.setPointerCapture(e.pointerId);
+    box.classList.add("panning");
+    const start = { x: e.clientX, y: e.clientY, left: box.scrollLeft, top: box.scrollTop };
+    const move = (ev) => {
+      setScroll(which, start.left - (ev.clientX - start.x), start.top - (ev.clientY - start.y));
+      syncScroll(which);              // move the other pane right away, without waiting for the scroll event
+    };
+    const up = () => {
+      box.classList.remove("panning");
+      box.removeEventListener("pointermove", move);
+      box.removeEventListener("pointerup", up);
+      box.removeEventListener("pointercancel", up);
+    };
+    box.addEventListener("pointermove", move);
+    box.addEventListener("pointerup", up);
+    box.addEventListener("pointercancel", up);
+  });
 }
 // ----- unsynced = the browser's own PDF viewer (text can be selected) -----
 const SYNC_KEY = "anonymizePDF.sync";
