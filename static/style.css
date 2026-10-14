@@ -58,6 +58,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 .viewer { position: relative; overflow: auto; background: var(--viewer-bg); }
 .pages { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px; width: max-content;
   min-width: 100%; }
+/* unsynced: the browser's own PDF viewer (selectable text) instead of the page images */
+.viewer iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none; background: #888; }
+main.native .viewer { overflow: hidden; }
+main.native .viewer .pages { display: none; }
+main.native .viewer iframe.loaded { display: block; }
+main.native .zoom .mini { display: none; }
 .page { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .35); flex: none; }
 .page img { display: block; width: 100%; height: 100%; }
 .page .pno { position: absolute; right: 6px; bottom: 4px; font-size: 11px; color: #888; }

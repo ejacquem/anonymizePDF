@@ -164,6 +164,7 @@ async function setViewer(which, path) {
   v.box.scrollLeft = 0;
   name.textContent = path ? baseName(path) : "";
   empty.style.display = path ? "none" : "flex";
+  updateFrame(which);
   if (!path) return;
   let info;
   try {
@@ -284,7 +285,40 @@ for (const which of VIEWERS) {
     stepZoom(e.deltaY < 0 ? 1 : -1, { which, x: e.clientX - r.left, y: e.clientY - r.top });
   }, { passive: false });
 }
-$("#syncScroll").addEventListener("change", () => syncScroll("orig"));
+// ----- unsynced = the browser's own PDF viewer (text can be selected) -----
+const SYNC_KEY = "anonymizePDF.sync";
+
+function nativeMode() { return !$("#syncScroll").checked; }
+
+function updateFrame(which) {
+  const v = viewers[which], f = $(`#${which}Frame`);
+  const want = nativeMode() && v.path ? `/api/pdf?path=${encodeURIComponent(v.path)}&t=${v.stamp}` : "";
+  if (want) {
+    if (f.dataset.src !== want) { f.src = want; f.dataset.src = want; }
+    f.classList.add("loaded");
+  } else {
+    f.removeAttribute("src");
+    delete f.dataset.src;
+    f.classList.remove("loaded");
+  }
+}
+
+function applyViewMode() {
+  $("main").classList.toggle("native", nativeMode());
+  VIEWERS.forEach(updateFrame);
+  if (!nativeMode()) {
+    if (zoom.fit) applyFit();
+    refreshVisibleImages();
+    syncScroll("orig");
+  }
+}
+
+try { if (localStorage.getItem(SYNC_KEY) === "0") $("#syncScroll").checked = false; } catch (e) { /* no storage */ }
+$("#syncScroll").addEventListener("change", () => {
+  try { localStorage.setItem(SYNC_KEY, nativeMode() ? "0" : "1"); } catch (e) { /* no storage */ }
+  applyViewMode();
+});
+applyViewMode();
 
 if ("ResizeObserver" in window) {
   const ro = new ResizeObserver(() => { if (zoom.fit) applyFit(); });

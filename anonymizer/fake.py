@@ -15,16 +15,32 @@ import random
 import re
 import string
 
-FIRST_NAMES = """
-Léa Eva Noa Max Tom Ugo Ines Zoé Luc Jan Ava Eli Lou Ana Mia Sam Ben Ida Leo Nils
-Alice Arthur Axel Basile Camille Chloé Clara Elias Emile Enzo Erwan Fanny Hugo Inès Jules Julie Lucas Lucie Manon
-Marion Mathis Maxime Nadia Nathan Nicolas Oscar Pablo Pierre Romain Sacha Sarah Simon Sophie Théo Victor Yann Yanis
-Adrien Alexis Amélie Anaïs Antoine Arnaud Aurélie Baptiste Benoît Bertrand Bruno Cécile Céline Cyril Damien Delphine
-Denis Dorian Edouard Elodie Émilie Fabien Florian Gabriel Gaëtan Guillaume Hélène Isabelle Jérémie Jonathan Julien
-Karine Laurent Laetitia Mathieu Mélanie Morgane Nicole Olivier Patrick Philippe Quentin Raphaël Sandrine Stéphane
-Sylvain Thibault Thierry Valérie Vincent Xavier Yvonne Christophe Emmanuelle Alexandre Alexandrine Maximilien
-Charlotte Clémentine Frédérique Jean-Marc Marie-Anne Pierre-Yves Anne-Sophie Louis-Philippe
+# First names by gender (FR / BE / NL), so a replacement keeps the gender of the original name.
+FEMALE_NAMES = """
+Léa Eva Zoé Ava Ana Mia Ida Eva Lou Emma Jade Lina Rose Anna Elsa Inès Ines Lise Nora Sara Romy Fien Noor Lotte
+Alice Chloé Clara Fanny Julie Lucie Manon Nadia Sarah Laura Marie Paula Elise Amandine Aline Annie Agnès Berthe
+Marion Sophie Amélie Anaïs Aurélie Cécile Céline Hélène Karine Nicole Yvonne Lauren Louise Margot Maëlle Mélissa
+Delphine Elodie Émilie Isabelle Laetitia Mélanie Morgane Sandrine Valérie Caroline Catherine Christine Véronique
+Charlotte Clémentine Frédérique Emmanuelle Alexandrine Stéphanie Virginie Juliette Pauline Florence Nathalie
+Sylvie Monique Martine Brigitte Chantal Danielle Françoise Jacqueline Josiane Liliane Mireille Patricia Corinne
+Sabine Annick Gisèle Odile Colette Arlette Ginette Huguette Josette Paulette Suzanne Simone Germaine Lucienne
+Marie-Anne Anne-Sophie Marie-Claire Anne-Marie Els Ilse Lien Katrien Annelies Sofie Hanne Leen Inge Griet
 """.split()
+MALE_NAMES = """
+Tom Ugo Luc Jan Eli Sam Ben Leo Max Noa Paul Marc Yves Louis Jean Remi Théo Hugo Axel Enzo Ivan Joël Noël Bram
+Arthur Basile Elias Emile Erwan Jules Lucas Mathis Maxime Nathan Oscar Pablo Pierre Romain Simon Victor Yanis
+Adrien Alexis Antoine Arnaud Baptiste Benoît Bertrand Bruno Cyril Damien Denis Dorian Edouard Fabien Florian
+Gabriel Gaëtan Guillaume Jérémie Jonathan Julien Laurent Mathieu Olivier Patrick Philippe Quentin Raphaël Thierry
+Stéphane Sylvain Thibault Vincent Xavier Christophe Alexandre Maximilien Bernard Gérard Michel Jacques Daniel
+Thomas Nicolas Francis Georges Gilbert Gilles Henri Hervé Jérôme Lionel Marcel Pascal Roger Serge Sébastien
+Frédéric Grégoire Ludovic Mickaël Raymond Robert Roland Thibaut Valentin Clément Didier Emmanuel
+Jean-Marc Pierre-Yves Louis-Philippe Jean-Luc Jean-Paul Pieter Joris Wouter Koen Dirk Bart Geert Stijn Wim Kris
+""".split()
+UNISEX_NAMES = "Camille Sacha Claude Alix Charlie Morgan Dominique Eden".split()
+FIRST_NAMES = list(dict.fromkeys(FEMALE_NAMES + MALE_NAMES + UNISEX_NAMES))
+
+_FEMALE_HONORIFIC = re.compile(r"(?i)\b(?:mme|madame|mlle|mademoiselle|mevrouw|mevr|mrs|ms|miss)\.?\s*$")
+_MALE_HONORIFIC = re.compile(r"(?i)(?:\bm\.|\bmonsieur|\bmr\.?|\bheer|\bdhr\.?|\bde heer)\s*$")
 
 LAST_NAMES = """
 Roy Roux Fabre Brun Noel Lamy Gros Dupuis Remy Marin Collin Aubert Bailly Baron Berger Blanc Bonnet Boyer
@@ -59,6 +75,12 @@ COMMON_EMAIL_DOMAINS = {
     "live.be", "skynet.be", "telenet.be", "proximus.be", "scarlet.be", "orange.fr", "free.fr", "laposte.net",
     "sfr.fr", "wanadoo.fr", "example.com", "example.fr", "msn.com",
 }
+
+_FEMALE_SET = {re.sub(r"\s+", "", x.casefold()) for x in FEMALE_NAMES}
+_MALE_SET = {re.sub(r"\s+", "", x.casefold()) for x in MALE_NAMES}
+_UNISEX_SET = {re.sub(r"\s+", "", x.casefold()) for x in UNISEX_NAMES}
+_FIRST_SET = _FEMALE_SET | _MALE_SET | _UNISEX_SET
+_PARTICLES = {"de", "du", "van", "von", "der", "den", "ter", "ten", "la", "le", "des", "d'", "dos", "da"}
 
 _VOWELS = "aeiouy"
 _CONSONANTS = "bcdfghjklmnprstvz"
@@ -151,18 +173,41 @@ class Faker:
         return "".join(out)
 
     # ---------- per type ----------
-    def name_token(self, token: str, kind: str, avoid: set[str] | None = None) -> str:
-        """kind = 'first' | 'last'. Deterministic per token, so 'Marchand' alone and inside
-        'Thomas Marchand' get the same replacement."""
+    @staticmethod
+    def gender_of(first: str, honorific: str = "") -> str | None:
+        """'f', 'm' or None. Known first names win, then the title before the name (Mme / M. ...),
+        then a few French spelling hints. A compound name takes the gender of its first part."""
+        tok = _norm(first.split("-")[0])
+        if tok in _FEMALE_SET and tok not in _MALE_SET:
+            return "f"
+        if tok in _MALE_SET and tok not in _FEMALE_SET:
+            return "m"
+        if honorific and _FEMALE_HONORIFIC.search(honorific):
+            return "f"
+        if honorific and _MALE_HONORIFIC.search(honorific):
+            return "m"
+        if tok in _UNISEX_SET:
+            return None
+        if re.search(r"(ette|elle|ine|ienne|ise|ie|a)$", _plain(tok)):
+            return "f"
+        return None
+
+    def name_token(self, token: str, kind: str, avoid: set[str] | None = None, gender: str | None = None) -> str:
+        """kind = 'first' | 'last'. Deterministic per token (and gender), so 'Marchand' alone and inside
+        'Thomas Marchand' get the same replacement. First names keep their gender when it is known."""
         if "-" in token and len(token) > 3:
             done: set[str] = set()
             parts = []
             for p in token.split("-"):
-                new = self.name_token(p, kind, done)
+                new = self.name_token(p, kind, done, gender)
                 done.add(_norm(new))
                 parts.append(new)
             return "-".join(parts)
-        pool = FIRST_NAMES if kind == "first" else LAST_NAMES
+        if kind == "first":
+            gender = gender or self.gender_of(token)
+            pool = FEMALE_NAMES if gender == "f" else MALE_NAMES if gender == "m" else UNISEX_NAMES + FIRST_NAMES
+        else:
+            pool = LAST_NAMES
         pool = [x for x in pool if "-" not in x]
         rng = self.rng("name-" + kind, token)
         avoid = {_norm(token)} | (avoid or set())
@@ -171,18 +216,32 @@ class Faker:
             return _style_token(token, self.scramble(token, rng))
         return _style_token(token, pick)
 
-    def person(self, value: str) -> str:
-        parts = value.split()
-        if len(parts) == 1:  # a lone name: surname unless it is a known first name
-            known = {_norm(x) for x in FIRST_NAMES}
-            return self.name_token(parts[0], "first" if _norm(parts[0]) in known else "last")
-        out = []
+    def name_kinds(self, parts: list[str]) -> list[str]:
+        """'first' / 'last' / 'particle' for each token of a name. Known first names are 'first' wherever
+        they are (handles 'MARCHAND Thomas'); otherwise the first token is the first name."""
+        kinds = []
+        known = [_norm(t) in _FIRST_SET for t in parts]
         for i, tok in enumerate(parts):
-            if tok.casefold() in {"de", "du", "van", "von", "der", "den", "ter", "ten", "la", "le", "des", "d'", "dos", "da"}:
-                out.append(tok)
+            if tok.casefold() in _PARTICLES:
+                kinds.append("particle")
+            elif any(known):
+                kinds.append("first" if known[i] else "last")
             else:
-                out.append(self.name_token(tok, "first" if i == 0 else "last"))
+                kinds.append("first" if i == 0 and len(parts) > 1 else "last")
+        return kinds
+
+    def person(self, value: str, gender: str | None = None) -> str:
+        parts = value.split()
+        out = []
+        for tok, kind in zip(parts, self.name_kinds(parts)):
+            out.append(tok if kind == "particle" else self.name_token(tok, kind, gender=gender))
         return " ".join(out)
+
+    def digit_groups(self, value: str) -> str:
+        """Change every digit, group by group: the same group gets the same new digits everywhere,
+        so '05871' is replaced the same way in '05871 00001234567 02' and in '30002 / 05871'."""
+        return re.sub(r"\d+", lambda m: self.digits(m.group(), self.rng("grp", m.group()), keep_leading_zeros=True),
+                      value)
 
     def iban(self, value: str) -> str:
         compact = value.replace(" ", "")
@@ -227,7 +286,7 @@ class Faker:
                 new_local.append(self.digits(p, rng))
             else:
                 kind = "first" if k == 0 else "last"
-                new_local.append(self.name_token(p.lower(), kind).lower())
+                new_local.append(_plain(self.name_token(p.lower(), kind).lower()))  # no accents in e-mails
         if domain.lower() in COMMON_EMAIL_DOMAINS:
             new_domain = domain
         else:
@@ -364,7 +423,9 @@ class Faker:
             return self.phone(value)
         if typ == "CREDIT_CARD":
             return self.credit_card(value)
-        if typ in ("BE_NATIONAL_NUMBER", "BE_STRUCTURED_COMM", "ACCOUNT_NUMBER"):
+        if typ in ("ACCOUNT_NUMBER", "BANK_CODE"):
+            return self.digit_groups(value)
+        if typ in ("BE_NATIONAL_NUMBER", "BE_STRUCTURED_COMM"):
             return self.numeric_id(value)
         if typ == "BE_VAT":
             return self.numeric_id(value, keep_country=True)

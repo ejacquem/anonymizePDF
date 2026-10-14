@@ -47,6 +47,7 @@ Options: `--port`, `--ocr-lang fra+eng`, `--spacy-model` (repeatable).
 Directory tree | Original PDF | Anonymized PDF | right panel with tabs **Config / Recap / Log**.
 The 3 bars between panes are draggable (double-click resets); widths are saved in localStorage.
 Viewer: zoom shared by both PDFs (−/+, Fit = fit width, Ctrl+wheel), scroll synced page by page ("Sync" checkbox).
+Sync unticked = the browser's own PDF viewer in an iframe (`/api/pdf`, selectable text); the choice is kept in localStorage.
 Toolbar: **1 · Scan & draft config**, **Save config** (Ctrl+S), **2 · Anonymize folder**, checkbox "OCR check for digital PDFs".
 Clicking a folder (or a file in it) selects the **working folder**. Tree badges: `N pdf`, `cfg`, `done`.
 
@@ -72,7 +73,7 @@ Clicking a folder (or a file in it) selects the **working folder**. Tree badges:
 ocr_lang: "fra+eng"
 case_sensitive: false
 match_case: true          # replacement takes UPPER/lower case of the matched text
-style: {mode: replace}    # or blackbox
+style: {mode: replace, digital_fill: none}   # mode: or blackbox | digital_fill: none (page background) or white
 replacements:
   - {find: "Thomas Marchand", replace: "Alexis Beaumont", type: PERSON}
   # - {find: "30/09/2024", replace: "22/03/2025", type: DATE}   # commented = not replaced
@@ -83,7 +84,12 @@ regex: []                 # optional: - {pattern: '...', replace: '...'}
 ## 8. Detection
 
 Types: IBAN (mod-97 checked), BIC, EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), BE national number, BE VAT, BE structured communication,
-STREET_ADDRESS (FR/NL/BE heuristics), POSTAL_CITY, ACCOUNT_NUMBER (long digit runs), DATE, PERSON, plus NER ORG/LOCATION.
+STREET_ADDRESS (FR/NL/BE heuristics), POSTAL_CITY, ACCOUNT_NUMBER (after a label like "N° de compte" / "Numéro client", French RIB `05871 00001234567 02`, long digit runs),
+BANK_CODE (after "Code banque / guichet", "Clé RIB", ...), DATE, PERSON, plus NER ORG/LOCATION.
+Multi-group ACCOUNT_NUMBER / BANK_CODE values also add their groups of >= 5 digits as separate entries; digit groups are
+replaced deterministically per group, so `05871` gets the same fake digits inside the account number and the bank code.
+Birth dates: a DATE is active only if `_BIRTH_RX` (né le / née / naissance / geboren / birth / born / dob) appears in the
+35 characters before it (or 8 after); every other date is written commented out.
 PERSON heuristics (in `anonymizer/pii.py` DETECTORS): after a title (M., Mme, Dr, Mr…), `Prénom NOM`, `NOM Prénom`, plus spaCy PERSON.
 `PERSON` is active by default only if: after a title, or contains a known first name, or spaCy found it in Title Case. Otherwise commented out.
 Individual name parts (≥4 letters) of accepted names are added as separate entries (so a lone `Marchand` is replaced too).
@@ -91,7 +97,8 @@ NER runs line by line (page text split on newlines).
 
 ## 9. Fake values (`anonymizer/fake.py`)
 
-Deterministic (hash of salt+type+value), unique per run, same length where possible: names from FR/BE name lists by length (case style kept),
+Deterministic (hash of salt+type+value), unique per run, same length where possible: names from FR/BE/NL name lists by length (case style kept), first names keep their gender (female/male lists,
+else the title before the name: Mme / M., else French endings like -ette/-ine/-ie),
 phones keep format and first 2 digits, IBAN keeps country/grouping with valid checksum, BIC keeps country, emails keep common domains,
 streets/cities from lists by length, dates shift day/month/year, card numbers keep Luhn validity, other ids change every digit.
 
@@ -112,7 +119,9 @@ This fixed text inside bordered boxes that psm 3 garbled.
 - Scans depend on OCR quality (handwriting, stamps, signatures missed). Names are heuristic (hence the review step).
 - The leftover check only searches for values present in the config.
 - Mixed digital/scan PDFs are processed as one mode per file.
-- Replacement text uses a standard font; gender of names is ignored.
+- Digital: replacement keeps size/colour/baseline and the font (embedded if it has the glyphs -> same font from the
+  system -> closest base-14). It may extend up to +35 % to the right if nothing is there, else it is shrunk.
+  Scans use a generic font. Fake names are picked by character count, not rendered width.
 - Ideas: review table with checkboxes instead of raw YAML, click-to-add selected text from the viewer, highlights on the original,
   hybrid per-page mode, global mapping file across folders, batch status view, nl_core_news_md for Dutch.
 

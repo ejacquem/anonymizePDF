@@ -5,7 +5,8 @@ ocr_lang: "fra+eng"          # Tesseract languages, used for scanned PDFs
 case_sensitive: false
 match_case: true             # keep UPPER/lower case of the original text in the replacement
 style:
-  mode: replace              # replace = white box + new text | blackbox = black box only
+  mode: replace              # replace = new text in place | blackbox = black box only
+  digital_fill: none         # digital PDFs: none = keep the page background | white = white rectangle
 
 replacements:
   - {find: "Thomas Marchand", replace: "Alexis Beaumont", type: PERSON}

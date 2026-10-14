@@ -33,7 +33,8 @@ SUFFIX = "_anonymized"
 # ---------------------------------------------------------------------------
 
 ACTIVE_TYPES = ["IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "BE_NATIONAL_NUMBER", "BE_VAT",
-                "BE_STRUCTURED_COMM", "STREET_ADDRESS", "POSTAL_CITY", "ACCOUNT_NUMBER"]
+                "BE_STRUCTURED_COMM", "STREET_ADDRESS", "POSTAL_CITY", "ACCOUNT_NUMBER", "BANK_CODE"]
+SPLIT_TYPES = ("ACCOUNT_NUMBER", "BANK_CODE")   # their digit groups (>= 5 digits) are also replaced alone
 TYPE_ORDER = ["PERSON"] + ACTIVE_TYPES + ["DATE", "ORG", "LOCATION"]
 
 _STOP = set("""
@@ -43,9 +44,9 @@ virement prélèvement prelevement retrait chèque cheque paiement facture contr
 conseillere service services monsieur madame mademoiselle bank account statement balance dear mister miss
 rekening saldo datum klant overschrijving factuur mevrouw heer
 """.split())
-_PARTICLES = {"de", "du", "van", "von", "der", "den", "ter", "ten", "la", "le", "des", "dos", "da"}
 _BIRTH_RX = re.compile(r"(?i)(\bn[ée]e?\s*(?:le|à|a|en|:)\b|\bn[ée]e?\s*:|naissance|naiss\.|geboren|geboorte|birth|\bborn\b|\bdob\b)")
 _HONORIFIC_START = re.compile(rf"^{_HONORIFIC}\s+")
+_TITLE_BEFORE = re.compile(rf"({_HONORIFIC})\s*$")
 
 
 def list_pdfs(folder: Path) -> list[Path]:
@@ -111,10 +112,18 @@ def parse_config(text: str) -> dict:
     regex = data.get("regex") or []
     for r in regex:
         re.compile(r["pattern"])
+    style = data.get("style") or {}
+    if not isinstance(style, dict):
+        raise ValueError("style must be a mapping, e.g. style: {mode: replace, digital_fill: none}")
+    style = {"mode": str(style.get("mode") or "replace"), "digital_fill": str(style.get("digital_fill") or "none")}
+    if style["mode"] not in ("replace", "blackbox"):
+        raise ValueError("style.mode must be 'replace' or 'blackbox'")
+    if style["digital_fill"] not in ("none", "white"):
+        raise ValueError("style.digital_fill must be 'none' or 'white'")
     return {
         "terms": terms, "types": types, "regex": regex,
         "case_sensitive": bool(data.get("case_sensitive", False)),
-        "style": data.get("style") or {}, "ocr_lang": data.get("ocr_lang"),
+        "style": style, "ocr_lang": data.get("ocr_lang"),
         "match_case": bool(data.get("match_case", True)),
     }
 
@@ -157,12 +166,16 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, salt: s
                     continue
                 key = (m.type, norm_value(value))
                 e = found.setdefault(key, {"type": m.type, "value": value, "count": 0, "files": set(),
-                                           "pages": set(), "birth": False, "ner": False, "honorific": False})
+                                           "pages": set(), "birth": False, "ner": False, "honorific": False,
+                                           "title": ""})
                 e["count"] += 1
                 e["files"].add(pdf.name)
                 e["pages"].add(pno)
                 e["ner"] = e["ner"] or m.rank >= 100
                 e["honorific"] = e["honorific"] or (m.type == "PERSON" and m.rank == PERSON_RANKS[0])
+                if m.type == "PERSON" and not e["title"]:
+                    t = _TITLE_BEFORE.search(text[max(0, m.start - 16):m.start])
+                    e["title"] = t.group(1) if t else ""
                 if m.type == "DATE":
                     ctx = text[max(0, m.start - 35):m.end + 8]
                     e["birth"] = e["birth"] or bool(_BIRTH_RX.search(ctx))
@@ -174,32 +187,49 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, salt: s
 
     # persons first: full names (active) + their separate parts
     persons = [e for e in found.values() if e["type"] == "PERSON"]
+
+    def gender(e):  # from the first name, else from the title (Mme / M. ...) found before the name
+        toks = e["value"].split()
+        firsts = [t for t, k in zip(toks, faker.name_kinds(toks)) if k == "first"]
+        return faker.gender_of(firsts[0], e["title"]) if firsts else None
+
     for e in sorted(persons, key=lambda e: -e["count"]):
         if accept_person(e["value"], e["honorific"], e["ner"]):
-            active.append({**e, "replace": faker.person(e["value"]), "note": ""})
+            g = gender(e)
+            active.append({**e, "replace": faker.person(e["value"], g), "note": ""})
             toks = e["value"].split()
             tokens_added.add(norm_value(e["value"]))
-            for i, tok in enumerate(toks if len(toks) > 1 else []):
+            for tok, kind in zip(toks if len(toks) > 1 else [], faker.name_kinds(toks)):
                 clean = tok.strip(",.;:")
-                if len(clean) < 4 or clean.casefold() in _STOP or clean.casefold() in _PARTICLES:
+                if len(clean) < 4 or clean.casefold() in _STOP or kind == "particle":
                     continue
                 if norm_value(clean) in tokens_added:
                     continue
                 tokens_added.add(norm_value(clean))
                 active.append({"type": "PERSON", "value": clean, "count": 0, "files": set(), "pages": set(),
-                               "replace": faker.name_token(clean, "first" if i == 0 else "last"),
+                               "replace": faker.name_token(clean, kind, gender=g),
                                "note": f"part of '{e['value']}'"})
     shown = {norm_value(a["value"]) for a in active if a["type"] == "PERSON"}
     for e in persons:
         if norm_value(e["value"]) not in shown:
-            off.append({**e, "replace": faker.person(e["value"]), "note": "uncertain name - check it"})
+            off.append({**e, "replace": faker.person(e["value"], gender(e)), "note": "uncertain name - check it"})
 
+    numbers_added = {norm_value(e["value"]) for e in found.values() if e["type"] in SPLIT_TYPES}
     for e in found.values():
         t = e["type"]
         if t == "PERSON":
             continue
         if t in ACTIVE_TYPES:
             active.append({**e, "replace": faker.suggest(t, e["value"]), "note": ""})
+            groups = re.findall(r"\d+", e["value"]) if t in SPLIT_TYPES else []
+            for grp in groups if len(groups) > 1 else []:
+                # e.g. the 11-digit account inside '05871 00001234567 02', or the branch code '05871',
+                # so they are replaced (with the same digits) wherever they appear alone
+                if len(grp) < 5 or norm_value(grp) in numbers_added:
+                    continue
+                numbers_added.add(norm_value(grp))
+                active.append({"type": t, "value": grp, "count": 0, "files": set(), "pages": set(),
+                               "replace": faker.digit_groups(grp), "note": f"part of '{e['value']}'"})
         elif t == "DATE":
             row = {**e, "replace": faker.suggest(t, e["value"]), "note": "date of birth?" if e["birth"] else "date"}
             (active if e["birth"] else off).append(row)
@@ -242,7 +272,9 @@ def render_config(rel: str, pdfs: list[Path], active: list[dict], off: list[dict
         "case_sensitive: false",
         "match_case: true             # keep UPPER/lower case of the original text in the replacement",
         "style:",
-        "  mode: replace              # replace = white box + new text | blackbox = black box only",
+        "  mode: replace              # replace = new text in place | blackbox = black box only",
+        "  digital_fill: none         # digital PDFs: none = keep the page background | white = white rectangle",
+        "                             # (scans are always painted over with the sampled paper colour)",
         "",
         "replacements:",
     ]
@@ -283,25 +315,34 @@ def _adjust(cfg: dict, m) -> str:
 def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list]:
     doc = fitz.open(pdf)
     pc = pii_cfg(cfg)
-    blackbox = (cfg["style"] or {}).get("mode", "replace") == "blackbox"
-    fill = (0, 0, 0) if blackbox else (1, 1, 1)
+    blackbox = cfg["style"]["mode"] == "blackbox"
+    # False = no rectangle: the original text is removed and the page background stays visible
+    fill = (0, 0, 0) if blackbox else (1, 1, 1) if cfg["style"]["digital_fill"] == "white" else False
+    fonts = render.FontBook(doc)
     numberer, records, empty = Numberer(), [], []
     for pno, page in enumerate(doc, start=1):
         words = digital_words(page)
         if len(words) < 3:
             empty.append(pno)
         plan = plan_page(words, pc, [], numberer)
+        if not plan:
+            continue
+        spans = render.page_spans(page)            # read fonts before the text is removed
+        styles = [render.style_at(spans, boxes[0]) for _, boxes in plan]
+        limits = [render.free_right(words, boxes[0], page.rect.width) for _, boxes in plan]
         for m, boxes in plan:
             m.replacement = _adjust(cfg, m)
             for b in boxes:
                 page.add_redact_annot(fitz.Rect(b), fill=fill)
             records.append({"page": pno, "original": m.value, "replacement": m.replacement})
-        if plan:
-            render.apply_redactions(page)
-            if not blackbox:
-                for m, boxes in plan:
-                    if m.replacement:
-                        render.insert_replacement(page, boxes[0], m.replacement)
+        render.apply_redactions(page)
+        if not blackbox:
+            for (m, boxes), style, limit in zip(plan, styles, limits):
+                if m.replacement:
+                    render.insert_replacement(page, boxes[0], m.replacement, style, fonts, limit)
+    if fonts.used:
+        log("   fonts: " + ", ".join(f"{n} {k}" for k, n in sorted(fonts.used.items()))
+            + "  (embedded = same font as the PDF, system = same font from this PC, standard = closest PDF font)")
     for page in doc:
         for annot in list(page.annots() or []):
             page.delete_annot(annot)
@@ -321,7 +362,7 @@ def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list]:
 def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
     src, dst = fitz.open(pdf), fitz.open()
     pc = pii_cfg(cfg)
-    blackbox = (cfg["style"] or {}).get("mode", "replace") == "blackbox"
+    blackbox = cfg["style"]["mode"] == "blackbox"
     numberer, records = Numberer(), []
     for pno, page in enumerate(src, start=1):
         t0 = time.time()

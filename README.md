@@ -51,7 +51,7 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
    `name_anonymized.pdf` next to it (originals are never touched). Digital PDFs: the text is really removed.
    Scans: OCR, paint over, rebuild as images.
 5. Compare **Original** and **Anonymized** side by side (zoom with −/+ or Ctrl+wheel, both scroll together; untick
-   *Sync* to scroll them separately). Drag the bars between the panes to resize them. The **Recap** tab lists, per file, every replaced value
+   *Sync* to get the browser's own PDF viewer back, where text can be selected). Drag the bars between the panes to resize them. The **Recap** tab lists, per file, every replaced value
    (type, original → replacement, count, pages), the time taken, and any original value still found in the output.
    The **Log** tab shows the run.
 
@@ -68,6 +68,8 @@ replacements:
 * **Dates are off by default**, except dates that look like a birth date (next to "né le", "naissance", "geboren"…).
 * Detected organisations / places / uncertain names are listed commented out.
 * Optional `regex:` rules for your own patterns. `style.mode: blackbox` paints black boxes instead of text.
+* `style.digital_fill: none` (default) writes the new text on the page background; `white` puts a white rectangle
+  behind it (digital PDFs only; scans are always painted over with the paper colour).
 * `match_case: true` keeps UPPER / lower case of the original (`MARCHAND` → `BEAUMONT`).
 
 ## How the suggestions work
@@ -87,7 +89,9 @@ names of similar length, birth dates shift by a few days and years. Names are re
 * The "leftover" check only searches for the exact original values from the config. It cannot know about
   personal data that was never detected.
 * A PDF is treated as *digital* or *scan* as a whole (a mixed document gets a warning).
-* Replacement text is drawn in a standard font, so it looks slightly different from the original.
+* Digital PDFs: the replacement keeps the size, colour and baseline of the original, and its font when possible
+  (the font embedded in the PDF if it has the needed letters, else the same font installed on this PC, else the
+  closest standard font). The Log says which was used. Scans use a generic font.
 
 ## Privacy
 

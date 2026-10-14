@@ -40,11 +40,12 @@
         <button id="zoomOut" class="mini" title="Zoom out (Ctrl + wheel)">−</button>
         <button id="zoomFit" class="mini zoom-label" title="Fit page width">Fit</button>
         <button id="zoomIn" class="mini" title="Zoom in (Ctrl + wheel)">+</button>
-        <label class="chk" title="Scroll both PDFs together"><input type="checkbox" id="syncScroll" checked> Sync</label>
+        <label class="chk" title="Ticked: image view, both PDFs zoom and scroll together.&#10;Unticked: the browser's own PDF viewer (text can be selected, copied, searched)."><input type="checkbox" id="syncScroll" checked> Sync</label>
       </div>
     </div>
     <div id="origView" class="pane-body viewer">
       <div id="origPages" class="pages"></div>
+      <iframe id="origFrame" title="original pdf (browser viewer)"></iframe>
       <div id="origEmpty" class="empty">No file selected</div>
     </div>
   </section>
@@ -55,6 +56,7 @@
     <div class="pane-head"><span>Anonymized</span> <span id="anonName" class="muted"></span></div>
     <div id="anonView" class="pane-body viewer">
       <div id="anonPages" class="pages"></div>
+      <iframe id="anonFrame" title="anonymized pdf (browser viewer)"></iframe>
       <div id="anonEmpty" class="empty">Not generated yet</div>
     </div>
   </section>

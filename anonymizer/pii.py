@@ -102,6 +102,14 @@ def _v_group1(m):
     return m.start(1), m.end(1)
 
 
+def _v_labeled(m):
+    """Value after a label (group 1): at least 5 digits, not a placeholder."""
+    d = re.sub(r"\D", "", m.group(1))
+    if len(d) < 5 or d.count("0") >= len(d) - 1:
+        return None
+    return m.start(1), m.end(1)
+
+
 _HONORIFIC = (r"(?:M\.|Mme\.?|Mlle\.?|Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Monsieur|Madame|Mademoiselle|Docteur|"
               r"Ma\u00eetre|Heer|Mevrouw|Mevr\.?|Dhr\.?)")
 _UP = r"[A-Z\u00c0-\u00dd]"
@@ -149,6 +157,16 @@ DETECTORS = [
     ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET})[ ]+(?:(?i:de la|du|des|de l'|de|d')[ ]?)?{_CAP}{_WORD}+(?:[ ]{_NOT_UNIT}{_CAP}{_WORD}+)*,?[ ]+{_NR}"), None),
     # Belgian-style postcode + city: "9000 Gent", "B-1000 Bruxelles"
     ("POSTAL_CITY", re.compile(rf"(?<![\w/.\-])(?:B-|BE-|F-)?[1-9]\d{{3,4}}[ ]+{_CAP}[a-zà-ÿ'’]+(?:-{_CAP}?[a-zà-ÿ'’]+)*(?:[ ](?:sur|sous|en|lez|lès)[ ]{_CAP}[a-zà-ÿ'’\-]+)?"), _v_postal),
+    # value right after a label: "Code banque / guichet 30002 / 05871", "N° de compte : 123 ..." (label can be
+    # on the line before the value, as in two-column layouts)
+    ("BANK_CODE", re.compile(r"(?i:code\s+banque(?:\s*/\s*(?:code\s+)?guichet)?|code\s+guichet|banque\s*/\s*guichet|"
+                             r"cl[ée]\s+rib|bank\s*code|sort\s*code|bankcode)\s*[:\-]?\s*"
+                             r"(\d{2,}(?:[ ]?/[ ]?\d{2,}|[ ]\d{2,})*)(?![\w,])"), _v_labeled),
+    ("ACCOUNT_NUMBER", re.compile(r"(?i:num[ée]ro\s+de\s+compte|n[°o]\s*de\s+compte|compte\s+n[°o]|account\s+n(?:umber|o\.?)|"
+                                  r"rekeningnummer|rekening\s+nr\.?|num[ée]ro\s+client|n[°o]\s+client|klantnummer)"
+                                  r"\s*[:\-]?\s*(\d+(?:[ .\-]\d+){0,5})(?![\w,])"), _v_labeled),
+    # French RIB: [banque 5] guichet 5 / compte 11 / clé 2 (without label)
+    ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])(?:\d{5}[ ]?)?\d{5}[ ]?[0-9A-Z]{11}[ ]?\d{2}(?![\w,])"), _v_account),
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{3}-\d{7}-\d{2}(?!\w)"), _v_account),
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,])\d{9,16}(?!\w)"), _v_account),  # generic guess: long digit runs
     # Person names (heuristics; the config review step is where you confirm them)
