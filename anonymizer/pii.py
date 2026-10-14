@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Shared helpers for the PDF anonymization test kit. Everything runs locally.
+PII detection and text/box helpers. Everything runs locally.
 
 - word extraction (digital PDFs via PyMuPDF, scans via Tesseract OCR)
 - PII detectors (regex + checksum validators, optional spaCy NER for names)
@@ -36,25 +36,6 @@ class Match:
     replacement: str | None = None
 
 
-# Suggested replacements used for the auto-generated draft config.
-# "{n}" is replaced by a number that is stable per distinct value in a document.
-DEFAULT_REPLACEMENTS = {
-    "IBAN": "BE00 0000 0000 0000",
-    "BIC": "XXXXBEXX",
-    "EMAIL": "anonymous@example.com",
-    "PHONE": "+32 000 00 00 00",
-    "CREDIT_CARD": "0000 0000 0000 0000",
-    "BE_NATIONAL_NUMBER": "00.00.00-000.00",
-    "BE_VAT": "BE 0000.000.000",
-    "BE_STRUCTURED_COMM": "+++000/0000/00000+++",
-    "STREET_ADDRESS": "[ADDRESS]",
-    "POSTAL_CITY": "[POSTCODE CITY]",
-    "ACCOUNT_NUMBER": "[ACCOUNT]",
-    "DATE": "[DATE]",
-    "PERSON": "[PERSON_{n}]",
-    "LOCATION": "[LOCATION_{n}]",
-    "ORG": "[ORG_{n}]",
-}
 NER_TYPES = {"PERSON", "LOCATION", "ORG"}
 
 # --------------------------------------------------------------------------
@@ -320,15 +301,6 @@ def term_regex(term: str, case_sensitive: bool = False) -> re.Pattern:
     return re.compile(pre + body + post, 0 if case_sensitive else re.I)
 
 
-def load_config(path: str | None) -> dict:
-    if not path:
-        return {}
-    import yaml
-
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
-
-
 def config_terms(cfg: dict) -> dict[str, str]:
     return {str(k): ("" if v is None else str(v)) for k, v in (cfg.get("terms") or {}).items()}
 
@@ -364,18 +336,6 @@ def apply_config(text: str, cfg: dict, ner, numberer: Numberer) -> list[Match]:
     for m in ms:
         m.replacement = numberer.fmt(m.replacement or "", m.value)
     return ms
-
-
-def replacement_checker(cfg: dict):
-    """Return f(value)->True if `value` is one of our own replacement strings."""
-    reps = set(config_terms(cfg).values())
-    reps |= {str(r.get("replace", "")) for r in (cfg.get("regex") or [])}
-    reps |= {str(v) for v in (cfg.get("auto") or {}).values() if v}
-    rxs = []
-    for r in reps:
-        if r:
-            rxs.append(re.compile("^" + re.escape(r).replace(re.escape("{n}"), r"\d+") + "$"))
-    return lambda v: any(rx.match(v.strip()) for rx in rxs)
 
 
 # --------------------------------------------------------------------------
@@ -544,14 +504,3 @@ def plan_page(words, cfg, ner, numberer):
         if boxes:
             plan.append((m, boxes))
     return plan
-
-
-def expand_inputs(paths: list[str], skip_suffix: str = "_anonymized") -> list[Path]:
-    out = []
-    for p in paths:
-        pp = Path(p)
-        if pp.is_dir():
-            out += sorted(f for f in pp.glob("*.pdf") if not f.stem.endswith(skip_suffix))
-        else:
-            out.append(pp)
-    return out

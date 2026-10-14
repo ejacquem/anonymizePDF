@@ -3,12 +3,17 @@
 Local tool to anonymize PDFs **folder by folder** (one folder = one client = one shared config).
 Everything runs on your machine. Nothing is uploaded anywhere.
 
-* `app.py` – the web app (this README)
-* `1_detect.py … 4_anonymize_scan.py` – the original command-line scripts (still work, the app reuses them)
-* `pii_common.py` – detectors (IBAN, phone, e-mail, addresses, names…), OCR helpers
-* `anon_fake.py` – fake replacement values (same length, same format)
-* `anon_engine.py` – scan folder → draft config → anonymize → report
-* `sample_data/` – fake PDFs to try it on
+```
+app.py                   web app (Flask, 127.0.0.1 only)
+anonymizer/
+  engine.py              scan folder -> draft config -> anonymize -> verify -> report
+  pii.py                 detectors (IBAN, phone, e-mail, addresses, names...), OCR and text/box helpers
+  fake.py                fake replacement values (same length, same format)
+  render.py              drawing replacement text on digital pages and scanned images
+static/                  frontend (index.html, app.js, style.css)
+docs/                    config.example.yaml, PROJECT_CONTEXT.md
+sample_data/             fake PDFs to try it on
+```
 
 ## Install
 

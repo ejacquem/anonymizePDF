@@ -1,8 +1,10 @@
 # real personal data: never commit
 anon_config.yaml
 anon_report.json
-*_anonymized.pdf
 *.pdf
 !sample_data/**/*.pdf
+*_anonymized.pdf
+
 __pycache__/
 .venv/
+*.zip

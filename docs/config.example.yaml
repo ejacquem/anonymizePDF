@@ -1,0 +1,20 @@
+# Example anon_config.yaml (the app writes one per client folder when you press "Scan & draft config").
+# A real anon_config.yaml contains personal data: never commit it.
+
+ocr_lang: "fra+eng"          # Tesseract languages, used for scanned PDFs
+case_sensitive: false
+match_case: true             # keep UPPER/lower case of the original text in the replacement
+style:
+  mode: replace              # replace = white box + new text | blackbox = black box only
+
+replacements:
+  - {find: "Thomas Marchand", replace: "Alexis Beaumont", type: PERSON}
+  - {find: "Marchand", replace: "Beaumont", type: PERSON}
+  - {find: "06 12 34 56 78", replace: "06 26 43 15 49", type: PHONE}
+  - {find: "Acme Corp", replace: "Zeta Inc"}
+  # - {find: "30/09/2024", replace: "22/03/2025", type: DATE}   # commented = NOT replaced
+
+# Optional regex rules (applied after 'replacements'):
+regex:
+  - pattern: '\bREF-\d{6}\b'
+    replace: "REF-000000"

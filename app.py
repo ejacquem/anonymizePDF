@@ -19,8 +19,8 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
-import anon_engine as eng
-from pii_common import load_ner, tesseract_available
+from anonymizer import engine as eng
+from anonymizer.pii import load_ner, tesseract_available
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 STATE = {"root": None, "ocr_lang": "fra+eng", "spacy_models": None, "ner": None}
@@ -63,7 +63,7 @@ def info():
     models = []
     try:
         from spacy.util import is_package
-        from pii_common import _PREFERRED_MODELS
+        from anonymizer.pii import _PREFERRED_MODELS
         models = [m for m in _PREFERRED_MODELS if is_package(m)]
     except Exception:  # noqa: BLE001
         pass

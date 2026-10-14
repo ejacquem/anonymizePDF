@@ -9,7 +9,6 @@ Engine used by the web app (and usable from Python directly).
 from __future__ import annotations
 
 import datetime as dt
-import importlib
 import io
 import json
 import re
@@ -20,17 +19,14 @@ from pathlib import Path
 import yaml
 from PIL import ImageDraw
 
-from anon_fake import Faker, match_case
-from pii_common import (PERSON_RANKS, Numberer, _HONORIFIC, detect_all, digital_words, fitz, ocr_words, plan_page,
+from . import render
+from .fake import Faker, match_case
+from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, detect_all, digital_words, fitz, ocr_words, plan_page,
                         render_page, tesseract_available, term_regex, words_to_text, norm_value)
 
 CONFIG_NAME = "anon_config.yaml"
 REPORT_NAME = "anon_report.json"
 SUFFIX = "_anonymized"
-
-# the CLI scripts have names starting with a digit, so import them by string
-_dig = importlib.import_module("2_anonymize")        # insert_replacement(), apply_redactions()
-_scan = importlib.import_module("4_anonymize_scan")  # fit_font(), background_color()
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -63,7 +59,7 @@ def pdf_mode(doc) -> tuple[str, int]:
 
 
 def _first_names() -> set[str]:
-    from anon_fake import FIRST_NAMES
+    from .fake import FIRST_NAMES
     return {x.casefold() for x in FIRST_NAMES}
 
 
@@ -124,7 +120,7 @@ def parse_config(text: str) -> dict:
 
 
 def pii_cfg(cfg: dict) -> dict:
-    """The dict shape pii_common.apply_config() expects."""
+    """The dict shape pii.apply_config() expects."""
     return {"terms": cfg["terms"], "regex": cfg["regex"], "case_sensitive": cfg["case_sensitive"],
             "style": cfg["style"]}
 
@@ -301,11 +297,11 @@ def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list]:
                 page.add_redact_annot(fitz.Rect(b), fill=fill)
             records.append({"page": pno, "original": m.value, "replacement": m.replacement})
         if plan:
-            _dig.apply_redactions(page)
+            render.apply_redactions(page)
             if not blackbox:
                 for m, boxes in plan:
                     if m.replacement:
-                        _dig.insert_replacement(page, boxes[0], m.replacement)
+                        render.insert_replacement(page, boxes[0], m.replacement)
     for page in doc:
         for annot in list(page.annots() or []):
             page.delete_annot(annot)
@@ -338,10 +334,10 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
             m.replacement = _adjust(cfg, m)
             for i, b in enumerate(boxes):
                 box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
-                fill = (0, 0, 0) if blackbox else _scan.background_color(img, box)
+                fill = (0, 0, 0) if blackbox else render.background_color(img, box)
                 draw.rectangle(box, fill=fill)
                 if not blackbox and i == 0 and m.replacement:
-                    font = _scan.fit_font(m.replacement, box[2] - box[0], box[3] - box[1])
+                    font = render.fit_font(m.replacement, box[2] - box[0], box[3] - box[1])
                     lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
                     draw.text((box[0], (box[1] + box[3]) / 2), m.replacement, font=font, anchor="lm",
                               fill=(0, 0, 0) if lum > 128 else (255, 255, 255))

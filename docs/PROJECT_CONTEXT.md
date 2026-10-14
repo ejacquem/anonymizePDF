@@ -25,15 +25,18 @@ Anonymize about 50 PDFs, **fully local**, with a small web app.
 
 ```
 anonymizePDF/
-  app.py            Flask server: tree, pdf serving, config get/put, scan/anonymize jobs (thread + polling)
-  anon_engine.py    scan_folder(), parse_config(), run_anonymize(), verify_output(), summarize()
-  anon_fake.py      Faker: deterministic fake values (same length/format)
-  pii_common.py     detectors (regex + validators + person heuristics), spaCy NER, OCR helpers, matching/boxes
-  1_detect.py … 4_anonymize_scan.py   original CLI scripts (engine imports helpers from 2_ and 4_)
-  config.example.yaml, requirements.txt, README.md, .gitignore
-  static/index.html, app.js, style.css
-  sample_data/Client_Marchand/ (fake FR statement digital + scan + contract), Client_Autre/facture.pdf
+  app.py                 Flask server: tree, pdf serving, config get/put, scan/anonymize jobs (thread + polling)
+  anonymizer/
+    engine.py            scan_folder(), parse_config(), run_anonymize(), verify_output(), summarize()
+    pii.py               detectors (regex + validators + person heuristics), spaCy NER, OCR helpers, matching/boxes
+    fake.py              Faker: deterministic fake values (same length/format)
+    render.py            insert_replacement(), apply_redactions() (digital), fit_font(), background_color() (scan)
+  static/                index.html, app.js, style.css
+  docs/                  config.example.yaml, PROJECT_CONTEXT.md (this file)
+  sample_data/Dossier 0/ fake FR bank statement (digital + scan)
+  requirements.txt, README.md, .gitignore, .gitattributes
 ```
+The original numbered CLI scripts (`1_detect.py` ... `4_anonymize_scan.py`) were removed; their helpers live in `render.py`.
 
 Run: `python app.py --root <folder containing client folders>` then open http://127.0.0.1:5000.
 Options: `--port`, `--ocr-lang fra+eng`, `--spacy-model` (repeatable).
@@ -78,12 +81,12 @@ regex: []                 # optional: - {pattern: '...', replace: '...'}
 
 Types: IBAN (mod-97 checked), BIC, EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), BE national number, BE VAT, BE structured communication,
 STREET_ADDRESS (FR/NL/BE heuristics), POSTAL_CITY, ACCOUNT_NUMBER (long digit runs), DATE, PERSON, plus NER ORG/LOCATION.
-PERSON heuristics (in `pii_common.DETECTORS`): after a title (M., Mme, Dr, Mr…), `Prénom NOM`, `NOM Prénom`, plus spaCy PERSON.
+PERSON heuristics (in `anonymizer/pii.py` DETECTORS): after a title (M., Mme, Dr, Mr…), `Prénom NOM`, `NOM Prénom`, plus spaCy PERSON.
 `PERSON` is active by default only if: after a title, or contains a known first name, or spaCy found it in Title Case. Otherwise commented out.
 Individual name parts (≥4 letters) of accepted names are added as separate entries (so a lone `Marchand` is replaced too).
 NER runs line by line (page text split on newlines).
 
-## 9. Fake values (`anon_fake.py`)
+## 9. Fake values (`anonymizer/fake.py`)
 
 Deterministic (hash of salt+type+value), unique per run, same length where possible: names from FR/BE name lists by length (case style kept),
 phones keep format and first 2 digits, IBAN keeps country/grouping with valid checksum, BIC keeps country, emails keep common domains,
