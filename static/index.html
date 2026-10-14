@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Anonymizer</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>PDF Anonymizer</h1>
+  <span id="root" class="muted"></span>
+  <span id="env" class="env"></span>
+</header>
+
+<div id="toolbar">
+  <div id="folderInfo" class="muted">Select a folder in the tree (click a folder or a file).</div>
+  <div class="spacer"></div>
+  <label class="chk" title="Re-read the anonymized digital PDFs with OCR to look for leftovers (slower). Scanned PDFs are always OCR-checked.">
+    <input type="checkbox" id="ocrVerify"> OCR check for digital PDFs
+  </label>
+  <button id="btnScan" class="primary" disabled>1 · Scan &amp; draft config</button>
+  <button id="btnSave" disabled>Save config</button>
+  <button id="btnRun" class="primary" disabled>2 · Anonymize folder</button>
+  <span id="status" class="status"></span>
+</div>
+
+<main>
+  <section id="treePane" class="pane">
+    <div class="pane-head">Files <button id="btnRefresh" class="mini" title="Reload tree">⟳</button></div>
+    <div id="tree" class="pane-body"></div>
+  </section>
+
+  <section class="pane">
+    <div class="pane-head"><span>Original</span> <span id="origName" class="muted"></span></div>
+    <div class="pane-body viewer">
+      <iframe id="origFrame" title="original pdf"></iframe>
+      <div id="origEmpty" class="empty">No file selected</div>
+    </div>
+  </section>
+
+  <section class="pane">
+    <div class="pane-head"><span>Anonymized</span> <span id="anonName" class="muted"></span></div>
+    <div class="pane-body viewer">
+      <iframe id="anonFrame" title="anonymized pdf"></iframe>
+      <div id="anonEmpty" class="empty">Not generated yet</div>
+    </div>
+  </section>
+
+  <section id="sidePane" class="pane">
+    <div class="tabs">
+      <button class="tab active" data-tab="config">Config <span id="dirtyMark" class="dirty" hidden>●</span></button>
+      <button class="tab" data-tab="recap">Recap</button>
+      <button class="tab" data-tab="log">Log</button>
+    </div>
+    <div id="tab-config" class="tabbody">
+      <textarea id="configText" spellcheck="false" disabled
+        placeholder="No config for this folder yet.&#10;Click “1 · Scan &amp; draft config” to detect personal data and get suggested replacements."></textarea>
+      <div id="configMsg" class="muted small"></div>
+    </div>
+    <div id="tab-recap" class="tabbody" hidden></div>
+    <div id="tab-log" class="tabbody" hidden><pre id="logBox"></pre></div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

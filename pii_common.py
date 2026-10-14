@@ -8,6 +8,7 @@ Shared helpers for the PDF anonymization test kit. Everything runs locally.
 """
 from __future__ import annotations
 
+import difflib
 import re
 import shutil
 import sys
@@ -104,6 +105,8 @@ def _v_card(m):
 
 def _v_phone(m):
     digits = re.sub(r"\D", "", m.group())
+    if digits.startswith("000") or (digits.startswith("00") and len(digits) < 11):  # e.g. client numbers like 0048213976
+        return None
     if 9 <= len(digits) <= 15 and digits.count("0") < len(digits) - 3:  # skip placeholders like 000 00 00
         return m.start(), m.end()
     return None
@@ -113,6 +116,14 @@ def _v_account(m):
     d = re.sub(r"\D", "", m.group())
     return None if d.count("0") >= len(d) - 2 else (m.start(), m.end())  # ignore 000000000 placeholders
 
+
+def _v_group1(m):
+    return m.start(1), m.end(1)
+
+
+_HONORIFIC = (r"(?:M\.|Mme\.?|Mlle\.?|Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Monsieur|Madame|Mademoiselle|Docteur|"
+              r"Ma\u00eetre|Heer|Mevrouw|Mevr\.?|Dhr\.?)")
+_UP = r"[A-Z\u00c0-\u00dd]"
 
 _CITY_STOPLIST = {"euro", "eur", "euros", "keer", "maal", "fois", "times"}
 
@@ -130,7 +141,8 @@ _MONTHS = (
     "janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre|"
     "january|february|march|may|june|july|august"
 )
-_FR_STREET = "rue|avenue|boulevard|chaussée|chaussee|place|allée|allee|impasse|chemin|quai|square"
+_FR_STREET = "rue|avenue|boulevard|chaussée|chaussee|place|allée|allee|impasse|chemin|quai|square|cours|route|passage|villa"
+_NOT_UNIT = r"(?!(?i:appartement|appt|apt|bâtiment|batiment|bât|bat|étage|etage|escalier|bte|bp|résidence|residence)\b)"
 _NL_STREET = (
     "straat|laan|weg|steenweg|dreef|lei|baan|kaai|gracht|dijk|singel|plein|markt|hof|pad|park"
 )
@@ -148,16 +160,23 @@ DETECTORS = [
     ("DATE", re.compile(r"(?<!\d)(?:19|20)\d{2}-\d{2}-\d{2}(?!\d)"), None),
     ("DATE", re.compile(rf"(?<!\d)\d{{1,2}}(?:er)?\s+(?i:{_MONTHS})\s+(?:19|20)\d{{2}}"), None),
     ("PHONE", re.compile(r"(?<![\w+])(?:\+|00)\d{1,3}[ .\-/]?(?:\(0\)[ .\-/]?)?\d(?:[ .\-/]?\d){6,10}(?!\d)"), _v_phone),
-    ("PHONE", re.compile(r"(?<![\w+])0\d{1,3}(?:[ .\-/]?\d{2,3}){2,3}(?!\d)"), _v_phone),
+    ("PHONE", re.compile(r"(?<![\w+])0[1-9]\d{0,2}(?:[ .\-/]?\d{2,3}){2,4}(?!\d)"), _v_phone),
     # Street addresses (heuristic): "Kerkstraat 12", "Grote Markt 5", "Rue de la Loi 16"
-    ("STREET_ADDRESS", re.compile(rf"(?<!\w){_CAP}{_WORD}*?(?i:{_NL_STREET})\s+{_NR}"), None),
-    ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?:{_CAP}{_WORD}+\s){{1,2}}(?:Markt|Plein|Kaai|Dreef|Laan)\s+{_NR}"), None),
-    ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET})\s+(?:(?i:de la|du|des|de l'|de|d')\s?)?{_CAP}{_WORD}+(?:\s{_CAP}{_WORD}+)*,?\s+{_NR}"), None),
+    ("STREET_ADDRESS", re.compile(rf"(?<!\w){_CAP}{_WORD}*?(?i:{_NL_STREET})[ ]+{_NR}"), None),
+    ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?:{_CAP}{_WORD}+[ ]){{1,2}}(?:Markt|Plein|Kaai|Dreef|Laan)[ ]+{_NR}"), None),
+    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])\d{{1,4}}(?:[ ]?(?i:bis|ter))?,?[ ]+(?i:{_FR_STREET})[ ]+(?:(?i:de la|du|des|de l'|de|d')[ ]?)?[\wÀ-ÿ'’\-]+(?:[ ]{_NOT_UNIT}{_CAP}{_WORD}+)*"), None),
+    ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET})[ ]+(?:(?i:de la|du|des|de l'|de|d')[ ]?)?{_CAP}{_WORD}+(?:[ ]{_NOT_UNIT}{_CAP}{_WORD}+)*,?[ ]+{_NR}"), None),
     # Belgian-style postcode + city: "9000 Gent", "B-1000 Bruxelles"
-    ("POSTAL_CITY", re.compile(rf"(?<![\d\w])(?:B-|BE-)?[1-9]\d{{3}}\s+{_CAP}[a-zà-ÿ'’\-]+(?:[ \-]{_CAP}[a-zà-ÿ'’\-]+){{0,2}}"), _v_postal),
+    ("POSTAL_CITY", re.compile(rf"(?<![\w/.\-])(?:B-|BE-|F-)?[1-9]\d{{3,4}}[ ]+{_CAP}[a-zà-ÿ'’]+(?:-{_CAP}?[a-zà-ÿ'’]+)*(?:[ ](?:sur|sous|en|lez|lès)[ ]{_CAP}[a-zà-ÿ'’\-]+)?"), _v_postal),
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{3}-\d{7}-\d{2}(?!\w)"), _v_account),
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,])\d{9,16}(?!\w)"), _v_account),  # generic guess: long digit runs
+    # Person names (heuristics; the config review step is where you confirm them)
+    ("PERSON", re.compile(rf"(?<!\w){_HONORIFIC}[ ]+({_CAP}{_WORD}+(?:[ ]{_CAP}{_WORD}+){{0,2}})"), _v_group1),
+    ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_CAP}[a-z\u00e0-\u00ff'\u2019\-]+(?:[ ]{_CAP}[a-z\u00e0-\u00ff'\u2019\-]+)?[ ]+{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+)(?!\w)"), _v_group1),  # Prenom NOM
+    ("PERSON", re.compile(rf"(?<!\w)({_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+[ ]+{_CAP}[a-z\u00e0-\u00ff'\u2019\-]+)(?!\w)"), _v_group1),  # NOM Prenom
 ]
+# ranks of the PERSON heuristics, in order: honorific (M. Dupont), 'Prenom NOM', 'NOM Prenom'
+PERSON_RANKS = [i for i, (t, _, _) in enumerate(DETECTORS) if t == "PERSON"]
 STRUCTURED_TYPES = list(dict.fromkeys(t for t, _, _ in DETECTORS))
 
 
@@ -374,7 +393,21 @@ def digital_words(page) -> list[dict]:
 
 
 def tesseract_available() -> bool:
-    return shutil.which("tesseract") is not None
+    """True if Tesseract can be found: TESSERACT_CMD env var, PATH, or the default Windows install folder."""
+    import os
+
+    candidates = [os.environ.get("TESSERACT_CMD"), shutil.which("tesseract"),
+                  r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                  r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"]
+    for c in candidates:
+        if c and Path(c).exists():
+            try:
+                import pytesseract
+                pytesseract.pytesseract.tesseract_cmd = str(c)
+            except ImportError:
+                pass
+            return True
+    return False
 
 
 def render_page(page, dpi: int = 300):
@@ -384,11 +417,11 @@ def render_page(page, dpi: int = 300):
     return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
 
 
-def ocr_words(img, lang: str = "eng", min_conf: float = 0) -> list[dict]:
-    """Words from Tesseract OCR. Boxes are in image pixels."""
+def _tess_words(img, lang, psm, min_conf, tag):
     import pytesseract
 
-    d = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
+    cfg = f"--psm {psm}" if psm else ""
+    d = pytesseract.image_to_data(img, lang=lang, config=cfg, output_type=pytesseract.Output.DICT)
     words = []
     for i, t in enumerate(d["text"]):
         t = t.strip()
@@ -401,9 +434,65 @@ def ocr_words(img, lang: str = "eng", min_conf: float = 0) -> list[dict]:
         if conf < min_conf:
             continue
         x, y, w, h = d["left"][i], d["top"][i], d["width"][i], d["height"][i]
-        words.append({"text": t, "box": (x, y, x + w, y + h),
-                      "line": (d["block_num"][i], d["par_num"][i], d["line_num"][i]), "conf": conf})
+        words.append({"text": t, "box": (x, y, x + w, y + h), "conf": conf,
+                      "line": (tag, d["block_num"][i], d["par_num"][i], d["line_num"][i])})
     return words
+
+
+def ocr_words(img, lang: str = "eng", min_conf: float = 0, second_pass: bool = True) -> list[dict]:
+    """Words from Tesseract OCR (boxes in image pixels).
+
+    Tesseract's default layout analysis (psm 3) sometimes skips or garbles text inside
+    boxes / side columns. With second_pass=True a second run in 'uniform block' mode
+    (psm 6) is made, and for every line it reads better (higher mean confidence, or text
+    the first pass missed entirely) the first-pass words are replaced by the second-pass line."""
+    words = _tess_words(img, lang, None, min_conf, "a")
+    if not second_pass:
+        return words
+    pass2 = _tess_words(img, lang, 6, min_conf, "b")
+
+    # psm 6 reads straight across columns: cut each line wherever there is a wide horizontal gap
+    raw: dict = {}
+    for w in pass2:
+        raw.setdefault(w["line"], []).append(w)
+    lines: dict = {}
+    for key, lw in raw.items():
+        lw.sort(key=lambda w: w["box"][0])
+        height = max(w["box"][3] - w["box"][1] for w in lw)
+        seg = 0
+        for prev, w in zip([None] + lw[:-1], lw):
+            if prev is not None and w["box"][0] - prev["box"][2] > 1.2 * height:
+                seg += 1
+            w["line"] = key + (seg,)
+            lines.setdefault(w["line"], []).append(w)
+
+    def center_in(w, box, m=3):
+        cx, cy = (w["box"][0] + w["box"][2]) / 2, (w["box"][1] + w["box"][3]) / 2
+        return box[0] - m <= cx <= box[2] + m and box[1] - m <= cy <= box[3] + m
+
+    drop, added = set(), []
+    for lw in lines.values():
+        bbox = (min(w["box"][0] for w in lw), min(w["box"][1] for w in lw),
+                max(w["box"][2] for w in lw), max(w["box"][3] for w in lw))
+        overlapped = [i for i, w in enumerate(words) if i not in drop and center_in(w, bbox)]
+        if not overlapped:
+            added += lw                                   # text pass 1 did not see at all
+            continue
+        m1 = sum(words[i]["conf"] for i in overlapped) / len(overlapped)
+        m2 = sum(w["conf"] for w in lw) / len(lw)
+        if m1 < 80 and m2 > m1 + 10:                      # pass 1 read this area badly (garbage)
+            drop.update(overlapped)
+            added += lw
+        elif m2 >= 60:
+            # both passes are "confident" but may disagree (e.g. words split differently):
+            # keep both readings so a detector can match on either one
+            def squash(ws):
+                return re.sub(r"\W", "", "".join(w["text"] for w in ws).casefold())
+            a = squash(sorted((words[i] for i in overlapped), key=lambda w: (w["box"][1] // 15, w["box"][0])))
+            b = squash(sorted(lw, key=lambda w: w["box"][0]))
+            if difflib.SequenceMatcher(None, a, b).ratio() < 0.98:
+                added += lw
+    return [w for i, w in enumerate(words) if i not in drop] + added
 
 
 def words_to_text(words: list[dict]):
