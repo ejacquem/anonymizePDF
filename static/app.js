@@ -87,19 +87,208 @@ function renderNode(node, parent, depth) {
 }
 
 // ---------- viewers ----------
-function setViewer(which, path) {
-  const frame = $(`#${which}Frame`), empty = $(`#${which}Empty`), name = $(`#${which}Name`);
-  if (path) {
-    frame.src = `/api/pdf?path=${encodeURIComponent(path)}&t=${Date.now()}`;
-    frame.style.display = "block";
-    empty.style.display = "none";
-    name.textContent = baseName(path);
-  } else {
-    frame.removeAttribute("src");
-    frame.style.display = "none";
-    empty.style.display = "flex";
-    name.textContent = "";
+// Pages are rendered to PNG by the server (/api/page), so zoom and scroll are ours to control and sync.
+const PT_TO_PX = 96 / 72;                 // 100 % = PDF points shown at CSS 96 dpi
+const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
+const zoom = { scale: 1, fit: true };
+const viewers = {
+  orig: { path: null, pages: [], box: $("#origView"), list: $("#origPages"), stamp: 0 },
+  anon: { path: null, pages: [], box: $("#anonView"), list: $("#anonPages"), stamp: 0 },
+};
+const VIEWERS = ["orig", "anon"];
+let pageObserver = null;
+let scrollLock = false;
+
+function other(which) { return which === "orig" ? "anon" : "orig"; }
+
+function renderScale() {
+  // image pixels per PDF point, rounded so small zoom changes reuse the same images
+  const s = zoom.scale * PT_TO_PX * (window.devicePixelRatio || 1);
+  return Math.min(8, Math.max(0.5, Math.ceil(s * 4) / 4));
+}
+
+function loadPageImage(el) {
+  const v = viewers[el.dataset.viewer];
+  if (!v.path) return;
+  const src = `/api/page?path=${encodeURIComponent(v.path)}&page=${el.dataset.page}&scale=${renderScale()}&t=${v.stamp}`;
+  if (el.dataset.src === src) return;
+  el.dataset.src = src;
+  let img = el.querySelector("img");
+  if (!img) {
+    img = document.createElement("img");
+    img.alt = "";
+    img.onerror = () => el.classList.add("failed");
+    img.onload = () => el.classList.remove("failed");
+    el.prepend(img);
   }
+  img.src = src;
+}
+
+function makeObserver() {
+  if (!("IntersectionObserver" in window)) return null;
+  return new IntersectionObserver((entries) => {
+    entries.forEach((e) => { if (e.isIntersecting) loadPageImage(e.target); });
+  }, { rootMargin: "600px 0px" });
+}
+
+function sizePages(which) {
+  const v = viewers[which];
+  const k = zoom.scale * PT_TO_PX;
+  [...v.list.children].forEach((el, i) => {
+    el.style.width = v.pages[i].w * k + "px";
+    el.style.height = v.pages[i].h * k + "px";
+  });
+}
+
+function refreshVisibleImages() {
+  // after a zoom: reload what is on (or near) the screen, the observer handles the rest when scrolled to
+  for (const which of VIEWERS) {
+    const v = viewers[which];
+    const view = v.box.getBoundingClientRect();
+    [...v.list.children].forEach((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > view.top - 600 && r.top < view.bottom + 600) loadPageImage(el);
+      else delete el.dataset.src;
+    });
+  }
+}
+
+async function setViewer(which, path) {
+  const v = viewers[which];
+  const empty = $(`#${which}Empty`), name = $(`#${which}Name`);
+  v.path = path || null;
+  v.pages = [];
+  v.stamp = Date.now();
+  v.list.innerHTML = "";
+  v.box.scrollTop = 0;
+  v.box.scrollLeft = 0;
+  name.textContent = path ? baseName(path) : "";
+  empty.style.display = path ? "none" : "flex";
+  if (!path) return;
+  let info;
+  try {
+    info = await api(`/api/pdfinfo?path=${encodeURIComponent(path)}`);
+  } catch (e) {
+    if (v.path !== path) return;
+    empty.textContent = "Cannot open this PDF: " + e.message;
+    empty.style.display = "flex";
+    return;
+  }
+  if (v.path !== path) return;      // another file was opened meanwhile
+  v.pages = info.pages;
+  if (!pageObserver) pageObserver = makeObserver();
+  info.pages.forEach((pg, i) => {
+    const el = document.createElement("div");
+    el.className = "page";
+    el.dataset.viewer = which;
+    el.dataset.page = i + 1;
+    el.innerHTML = `<span class="pno">${i + 1}</span>`;
+    v.list.appendChild(el);
+    if (pageObserver) pageObserver.observe(el); else loadPageImage(el);
+  });
+  if (zoom.fit) applyFit(); else sizePages(which);
+  syncScroll(other(which));
+}
+
+// ----- zoom (always shared by both viewers) -----
+function updateZoomLabel() {
+  const pct = Math.round(zoom.scale * 100) + "%";
+  $("#zoomFit").textContent = zoom.fit ? "Fit" : pct;
+  $("#zoomFit").title = zoom.fit ? `Fit page width (${pct})` : "Fit page width";
+}
+
+function setZoom(scale, anchor) {
+  scale = Math.min(4, Math.max(0.25, scale));
+  const k = scale / zoom.scale;
+  zoom.scale = scale;
+  // keep the point under the cursor (or the centre) where it is
+  const keep = {};
+  for (const which of VIEWERS) {
+    const b = viewers[which].box;
+    const ax = anchor && anchor.which === which ? anchor.x : b.clientWidth / 2;
+    const ay = anchor && anchor.which === which ? anchor.y : b.clientHeight / 2;
+    keep[which] = { x: (b.scrollLeft + ax) * k - ax, y: (b.scrollTop + ay) * k - ay };
+  }
+  VIEWERS.forEach(sizePages);
+  scrollLock = true;
+  for (const which of VIEWERS) {
+    viewers[which].box.scrollLeft = keep[which].x;
+    viewers[which].box.scrollTop = keep[which].y;
+  }
+  if (anchor) syncScroll(anchor.which);
+  requestAnimationFrame(() => { scrollLock = false; });
+  updateZoomLabel();
+  clearTimeout(setZoom.timer);
+  setZoom.timer = setTimeout(refreshVisibleImages, 200);
+}
+
+function fitScale() {
+  // the widest page must fit in the narrower of the two viewers
+  let best = null;
+  for (const which of VIEWERS) {
+    const v = viewers[which];
+    if (!v.pages.length) continue;
+    const maxW = Math.max(...v.pages.map((p) => p.w));
+    const s = (v.box.clientWidth - 22) / (maxW * PT_TO_PX);   // 22 = .pages padding + shadow
+    best = best === null ? s : Math.min(best, s);
+  }
+  return best;
+}
+
+function applyFit() {
+  const s = fitScale();
+  if (s !== null && Math.abs(s - zoom.scale) > 0.001) setZoom(s);
+  else { VIEWERS.forEach(sizePages); updateZoomLabel(); }
+}
+
+function stepZoom(dir, anchor) {
+  zoom.fit = false;
+  const cur = zoom.scale;
+  const next = dir > 0
+    ? ZOOM_STEPS.find((z) => z > cur + 0.001)
+    : [...ZOOM_STEPS].reverse().find((z) => z < cur - 0.001);
+  setZoom(next ?? cur, anchor);
+}
+
+$("#zoomIn").onclick = () => stepZoom(1);
+$("#zoomOut").onclick = () => stepZoom(-1);
+$("#zoomFit").onclick = () => { zoom.fit = true; applyFit(); };
+
+// ----- scroll sync -----
+function syncScroll(fromWhich) {
+  if (!$("#syncScroll").checked) return;
+  const sv = viewers[fromWhich], dv = viewers[other(fromWhich)];
+  if (!sv.pages.length || !dv.pages.length) return;
+  // map by page: same page, same relative position inside it (works even if page sizes differ)
+  const src = sv.box, dst = dv.box;
+  const sp = sv.list.children, dp = dv.list.children;
+  const y = src.scrollTop;
+  let i = 0;
+  while (i < sp.length - 1 && sp[i + 1].offsetTop <= y) i++;
+  const frac = sp[i].offsetHeight ? (y - sp[i].offsetTop) / sp[i].offsetHeight : 0;
+  const t = dp[Math.min(i, dp.length - 1)];
+  const sx = src.scrollWidth - src.clientWidth, dx = dst.scrollWidth - dst.clientWidth;
+  scrollLock = true;
+  dst.scrollTop = t.offsetTop + frac * t.offsetHeight;
+  dst.scrollLeft = sx > 0 ? (src.scrollLeft / sx) * dx : 0;
+  requestAnimationFrame(() => { scrollLock = false; });
+}
+
+for (const which of VIEWERS) {
+  const box = viewers[which].box;
+  box.addEventListener("scroll", () => { if (!scrollLock) syncScroll(which); });
+  box.addEventListener("wheel", (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    const r = box.getBoundingClientRect();
+    stepZoom(e.deltaY < 0 ? 1 : -1, { which, x: e.clientX - r.left, y: e.clientY - r.top });
+  }, { passive: false });
+}
+$("#syncScroll").addEventListener("change", () => syncScroll("orig"));
+
+if ("ResizeObserver" in window) {
+  const ro = new ResizeObserver(() => { if (zoom.fit) applyFit(); });
+  VIEWERS.forEach((w) => ro.observe(viewers[w].box));
 }
 
 async function openFile(path) {
@@ -301,13 +490,70 @@ function renderRecap() {
   });
 }
 
+// ---------- resizable panes ----------
+const LAYOUT_KEY = "anonymizePDF.layout";
+const LAYOUT_DEFAULT = { tree: 260, side: 440, orig: 0.5 };
+const layout = { ...LAYOUT_DEFAULT };
+try { Object.assign(layout, JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}")); } catch (e) { /* no storage */ }
+
+function applyLayout() {
+  const m = $("main");
+  const total = m.clientWidth - 16 - 3 * 8;            // main padding + 3 splitters
+  const minPdf = 250 + 160;                              // min widths of the two PDF panes
+  layout.tree = Math.round(Math.min(Math.max(layout.tree, 140), Math.max(140, total - layout.side - minPdf)));
+  layout.side = Math.round(Math.min(Math.max(layout.side, 260), Math.max(260, total - layout.tree - minPdf)));
+  layout.orig = Math.min(Math.max(layout.orig, 0.1), 0.9);
+  m.style.setProperty("--w-tree", layout.tree + "px");
+  m.style.setProperty("--w-side", layout.side + "px");
+  m.style.setProperty("--r-orig", layout.orig);
+  m.style.setProperty("--r-anon", 1 - layout.orig);
+}
+
+function saveLayout() {
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch (e) { /* no storage */ }
+}
+
+document.querySelectorAll(".splitter").forEach((bar) => {
+  const key = { tree: "tree", side: "side", pdf: "orig" }[bar.dataset.split];
+  bar.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    bar.classList.add("dragging");
+    document.body.classList.add("resizing");
+    const x0 = e.clientX, start = layout[key];
+    const pdfWidth = $("#origPane").offsetWidth + $("#anonPane").offsetWidth;
+    const move = (ev) => {
+      const dx = ev.clientX - x0;
+      layout[key] = key === "tree" ? start + dx : key === "side" ? start - dx : start + dx / pdfWidth;
+      applyLayout();
+    };
+    const up = () => {
+      bar.classList.remove("dragging");
+      document.body.classList.remove("resizing");
+      bar.removeEventListener("pointermove", move);
+      bar.removeEventListener("pointerup", up);
+      bar.removeEventListener("pointercancel", up);
+      saveLayout();
+    };
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", up);
+    bar.addEventListener("pointercancel", up);
+  });
+  bar.addEventListener("dblclick", () => { layout[key] = LAYOUT_DEFAULT[key]; applyLayout(); saveLayout(); });
+});
+window.addEventListener("resize", applyLayout);
+applyLayout();
+updateZoomLabel();
+
 // ---------- init ----------
 async function init() {
   try {
     const info = await api("/api/info");
     $("#root").textContent = info.root;
     $("#env").innerHTML =
-      `<span class="${info.ocr ? "ok" : "bad"}">OCR ${info.ocr ? "ready (" + esc(info.ocr_lang) + ")" : "missing (scans won't work)"}</span> · ` +
+      (info.ocr
+        ? `<span class="ok">OCR ready (${esc(info.ocr_lang)})</span> · `
+        : `<span class="bad" title="The Tesseract program is not installed (pip install tesseract does NOT install it).&#10;Windows: winget install UB-Mannheim.TesseractOCR, then restart app.py.&#10;Or set TESSERACT_CMD to the full path of tesseract.exe.">OCR missing: install the Tesseract program (hover for help)</span> · `) +
       `<span class="${info.spacy_models.length ? "ok" : "bad"}">names model: ${info.spacy_models.length ? esc(info.spacy_models.join(", ")) : "none (rules only)"}</span>`;
     await loadTree();
     renderRecap();

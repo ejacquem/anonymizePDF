@@ -19,7 +19,8 @@ Anonymize about 50 PDFs, **fully local**, with a small web app.
 - Uncertain detections (single names, ORG, LOCATION, non-birth dates) are generated **commented out** in the config.
 - Server listens on 127.0.0.1 only and is confined to `--root` (path traversal returns 403).
 - Digital vs scan is decided **per file**, not per page (mixed documents get a warning).
-- PDF viewer = the browser's built-in viewer in an `<iframe>` (no PDF.js, to keep the scope small).
+- PDF viewer = our own: the server renders pages to PNG with PyMuPDF (`/api/page`), the page shows them in a scrollable column.
+  No iframe (its zoom/scroll can't be read or synced) and no PDF.js (no new dependency).
 
 ## 3. Layout
 
@@ -44,6 +45,8 @@ Options: `--port`, `--ocr-lang fra+eng`, `--spacy-model` (repeatable).
 ## 4. UI (left to right)
 
 Directory tree | Original PDF | Anonymized PDF | right panel with tabs **Config / Recap / Log**.
+The 3 bars between panes are draggable (double-click resets); widths are saved in localStorage.
+Viewer: zoom shared by both PDFs (−/+, Fit = fit width, Ctrl+wheel), scroll synced page by page ("Sync" checkbox).
 Toolbar: **1 · Scan & draft config**, **Save config** (Ctrl+S), **2 · Anonymize folder**, checkbox "OCR check for digital PDFs".
 Clicking a folder (or a file in it) selects the **working folder**. Tree badges: `N pdf`, `cfg`, `done`.
 
@@ -60,7 +63,7 @@ Clicking a folder (or a file in it) selects the **working folder**. Tree badges:
 
 ## 6. API (Flask)
 
-`GET /api/info`, `GET /api/tree`, `GET /api/pdf?path=`, `GET|PUT /api/config?folder=`, `GET /api/report?folder=`,
+`GET /api/info`, `GET /api/tree`, `GET /api/pdf?path=`, `GET /api/pdfinfo?path=` (page sizes), `GET /api/page?path=&page=&scale=` (PNG), `GET|PUT /api/config?folder=`, `GET /api/report?folder=`,
 `POST /api/scan`, `POST /api/anonymize` (return a job id), `GET /api/job/<id>?since=N`.
 
 ## 7. Config format (`anon_config.yaml`, one per folder)
@@ -110,7 +113,7 @@ This fixed text inside bordered boxes that psm 3 garbled.
 - The leftover check only searches for values present in the config.
 - Mixed digital/scan PDFs are processed as one mode per file.
 - Replacement text uses a standard font; gender of names is ignored.
-- Ideas: review table with checkboxes instead of raw YAML, click-to-add selected text from the viewer, highlights on the original (PDF.js),
+- Ideas: review table with checkboxes instead of raw YAML, click-to-add selected text from the viewer, highlights on the original,
   hybrid per-page mode, global mapping file across folders, batch status view, nl_core_news_md for Dutch.
 
 ## 13. Environment notes (Windows / Git Bash)
@@ -119,7 +122,8 @@ This fixed text inside bordered boxes that psm 3 garbled.
 - Use `python -m pip …` if `pip` is not found.
 - **Use Python 3.12 or 3.13** (`py -3.12 -m venv .venv`). Python 3.15 has no prebuilt wheels for spaCy/PyYAML and tries to compile.
 - Install: `python -m pip install -r requirements.txt` then `python -m spacy download fr_core_news_md`.
-- Tesseract (scans only): Windows installer with `fra`/`nld`/`eng`; auto-detected in `C:\Program Files\Tesseract-OCR`, else set `TESSERACT_CMD`; set `TESSDATA_PREFIX` if languages are missing.
+- Tesseract (scans only): Windows installer with `fra`/`nld`/`eng`; auto-detected in `C:\Program Files\Tesseract-OCR` or `%LOCALAPPDATA%\Programs\Tesseract-OCR`, else set `TESSERACT_CMD`;
+  `pip install tesseract` / `pytesseract` do NOT install the program (`winget install UB-Mannheim.TesseractOCR` does); set `TESSDATA_PREFIX` if languages are missing.
 - `static/` must contain `index.html`, `app.js`, `style.css` (a 404 on `/` means they are not there; `app.py` now warns about it).
 
 ## 14. Rules to keep

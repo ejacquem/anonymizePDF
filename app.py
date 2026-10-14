@@ -20,7 +20,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from anonymizer import engine as eng
-from anonymizer.pii import load_ner, tesseract_available
+from anonymizer.pii import fitz, load_ner, tesseract_available
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 STATE = {"root": None, "ocr_lang": "fra+eng", "spacy_models": None, "ner": None}
@@ -103,18 +103,65 @@ def tree():
     return jsonify(build_tree(STATE["root"]))
 
 
+def pdf_arg() -> Path:
+    p = safe(request.args.get("path", ""))
+    if not p.is_file() or p.suffix.lower() != ".pdf":
+        raise FileNotFoundError("not found")
+    return p
+
+
 @app.get("/api/pdf")
 def pdf():
     try:
-        p = safe(request.args.get("path", ""))
+        p = pdf_arg()
     except PermissionError:
         return bad("forbidden", 403)
-    if not p.is_file() or p.suffix.lower() != ".pdf":
+    except FileNotFoundError:
         return bad("not found", 404)
     resp = send_file(p, mimetype="application/pdf", conditional=True, download_name=p.name)
     resp.headers["Content-Disposition"] = f'inline; filename="{p.name}"'
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+@app.get("/api/pdfinfo")
+def pdfinfo():
+    """Page sizes in PDF points, so the viewer can lay out every page before the images load."""
+    try:
+        p = pdf_arg()
+    except PermissionError:
+        return bad("forbidden", 403)
+    except FileNotFoundError:
+        return bad("not found", 404)
+    with fitz.open(p) as doc:
+        pages = [{"w": round(pg.rect.width, 2), "h": round(pg.rect.height, 2)} for pg in doc]
+    return jsonify({"pages": pages})
+
+
+MAX_PAGE_PIXELS = 24_000_000
+
+
+@app.get("/api/page")
+def page_png():
+    """One page rendered to PNG. `scale` = output pixels per PDF point."""
+    try:
+        p = pdf_arg()
+        n = int(request.args.get("page", "1"))
+        scale = min(max(float(request.args.get("scale", "2")), 0.25), 8.0)
+    except PermissionError:
+        return bad("forbidden", 403)
+    except FileNotFoundError:
+        return bad("not found", 404)
+    except ValueError:
+        return bad("bad page or scale")
+    with fitz.open(p) as doc:
+        if not 1 <= n <= doc.page_count:
+            return bad("page out of range", 404)
+        page = doc[n - 1]
+        area = page.rect.width * page.rect.height
+        scale = min(scale, (MAX_PAGE_PIXELS / max(area, 1)) ** 0.5)
+        png = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False).tobytes("png")
+    return Response(png, mimetype="image/png", headers={"Cache-Control": "no-store"})
 
 
 def folder_arg(src) -> Path:

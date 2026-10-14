@@ -353,12 +353,17 @@ def digital_words(page) -> list[dict]:
 
 
 def tesseract_available() -> bool:
-    """True if Tesseract can be found: TESSERACT_CMD env var, PATH, or the default Windows install folder."""
+    """True if the Tesseract program can be found: TESSERACT_CMD env var, PATH, or the usual Windows install folders.
+
+    The pip packages (pytesseract, tesseract) do NOT contain the program itself.
+    """
     import os
 
+    local = os.environ.get("LOCALAPPDATA")
     candidates = [os.environ.get("TESSERACT_CMD"), shutil.which("tesseract"),
                   r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-                  r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"]
+                  r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+                  local and str(Path(local) / "Programs" / "Tesseract-OCR" / "tesseract.exe")]
     for c in candidates:
         if c and Path(c).exists():
             try:

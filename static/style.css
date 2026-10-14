@@ -1,13 +1,13 @@
 :root {
   --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #dde1e8;
   --accent: #2b59c3; --accent-text: #ffffff; --sel: #e4ecfb; --ok: #1f8a4c; --warn: #b7791f; --bad: #c0392b;
-  --code-bg: #fbfbfd;
+  --code-bg: #fbfbfd; --viewer-bg: #9aa0aa;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #14171d; --panel: #1c2028; --text: #e6e9ef; --muted: #8e97aa; --line: #2d3340;
     --accent: #5b86e5; --accent-text: #0e1320; --sel: #26324d; --ok: #4cc27f; --warn: #e0a84b; --bad: #ef7a6c;
-    --code-bg: #171a21;
+    --code-bg: #171a21; --viewer-bg: #0d0f13;
   }
 }
 * { box-sizing: border-box; }
@@ -35,16 +35,36 @@ button.save-needed { border-color: var(--warn); box-shadow: 0 0 0 2px color-mix(
 .status { font-size: 12px; min-width: 120px; }
 .status.busy { color: var(--warn); } .status.ok { color: var(--ok); } .status.err { color: var(--bad); }
 
-main { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px 1fr 1fr 440px; gap: 8px; padding: 8px; }
+main { flex: 1; min-height: 0; display: flex; padding: 8px;
+  --w-tree: 260px; --w-side: 440px; --r-orig: 1; --r-anon: 1; }
+#treePane { flex: 0 0 var(--w-tree); }
+#sidePane { flex: 0 0 var(--w-side); }
+#origPane { flex: var(--r-orig) 1 0; min-width: 250px; }
+#anonPane { flex: var(--r-anon) 1 0; min-width: 160px; }
+
+/* draggable bars between panes */
+.splitter { flex: 0 0 8px; cursor: col-resize; position: relative; touch-action: none; }
+.splitter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; border-radius: 1px;
+  background: transparent; transition: background .15s; }
+.splitter:hover::after, .splitter.dragging::after { background: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
 .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: flex;
   flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .pane-head { padding: 6px 10px; border-bottom: 1px solid var(--line); font-weight: 600; display: flex; gap: 8px;
   align-items: center; white-space: nowrap; overflow: hidden; }
-.pane-head .muted { font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+.pane-head .muted { font-weight: 400; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pane-head .mini { margin-left: auto; }
 .pane-body { flex: 1; min-height: 0; overflow: auto; }
-.viewer { position: relative; overflow: hidden; }
-.viewer iframe { width: 100%; height: 100%; border: 0; display: none; background: #888; }
+.viewer { position: relative; overflow: auto; background: var(--viewer-bg); }
+.pages { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px; width: max-content;
+  min-width: 100%; }
+.page { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .35); flex: none; }
+.page img { display: block; width: 100%; height: 100%; }
+.page .pno { position: absolute; right: 6px; bottom: 4px; font-size: 11px; color: #888; }
+.page.failed::after { content: "page could not be rendered"; position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center; color: #c0392b; font-size: 12px; }
+.zoom { margin-left: auto; display: flex; align-items: center; gap: 4px; font-weight: 400; flex: none; }
+.zoom-label { min-width: 52px; font-size: 12px; }
 .viewer .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--muted); text-align: center; padding: 20px; }
 
@@ -65,7 +85,7 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px 1fr 1
 .tab.active { border-bottom-color: var(--accent); font-weight: 600; }
 .dirty { color: var(--warn); }
 .tabbody { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
-.tabbody[hidden] { display: none; }
+.tabbody[hidden] { display: none !important; }   /* beats #tab-recap's display */
 #configText { flex: 1; width: 100%; border: 0; resize: none; padding: 10px; background: var(--code-bg); color: var(--text);
   font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre; overflow: auto; outline: none; }
 #configMsg { padding: 6px 10px; border-top: 1px solid var(--line); min-height: 28px; }
@@ -91,4 +111,3 @@ td.num { text-align: right; white-space: nowrap; }
 .note { padding: 6px 10px; font-size: 12px; }
 .note.bad { color: var(--bad); } .note.warn { color: var(--warn); }
 
-@media (max-width: 1300px) { main { grid-template-columns: 220px 1fr 1fr 360px; } }

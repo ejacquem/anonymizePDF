@@ -31,21 +31,35 @@
     <div id="tree" class="pane-body"></div>
   </section>
 
-  <section class="pane">
-    <div class="pane-head"><span>Original</span> <span id="origName" class="muted"></span></div>
-    <div class="pane-body viewer">
-      <iframe id="origFrame" title="original pdf"></iframe>
+  <div class="splitter" data-split="tree" title="Drag to resize · double-click to reset"></div>
+
+  <section id="origPane" class="pane">
+    <div class="pane-head">
+      <span>Original</span> <span id="origName" class="muted"></span>
+      <div class="zoom">
+        <button id="zoomOut" class="mini" title="Zoom out (Ctrl + wheel)">−</button>
+        <button id="zoomFit" class="mini zoom-label" title="Fit page width">Fit</button>
+        <button id="zoomIn" class="mini" title="Zoom in (Ctrl + wheel)">+</button>
+        <label class="chk" title="Scroll both PDFs together"><input type="checkbox" id="syncScroll" checked> Sync</label>
+      </div>
+    </div>
+    <div id="origView" class="pane-body viewer">
+      <div id="origPages" class="pages"></div>
       <div id="origEmpty" class="empty">No file selected</div>
     </div>
   </section>
 
-  <section class="pane">
+  <div class="splitter" data-split="pdf" title="Drag to resize · double-click to reset"></div>
+
+  <section id="anonPane" class="pane">
     <div class="pane-head"><span>Anonymized</span> <span id="anonName" class="muted"></span></div>
-    <div class="pane-body viewer">
-      <iframe id="anonFrame" title="anonymized pdf"></iframe>
+    <div id="anonView" class="pane-body viewer">
+      <div id="anonPages" class="pages"></div>
       <div id="anonEmpty" class="empty">Not generated yet</div>
     </div>
   </section>
+
+  <div class="splitter" data-split="side" title="Drag to resize · double-click to reset"></div>
 
   <section id="sidePane" class="pane">
     <div class="tabs">

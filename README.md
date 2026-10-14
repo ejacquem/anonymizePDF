@@ -25,7 +25,8 @@ python -m spacy download fr_core_news_md      # names model; use nl_core_news_md
 ```
 
 Scanned PDFs need **Tesseract OCR** with the language packs you use (fra, nld, eng):
-* Windows: installer from the UB-Mannheim build, tick the extra languages. It is found automatically in
+* Windows: `winget install UB-Mannheim.TesseractOCR` (or the UB-Mannheim installer, tick the extra languages).
+  Note: `pip install tesseract` / `pytesseract` do **not** install the program itself. It is found automatically in
   `C:\Program Files\Tesseract-OCR`; otherwise set the env var `TESSERACT_CMD` to the full path of `tesseract.exe`.
   If languages are missing, set `TESSDATA_PREFIX` to the `tessdata` folder.
 * macOS: `brew install tesseract tesseract-lang` · Linux: `apt install tesseract-ocr tesseract-ocr-fra tesseract-ocr-nld`
@@ -49,7 +50,8 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 4. **2 · Anonymize folder** – the same config is applied to every PDF of the folder. Each `name.pdf` produces
    `name_anonymized.pdf` next to it (originals are never touched). Digital PDFs: the text is really removed.
    Scans: OCR, paint over, rebuild as images.
-5. Compare **Original** and **Anonymized** side by side. The **Recap** tab lists, per file, every replaced value
+5. Compare **Original** and **Anonymized** side by side (zoom with −/+ or Ctrl+wheel, both scroll together; untick
+   *Sync* to scroll them separately). Drag the bars between the panes to resize them. The **Recap** tab lists, per file, every replaced value
    (type, original → replacement, count, pages), the time taken, and any original value still found in the output.
    The **Log** tab shows the run.
 
