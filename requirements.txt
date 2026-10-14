@@ -1,0 +1,6 @@
+pymupdf
+pyyaml
+pillow
+numpy
+pytesseract
+spacy
