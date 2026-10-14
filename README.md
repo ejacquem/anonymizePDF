@@ -30,6 +30,13 @@ pip install -r requirements.txt
 python -m spacy download fr_core_news_md      # names model; use nl_core_news_md for Dutch, you can install both
 ```
 
+If `spacy download` fails with `SSL: CERTIFICATE_VERIFY_FAILED` (company proxy or antivirus inspecting HTTPS), install
+the model with pip directly (the model version must match spaCy's major.minor, see `python -m spacy info`):
+```bash
+python -m pip install https://github.com/explosion/spacy-models/releases/download/fr_core_news_md-3.8.0/fr_core_news_md-3.8.0-py3-none-any.whl
+```
+For Dutch, replace `fr_core_news_md` with `nl_core_news_md` (both times) in the URL.
+
 Scanned PDFs need an OCR engine. Two are supported; the app uses Tesseract if it is installed, else Windows OCR
 (force one with `--ocr-engine tesseract|windows`). The header of the app shows which one is active.
 
