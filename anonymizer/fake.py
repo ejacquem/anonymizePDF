@@ -2,8 +2,10 @@
 """
 Suggest fake replacement values that keep roughly the same length and format.
 
-- deterministic: the same original value always gives the same suggestion (no randomness between
-  runs, so every file of a folder - and every later re-scan - stays consistent)
+- deterministic for a given secret key: the same original value always gives the same suggestion on this
+  PC (every file of a folder, every folder and every later re-scan stay consistent)
+- not reversible: values come from HMAC-SHA256 with the secret key of anonymizer.secret, so knowing the
+  code is not enough to test candidate names against a fake value
 - format preserving: "06 12 34 56 78" -> "06 47 90 21 35", IBAN keeps its country and grouping
   and gets a valid checksum, names keep their capitalisation ("Thomas MARCHAND" -> "Lucas BERNIER")
 - every digit of an identifier changes (nothing partially readable is kept, except country codes)
@@ -11,6 +13,7 @@ Suggest fake replacement values that keep roughly the same length and format.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import random
 import re
 import string
@@ -27,6 +30,8 @@ Charlotte Clémentine Frédérique Emmanuelle Alexandrine Stéphanie Virginie Ju
 Sylvie Monique Martine Brigitte Chantal Danielle Françoise Jacqueline Josiane Liliane Mireille Patricia Corinne
 Sabine Annick Gisèle Odile Colette Arlette Ginette Huguette Josette Paulette Suzanne Simone Germaine Lucienne
 Marie-Anne Anne-Sophie Marie-Claire Anne-Marie Els Ilse Lien Katrien Annelies Sofie Hanne Leen Inge Griet
+Fatima Amina Yasmine Leila Samira Khadija Salma Malika Nour Rania Soumaya Imane Hafsa Aicha Zeynep Elif Merve Ayse
+Nina Lisa Eline Jolien Charlotte Margaux Océane Mathilde Justine Audrey Gaëlle Noémie Ophélie Solène Coralie
 """.split()
 MALE_NAMES = """
 Tom Ugo Luc Jan Eli Sam Ben Leo Max Noa Paul Marc Yves Louis Jean Remi Théo Hugo Axel Enzo Ivan Joël Noël Bram
@@ -37,6 +42,8 @@ Stéphane Sylvain Thibault Vincent Xavier Christophe Alexandre Maximilien Bernar
 Thomas Nicolas Francis Georges Gilbert Gilles Henri Hervé Jérôme Lionel Marcel Pascal Roger Serge Sébastien
 Frédéric Grégoire Ludovic Mickaël Raymond Robert Roland Thibaut Valentin Clément Didier Emmanuel
 Jean-Marc Pierre-Yves Louis-Philippe Jean-Luc Jean-Paul Pieter Joris Wouter Koen Dirk Bart Geert Stijn Wim Kris
+Mohamed Mohammed Ahmed Karim Youssef Mehdi Omar Bilal Rachid Hamza Ismail Ayoub Samir Nabil Khalid Hassan Ali Emre
+Mehmet Mustafa Burak Arne Jens Lars Thijs Ruben Sander Jasper Jeroen Kevin Steven Benjamin Florent Cédric Loïc
 """.split()
 UNISEX_NAMES = "Camille Sacha Claude Alix Charlie Morgan Dominique Eden".split()
 FIRST_NAMES = list(dict.fromkeys(FEMALE_NAMES + MALE_NAMES + UNISEX_NAMES))
@@ -142,8 +149,15 @@ def _style_token(orig: str, new: str) -> str:
 
 
 class Faker:
-    def __init__(self, salt: str = "anonymizePDF"):
-        self.salt = salt
+    def __init__(self, key: bytes | None = None):
+        """key: secret bytes (default: this computer's key, see anonymizer.secret). Never a constant."""
+        if key is None:
+            from .secret import load_or_create
+            key = load_or_create()
+        if not isinstance(key, bytes) or len(key) < 16:
+            raise ValueError("Faker needs a secret key of at least 16 random bytes")
+        self._key = key
+        self._variant = 0          # bumped by suggest() on a collision, to get another deterministic value
         self.used: set[str] = set()
         # name parts already replaced: (kind, key) -> replacement. Keeps 'Élodie' / 'elodie' / 'É.' and
         # an OCR misreading like 'Vermeotlen' consistent with what 'Vermeulen' became.
@@ -152,14 +166,16 @@ class Faker:
 
     # ---------- primitives ----------
     def rng(self, kind: str, value: str, attempt: int = 0) -> random.Random:
-        h = hashlib.sha256(f"{self.salt}|{kind}|{_norm(value)}|{attempt}".encode()).hexdigest()
-        return random.Random(int(h, 16))
+        msg = f"{self._variant}|{kind}|{_norm(value)}|{attempt}".encode()
+        return random.Random(int.from_bytes(hmac.new(self._key, msg, hashlib.sha256).digest(), "big"))
 
     def _pick(self, items, target: int, rng: random.Random, avoid: set[str]):
-        """Pick an item whose length is closest to `target`, deterministic through rng."""
+        """Pick an item whose length is closest to `target`, deterministic through rng.
+        `avoid` is compared without accents or case, so 'Inès' can never be replaced by 'Ines'."""
         best = None
+        avoid = {_pkey(a) for a in avoid}
         for slack in range(0, 8):
-            cands = [x for x in items if abs(len(x) - target) <= slack and _norm(x) not in avoid]
+            cands = [x for x in items if abs(len(x) - target) <= slack and _pkey(x) not in avoid]
             if cands:
                 best = rng.choice(cands)
                 break
@@ -511,15 +527,14 @@ class Faker:
     # ---------- dispatcher ----------
     def suggest(self, typ: str, value: str) -> str:
         value = " ".join(value.split())
-        base_salt = self.salt
         try:
-            for _ in range(6):
+            for variant in range(6):
+                self._variant = variant      # collision: next attempt uses another deterministic variant
                 new = self._suggest_once(typ, value)
-                if _norm(new) != _norm(value) and _norm(new) not in self.used:
+                if _pkey(new) != _pkey(value) and _norm(new) not in self.used:
                     break
-                self.salt += "'"  # collision: next attempt uses another deterministic variant
         finally:
-            self.salt = base_salt
+            self._variant = 0
         self.used.add(_norm(new))
         return new
 

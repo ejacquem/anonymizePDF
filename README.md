@@ -11,6 +11,7 @@ anonymizer/
   ocr.py                 OCR of scanned pages: Tesseract or Windows built-in OCR
   fake.py                fake replacement values (same length, same format)
   render.py              drawing replacement text on digital pages and scanned images
+  secret.py              secret key for the fake values (created once per PC, outside the repo)
 static/                  frontend (index.html, app.js, style.css)
 docs/                    config.example.yaml, PROJECT_CONTEXT.md
 sample_data/             fake PDFs to try it on (Dossier Test 0: simple FR statement, Dossier Test 1: harder BE one)
@@ -111,3 +112,13 @@ names of similar length, birth dates shift by a few days and years. Names are re
 
 `anon_config.yaml` and `anon_report.json` contain the **real** values. `.gitignore` excludes them, the
 `*_anonymized.pdf` files and all other PDFs (except `sample_data/`). Keep your real PDFs outside the repository.
+
+**Secret key.** Fake values are derived from the original with HMAC-SHA256 and a secret 256-bit key, so having
+the code is not enough to work back from "Beaumont" to the real name by trying a list of names. The key is created
+on the first run and kept **outside the repository**: `%APPDATA%\anonymizePDF\secret.key` (Windows) or
+`~/.config/anonymizePDF/secret.key` (override with the env var `ANON_SECRET_FILE`). The app prints its location
+at start.
+* Keep it private and never commit or share it: with the key, the name list could be tried again.
+* Back it up: with the same key, the same person gets the same fake name in every folder, now and later.
+  Losing it only changes future suggestions; existing `anon_config.yaml` files still work.
+* Copy it to another PC (e.g. the production PC) if fake names must match across machines.

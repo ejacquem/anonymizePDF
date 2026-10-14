@@ -20,7 +20,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from anonymizer import engine as eng
-from anonymizer import ocr
+from anonymizer import ocr, secret
 from anonymizer.pii import fitz, load_ner
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -322,7 +322,12 @@ def main():
     if args.ocr_engine:
         ocr.set_engine(args.ocr_engine)
     STATE.update(root=root, ocr_lang=args.ocr_lang, spacy_models=args.spacy_model)
+    try:
+        secret.load_or_create()
+    except RuntimeError as e:
+        raise SystemExit(str(e))
     print(f"Root: {root}\nOCR: {ocr.describe(args.ocr_lang) or 'none (scanned PDFs cannot be processed)'}")
+    print(f"Secret key for fake values: {secret.key_path()}  (keep it private, back it up, never commit it)")
     print(f"Open http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
     app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)
 

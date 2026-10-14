@@ -143,7 +143,7 @@ def pii_cfg(cfg: dict) -> dict:
 # 1. scan a folder -> draft config
 # ---------------------------------------------------------------------------
 
-def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, salt: str = "anonymizePDF") -> dict:
+def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None) -> dict:
     t0 = time.time()
     pdfs = list_pdfs(folder)
     if not pdfs:
@@ -190,7 +190,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, salt: s
                     ctx = text[max(0, m.start - 35):m.end + 8]
                     e["birth"] = e["birth"] or bool(_BIRTH_RX.search(ctx))
 
-    faker = Faker(salt)
+    faker = Faker(secret_key)        # None: this computer's secret key (anonymizer.secret)
     active: list[dict] = []
     off: list[dict] = []
     tokens_added: set[str] = set()

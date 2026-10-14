@@ -33,6 +33,7 @@ anonymizePDF/
     ocr.py               OCR engines (Tesseract / Windows via winrt), engine choice, fix_digits()
     fake.py              Faker: deterministic fake values (same length/format)
     render.py            insert_replacement(), apply_redactions() (digital), fit_font(), background_color() (scan)
+    secret.py            per-PC secret key for the fake values (HMAC), stored outside the repo
   static/                index.html, app.js, style.css
   docs/                  config.example.yaml, PROJECT_CONTEXT.md (this file)
   sample_data/Dossier Test 0/  fake FR bank statement (Helvetica, digital + clean scan)
@@ -105,7 +106,9 @@ NER runs line by line (page text split on newlines).
 
 ## 9. Fake values (`anonymizer/fake.py`)
 
-Deterministic (hash of salt+type+value), unique per run, same length where possible: names from FR/BE/NL name lists by length (case style kept, Title case too), keyed without accents
+Deterministic for a secret key: HMAC-SHA256(key, variant|type|value) (`anonymizer/secret.py`: 256-bit key created once
+per PC in %APPDATA%\anonymizePDF\secret.key, env ANON_SECRET_FILE overrides; corrupt file -> error, never replaced).
+Not reversible without the key (a constant salt in the code allowed a dictionary attack). Unique per run, same length where possible: names from FR/BE/NL name lists by length (case style kept, Title case too), keyed without accents
 ('Élodie' = 'elodie', so e-mails match), initials follow the replaced first name ('É. Vermeulen' -> 'S. Hendrickx'),
 a name >= 80-85 % similar to one already replaced (OCR misreading) reuses its replacement,
 BE national number gets the fake birth date of the same person + valid check digits, a number found inside a longer
@@ -164,5 +167,6 @@ This fixed text inside bordered boxes that psm 3 garbled.
 ## 14. Rules to keep
 
 - Never commit real PDFs, `anon_config.yaml`, `anon_report.json` or `*_anonymized.pdf` (`.gitignore` covers them; `sample_data/` is fake).
+- Never commit or share the secret key (`secret.key`), and never put a constant salt / key back in the code.
 - Don't send real documents to an AI assistant; the fake sample files are enough for development.
 - Keep the scope small and the app local-only (127.0.0.1).
