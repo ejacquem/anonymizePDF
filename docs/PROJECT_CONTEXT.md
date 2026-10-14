@@ -35,7 +35,10 @@ anonymizePDF/
     render.py            insert_replacement(), apply_redactions() (digital), fit_font(), background_color() (scan)
   static/                index.html, app.js, style.css
   docs/                  config.example.yaml, PROJECT_CONTEXT.md (this file)
-  sample_data/Dossier 0/ fake FR bank statement (digital + scan)
+  sample_data/Dossier Test 0/  fake FR bank statement (Helvetica, digital + clean scan)
+  sample_data/Dossier Test 1/  fake BE bank statement (Calibri/Georgia/Consolas subsetted, tinted boxes, 2 holders,
+                               signature + stamp; scan tilted, yellowed, noisy), built by tools/make_test_statement.py
+  tools/                 make_test_statement.py (regenerates Dossier Test 1, needs Windows fonts)
   requirements.txt, README.md, .gitignore, .gitattributes
 ```
 The original numbered CLI scripts (`1_detect.py` ... `4_anonymize_scan.py`) were removed; their helpers live in `render.py`.
@@ -87,6 +90,10 @@ regex: []                 # optional: - {pattern: '...', replace: '...'}
 Types: IBAN (mod-97 checked), BIC, EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), BE national number, BE VAT, BE structured communication,
 STREET_ADDRESS (FR/NL/BE heuristics), POSTAL_CITY, ACCOUNT_NUMBER (after a label like "N° de compte" / "Numéro client", French RIB `05871 00001234567 02`, long digit runs),
 BANK_CODE (after "Code banque / guichet", "Clé RIB", ...), DATE, PERSON, plus NER ORG/LOCATION.
+CARD_NUMBER (masked: `6703 **** **** 4471`, `Carte x4412`; digits change, masks kept), SEPA_CREDITOR_ID
+(`BE60ZZZ0404484654`, checksum-validated, or after a label like "identifiant créancier"), CONTRACT_REF (after
+"police", "contrat", "dossier", ...). Page text normalises Unicode dashes (U+2010 etc.) to '-' (same length).
+Masked card ends (>= 4 digits) are added as separate entries, since OCR may drop the stars.
 Multi-group ACCOUNT_NUMBER / BANK_CODE values also add their groups of >= 5 digits as separate entries; digit groups are
 replaced deterministically per group, so `05871` gets the same fake digits inside the account number and the bank code.
 Birth dates: a DATE is active only if `_BIRTH_RX` (né le / née / naissance / geboren / birth / born / dob) appears in the
@@ -98,7 +105,11 @@ NER runs line by line (page text split on newlines).
 
 ## 9. Fake values (`anonymizer/fake.py`)
 
-Deterministic (hash of salt+type+value), unique per run, same length where possible: names from FR/BE/NL name lists by length (case style kept), first names keep their gender (female/male lists,
+Deterministic (hash of salt+type+value), unique per run, same length where possible: names from FR/BE/NL name lists by length (case style kept, Title case too), keyed without accents
+('Élodie' = 'elodie', so e-mails match), initials follow the replaced first name ('É. Vermeulen' -> 'S. Hendrickx'),
+a name >= 80-85 % similar to one already replaced (OCR misreading) reuses its replacement,
+BE national number gets the fake birth date of the same person + valid check digits, a number found inside a longer
+one reuses the matching slice of its replacement (`_align_contained_numbers`), first names keep their gender (female/male lists,
 else the title before the name: Mme / M., else French endings like -ette/-ine/-ie),
 phones keep format and first 2 digits, IBAN keeps country/grouping with valid checksum, BIC keeps country, emails keep common domains,
 streets/cities from lists by length, dates shift day/month/year, card numbers keep Luhn validity, other ids change every digit.
@@ -133,6 +144,7 @@ This fixed text inside bordered boxes that psm 3 garbled.
 - Scans depend on OCR quality (handwriting, stamps, signatures missed). Names are heuristic (hence the review step).
 - The leftover check only searches for values present in the config.
 - Mixed digital/scan PDFs are processed as one mode per file.
+- Installed fonts are looked up in the Windows registry (HKLM + HKCU Fonts, no admin), e.g. Consolas -> consola.ttf.
 - Digital: replacement keeps size/colour/baseline and the font (embedded if it has the glyphs -> same font from the
   system -> closest base-14). It may extend up to +35 % to the right if nothing is there, else it is shrunk.
   Scans use a generic font. Fake names are picked by character count, not rendered width.

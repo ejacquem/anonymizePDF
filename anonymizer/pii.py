@@ -61,6 +61,22 @@ def _v_iban(m):
     return None
 
 
+def _sepa_creditor_ok(s: str) -> bool:
+    """SEPA creditor identifier: CC kk BBB national-id; the check digits kk cover national-id + CC (not BBB)."""
+    s = s.replace(" ", "").upper()
+    if len(s) < 8:
+        return False
+    rearranged = s[7:] + s[:4]
+    try:
+        return int("".join(str(int(c, 36)) for c in rearranged)) % 97 == 1
+    except ValueError:
+        return False
+
+
+def _v_sepa_creditor(m):
+    return (m.start(), m.end()) if _sepa_creditor_ok(m.group()) else None
+
+
 def _luhn_ok(digits: str) -> bool:
     total, alt = 0, False
     for ch in reversed(digits):
@@ -138,6 +154,15 @@ _NL_STREET = (
 DETECTORS = [
     ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban),
     ("CREDIT_CARD", re.compile(r"(?<!\d)(?:\d[ \-]?){13,19}(?!\d)"), _v_card),
+    # masked card number: '6703 **** **** 4471', '4975 XXXX XXXX 1234', 'Carte x4412'
+    ("CARD_NUMBER", re.compile(r"(?<![\w*])\d{4,6}(?:[ \-]?(?:\*{4}|[xX]{4}|•{4})){1,3}[ \-]?\d{4}(?!\d)"), None),
+    ("CARD_NUMBER", re.compile(r"(?i:carte|card|kaart)(?:\s+n[°o]\.?)?\s+((?:[xX*•]{1,12}[ ]?)\d{4})(?!\d)"), _v_group1),
+    # SEPA creditor identifier (direct debit): 'BE79ZZZ0404484654', 'FR12ZZZ123456'
+    ("SEPA_CREDITOR_ID", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28}(?![A-Za-z0-9])"),
+     _v_sepa_creditor),
+    ("SEPA_CREDITOR_ID", re.compile(r"(?i:identifiant(?:\s+(?:du\s+)?cr[ée]ancier)?|identifiant\s+sepa|\bics\b|"
+                                    r"creditor\s+id(?:entifier)?|schuldeiser(?:s)?-?id(?:entificatie)?)\s*[:\-]?\s*"
+                                    r"([A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28})(?![A-Za-z0-9])"), _v_group1),
     ("BE_NATIONAL_NUMBER", re.compile(r"(?<!\d)\d{2}\.\d{2}\.\d{2}[-.]\d{3}\.\d{2}(?!\d)"), None),
     ("EMAIL", re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"), None),
     ("BE_VAT", re.compile(r"\bBE[ .]?0?\d{3}[ .]?\d{3}[ .]?\d{3}\b"), None),
@@ -163,6 +188,10 @@ DETECTORS = [
     ("ACCOUNT_NUMBER", re.compile(r"(?i:num[ée]ro\s+de\s+compte|n[°o]\s*de\s+compte|compte\s+n[°o]|account\s+n(?:umber|o\.?)|"
                                   r"rekeningnummer|rekening\s+nr\.?|num[ée]ro\s+client|n[°o]\s+client|klantnummer)"
                                   r"\s*[:\-]?\s*(\d+(?:[ .\-]\d+){0,5})(?![\w,])"), _v_labeled),
+    # insurance policy / contract / file number after its label: 'police 45.118.902', 'contrat n° 2024-118'
+    ("CONTRACT_REF", re.compile(r"(?i:police|polis|n[°o]\s+de\s+police|contrat|n[°o]\s+de\s+contrat|dossier|"
+                                r"contract|policy)(?:\s+n[°o]\.?)?\s*[:\-]?\s*(\d+(?:[ .\-/]\d+){0,5})(?![\w,])"),
+     _v_labeled),
     # French RIB: [banque 5] guichet 5 / compte 11 / clé 2 (without label)
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])(?:\d{5}[ ]?)?\d{5}[ ]?[0-9A-Z]{11}[ ]?\d{2}(?![\w,])"), _v_account),
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{3}-\d{7}-\d{2}(?!\w)"), _v_account),
@@ -391,16 +420,21 @@ def digital_words(page) -> list[dict]:
     ]
 
 
+# typographic dashes / minus signs -> '-' (one character for one, so spans stay valid). PDFs often use them
+# inside numbers ('85.07.30‐142.16'), which would otherwise hide the value from every detector.
+_DASHES = str.maketrans({c: "-" for c in "‐‑‒–—―−﹣－"})
+
+
 def words_to_text(words: list[dict]):
     """Join words into one string (space inside a line, newline between lines)
-    and remember each word's character span."""
+    and remember each word's character span. Unicode dashes are written as '-'."""
     parts, spans, pos, prev = [], [], 0, None
     for w in words:
         if prev is not None:
             sep = " " if w["line"] == prev else "\n"
             parts.append(sep)
             pos += 1
-        parts.append(w["text"])
+        parts.append(w["text"].translate(_DASHES))
         spans.append((pos, pos + len(w["text"])))
         pos += len(w["text"])
         prev = w["line"]

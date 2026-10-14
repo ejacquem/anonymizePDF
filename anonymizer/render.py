@@ -58,6 +58,32 @@ def _font_dirs() -> list[Path]:
     return [d for d in dirs if d.is_dir()]
 
 
+@lru_cache(maxsize=1)
+def _registry_fonts() -> dict[str, str]:
+    """Installed Windows fonts from the registry (machine + current user, readable without admin rights):
+    'consolasbold' -> 'C:\\Windows\\Fonts\\consolab.ttf'. Empty elsewhere."""
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    out: dict[str, str] = {}
+    windir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    key_path = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, key_path) as k:
+                for i in range(winreg.QueryInfoKey(k)[1]):
+                    name, file, _ = winreg.EnumValue(k, i)
+                    if not isinstance(file, str) or not file.lower().endswith((".ttf", ".otf")):
+                        continue                              # .ttc collections are skipped
+                    path = Path(file) if os.path.isabs(file) else windir / file
+                    for one in re.sub(r"\s*\((?:TrueType|OpenType)\)\s*$", "", name).split(" & "):
+                        out.setdefault(re.sub(r"[^a-z]", "", one.lower()), str(path))
+        except OSError:
+            continue
+    return out
+
+
 def _clean_font_name(name: str) -> str:
     name = name.split("+", 1)[-1]                         # 'ABCDEF+Arial-BoldMT' -> 'Arial-BoldMT'
     return name
@@ -114,7 +140,16 @@ class FontBook:
         key = (_family_key(name), bold, italic)
         if key not in self.system:
             font = None
-            files = _SYSTEM_FONTS.get(key[0])
+            reg = _registry_fonts()
+            style = ("bold" if bold else "") + ("italic" if italic else "")
+            for cand in ([key[0] + style] if style else []) + [key[0], key[0] + "regular"]:
+                if cand in reg and Path(reg[cand]).is_file():
+                    try:
+                        font = fitz.Font(fontfile=reg[cand])
+                        break
+                    except Exception:  # noqa: BLE001
+                        continue
+            files = None if font else _SYSTEM_FONTS.get(key[0])
             if files:
                 stem = files[int(bold) + 2 * int(italic)]
                 for d in _font_dirs():

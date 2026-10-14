@@ -14,6 +14,8 @@ import hashlib
 import random
 import re
 import string
+import unicodedata
+from difflib import SequenceMatcher
 
 # First names by gender (FR / BE / NL), so a replacement keeps the gender of the original name.
 FEMALE_NAMES = """
@@ -59,6 +61,15 @@ Marronniers Vignes Prairies Écoles Jardins Remparts Lavandes Bruyères Pins Orm
 Genêts Mimosas Églantiers Charmes Noyers Orchidées Bleuets Pâquerettes Champs Vergers Bouleaux Saules
 """.split()
 
+# article + noun, for 'rue de la Station' style names (replaced together so they agree)
+FRENCH_STREET_PHRASES = [
+    "des Lilas", "des Tilleuls", "des Chênes", "des Roses", "des Acacias", "du Moulin", "de la Fontaine",
+    "de la Gare", "de l'Église", "du Château", "des Écoles", "de la Paix", "du Marché", "des Prés", "de la Source",
+    "du Parc", "des Vignes", "de la Poste", "du Stade", "des Jardins", "de la Chapelle", "du Calvaire",
+    "des Peupliers", "de la Croix", "du Pont", "des Fleurs", "du Bois", "de la Vallée", "des Champs", "du Centre",
+    "de la Libération", "des Marronniers", "du Vieux Moulin", "de la Forêt", "des Hirondelles", "du Lavoir",
+]
+
 DUTCH_STREET_BASES = """
 Kerk Molen Bos Linde Dorp Beuk Berk Eik Hoek Park Veld Brug School Hei Duin Wei Akker Sluis Heide Bloem Rozen
 Wilgen Populier Tuin Kasteel Station Vijver Polder Beek Dijk Haven Meers Lelie Kruid Appel
@@ -76,9 +87,16 @@ COMMON_EMAIL_DOMAINS = {
     "sfr.fr", "wanadoo.fr", "example.com", "example.fr", "msn.com",
 }
 
-_FEMALE_SET = {re.sub(r"\s+", "", x.casefold()) for x in FEMALE_NAMES}
-_MALE_SET = {re.sub(r"\s+", "", x.casefold()) for x in MALE_NAMES}
-_UNISEX_SET = {re.sub(r"\s+", "", x.casefold()) for x in UNISEX_NAMES}
+def _pkey(s: str) -> str:
+    """Name key without case, accents or punctuation: 'Élodie' == 'elodie' == 'ELODIE'."""
+    s = unicodedata.normalize("NFKD", s.casefold())
+    return "".join(c for c in s if c.isalnum())
+
+
+_FEMALE_SET = {_pkey(x) for x in FEMALE_NAMES}
+_MALE_SET = {_pkey(x) for x in MALE_NAMES}
+_UNISEX_SET = {_pkey(x) for x in UNISEX_NAMES}
+_INITIAL = re.compile(r"[^\W\d_]\.?")      # 'É.' / 'J.' / 'J' 
 _FIRST_SET = _FEMALE_SET | _MALE_SET | _UNISEX_SET
 _PARTICLES = {"de", "du", "van", "von", "der", "den", "ter", "ten", "la", "le", "des", "d'", "dos", "da"}
 
@@ -104,7 +122,15 @@ def match_case(original: str, new: str) -> str:
         return new.upper()
     if original.islower():
         return new.lower()
+    words = [w for w in re.split(r"[\s\-]+", original) if any(c.isalpha() for c in w)]
+    if words and all(_is_title(w) for w in words):   # 'Vermeulen' -> 'Hendrickx', not 'HENDRICKX'
+        return re.sub(r"[^\W\d_]+", lambda m: m.group()[:1].upper() + m.group()[1:].lower(), new)
     return new
+
+
+def _is_title(word: str) -> bool:
+    letters = [c for c in word if c.isalpha()]
+    return len(letters) > 1 and letters[0].isupper() and all(c.islower() for c in letters[1:])
 
 
 def _style_token(orig: str, new: str) -> str:
@@ -119,6 +145,10 @@ class Faker:
     def __init__(self, salt: str = "anonymizePDF"):
         self.salt = salt
         self.used: set[str] = set()
+        # name parts already replaced: (kind, key) -> replacement. Keeps 'Élodie' / 'elodie' / 'É.' and
+        # an OCR misreading like 'Vermeotlen' consistent with what 'Vermeulen' became.
+        self.names: dict[tuple[str, str], str] = {}
+        self.first_of_last: dict[str, list[str]] = {}       # last-name key -> first-name keys seen with it
 
     # ---------- primitives ----------
     def rng(self, kind: str, value: str, attempt: int = 0) -> random.Random:
@@ -177,7 +207,7 @@ class Faker:
     def gender_of(first: str, honorific: str = "") -> str | None:
         """'f', 'm' or None. Known first names win, then the title before the name (Mme / M. ...),
         then a few French spelling hints. A compound name takes the gender of its first part."""
-        tok = _norm(first.split("-")[0])
+        tok = _pkey(first.split("-")[0])
         if tok in _FEMALE_SET and tok not in _MALE_SET:
             return "f"
         if tok in _MALE_SET and tok not in _FEMALE_SET:
@@ -194,7 +224,11 @@ class Faker:
 
     def name_token(self, token: str, kind: str, avoid: set[str] | None = None, gender: str | None = None) -> str:
         """kind = 'first' | 'last'. Deterministic per token (and gender), so 'Marchand' alone and inside
-        'Thomas Marchand' get the same replacement. First names keep their gender when it is known."""
+        'Thomas Marchand' get the same replacement. First names keep their gender when it is known.
+        Case and accents do not matter ('Élodie' = 'elodie'); a name close to one already replaced (OCR
+        misreading, e.g. 'Vermeotlen' for 'Vermeulen') gets the same replacement."""
+        if _INITIAL.fullmatch(token):
+            return self.initial(token)
         if "-" in token and len(token) > 3:
             done: set[str] = set()
             parts = []
@@ -203,24 +237,52 @@ class Faker:
                 done.add(_norm(new))
                 parts.append(new)
             return "-".join(parts)
+        key = _pkey(token)
+        known = self.names.get((kind, key)) or self._similar_name(kind, key)
+        if known:
+            return _style_token(token, known)
         if kind == "first":
             gender = gender or self.gender_of(token)
             pool = FEMALE_NAMES if gender == "f" else MALE_NAMES if gender == "m" else UNISEX_NAMES + FIRST_NAMES
         else:
             pool = LAST_NAMES
         pool = [x for x in pool if "-" not in x]
-        rng = self.rng("name-" + kind, token)
+        rng = self.rng("name-" + kind, key)
         avoid = {_norm(token)} | (avoid or set())
-        pick = self._pick(pool, len(token), rng, avoid)
-        if not pick:
-            return _style_token(token, self.scramble(token, rng))
-        return _style_token(token, pick)
+        new = self._pick(pool, len(token), rng, avoid) or self.scramble(token, rng)
+        if key:
+            self.names[(kind, key)] = new
+        return _style_token(token, new)
+
+    def _similar_name(self, kind: str, key: str) -> str | None:
+        if len(key) < 6:
+            return None
+        best, score = None, 0.8 if len(key) >= 7 else 0.85
+        for (k, other), new in self.names.items():
+            if k == kind and abs(len(other) - len(key)) <= 2:
+                r = SequenceMatcher(None, key, other).ratio()
+                if r >= score:
+                    best, score = new, r
+        return best
+
+    def initial(self, token: str, last_keys: list[str] | None = None) -> str:
+        """'É.' -> the initial of the replacement of the matching first name ('Élodie' -> 'Céline' gives 'C.'),
+        preferring first names seen with the same last name; else a stable random other letter."""
+        letter = _pkey(token)[:1]
+        dot = "." if token.endswith(".") else ""
+        candidates = [f for lk in (last_keys or []) for f in self.first_of_last.get(lk, [])]
+        candidates += [k for (kind, k) in self.names if kind == "first"]
+        for first in candidates:
+            if first.startswith(letter) and ("first", first) in self.names:
+                return self.names[("first", first)][:1].upper() + dot
+        rng = self.rng("initial", letter)
+        return rng.choice([c for c in "ABCDEFGHJKLMNPRSTV" if c.lower() != letter]) + dot
 
     def name_kinds(self, parts: list[str]) -> list[str]:
         """'first' / 'last' / 'particle' for each token of a name. Known first names are 'first' wherever
         they are (handles 'MARCHAND Thomas'); otherwise the first token is the first name."""
         kinds = []
-        known = [_norm(t) in _FIRST_SET for t in parts]
+        known = [_pkey(t) in _FIRST_SET for t in parts]
         for i, tok in enumerate(parts):
             if tok.casefold() in _PARTICLES:
                 kinds.append("particle")
@@ -232,10 +294,49 @@ class Faker:
 
     def person(self, value: str, gender: str | None = None) -> str:
         parts = value.split()
+        kinds = self.name_kinds(parts)
+        last_keys = [_pkey(t) for t, k in zip(parts, kinds) if k == "last"]
         out = []
-        for tok, kind in zip(parts, self.name_kinds(parts)):
-            out.append(tok if kind == "particle" else self.name_token(tok, kind, gender=gender))
+        for tok, kind in zip(parts, kinds):     # full first names first, so initials can reuse them
+            if kind == "particle":
+                out.append(tok)
+            elif _INITIAL.fullmatch(tok):
+                out.append(None)
+            else:
+                out.append(self.name_token(tok, kind, gender=gender))
+        for tok, kind in zip(parts, kinds):
+            if kind == "first" and not _INITIAL.fullmatch(tok):
+                for lk in last_keys:
+                    self.first_of_last.setdefault(lk, []).append(_pkey(tok))
+        out = [self.initial(tok, last_keys) if o is None else o for tok, o in zip(parts, out)]
         return " ".join(out)
+
+    def be_national_number(self, value: str) -> str:
+        """'85.07.30-142.16' -> a valid number whose birth date is the fake of the real birth date
+        (the same fake as the date '30/07/1985' gets elsewhere in the document), new sequence, valid check."""
+        m = re.fullmatch(r"(\d{2})([.\s]?)(\d{2})\2(\d{2})([-.\s]?)(\d{3})([.\s]?)(\d{2})", value)
+        if not m:
+            return self.numeric_id(value)
+        yy, s1, mm, dd, s2, seq, s3, cc = m.groups()
+        born_2000 = int(cc) == 97 - int("2" + yy + mm + dd + seq) % 97
+        fake_date = self.date(f"{dd}/{mm}/{'20' if born_2000 else '19'}{yy}")   # same as the DATE replacement
+        d = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", fake_date)
+        if not d:
+            return self.numeric_id(value)
+        nd, nm, ny = d.groups()
+        rng = self.rng("nn-seq", value)
+        nseq = f"{rng.randint(1, 997):03d}"
+        base = ny[2:] + nm + nd + nseq
+        check = 97 - int(("2" if ny.startswith("20") else "") + base) % 97
+        return f"{ny[2:]}{s1}{nm}{s1}{nd}{s2}{nseq}{s3}{check:02d}"
+
+    def sepa_creditor(self, value: str) -> str:
+        """Keep country and business code ('BE..ZZZ'), change the national id, recompute the check digits."""
+        v = value.replace(" ", "")
+        country, business, national = v[:2].upper(), v[4:7], v[7:]
+        new_nat = self.digit_groups(national) if national.isdigit() else self.scramble(national, self.rng("sepa", v))
+        digits = "".join(str(int(c, 36)) for c in new_nat + country + "00")
+        return f"{country}{98 - int(digits) % 97:02d}{business}{new_nat}"
 
     def digit_groups(self, value: str) -> str:
         """Change every digit, group by group: the same group gets the same new digits everywhere,
@@ -356,12 +457,24 @@ class Faker:
                          rf"(?P<art>(?i:de la|du|des|de l'|de|d')\s?)?(?P<name>[^\d,]+?)(?P<post>(?:,?\s+\d.*)?)", value)
         if m:
             name = m.group("name").strip()
-            first_word = name.split()[0]
-            new_name = self._pick(FRENCH_STREETS, len(name), rng, {_norm(name)}) or self.scramble(name, rng)
-            new_name = _style_token(first_word, new_name)
+            art = m.group("art") or ""
             pre = self.digits(m.group("pre"), rng, keep_leading_zeros=False) if m.group("pre") else ""
             post = self.digits(m.group("post"), rng) if m.group("post") else ""
-            return f"{pre}{m.group('kw')}{m.group('sp')}{m.group('art') or ''}{new_name}{post}"
+            if art:
+                # 'de la Station' -> 'de la Fontaine' / 'du Moulin': article and noun replaced together,
+                # so they always agree ('de la Jardins' cannot happen)
+                old = art + name
+                new_name = self._pick(FRENCH_STREET_PHRASES, len(old), rng, {_norm(old)}) or (art + name)
+                return f"{pre}{m.group('kw')}{m.group('sp')}{new_name}{post}"
+            words = name.split()
+            if len(words) == 1:
+                new_name = self._pick(FRENCH_STREETS + LAST_NAMES, len(name), rng, {_norm(name)}) \
+                    or self.scramble(name, rng)
+                new_name = _style_token(name, new_name)
+            else:
+                # 'Bourgmestre Jean Materne' -> 'Chevalier Paul Martin': streets named after people read well
+                new_name = " ".join(self.name_token(w, "first" if _pkey(w) in _FIRST_SET else "last") for w in words)
+            return f"{pre}{m.group('kw')}{m.group('sp')}{new_name}{post}"
         # Dutch compound: Kerkstraat 12 / Sint-Pietersstraat 5 bus 2
         m = re.fullmatch(rf"(?P<base>[\w\u00c0-\u00ff'’\-]*?)(?P<suf>(?i:{nl_kw}))(?P<post>\s+\d.*)", value)
         if m and m.group("base"):
@@ -423,9 +536,13 @@ class Faker:
             return self.phone(value)
         if typ == "CREDIT_CARD":
             return self.credit_card(value)
-        if typ in ("ACCOUNT_NUMBER", "BANK_CODE"):
-            return self.digit_groups(value)
-        if typ in ("BE_NATIONAL_NUMBER", "BE_STRUCTURED_COMM"):
+        if typ in ("ACCOUNT_NUMBER", "BANK_CODE", "CARD_NUMBER", "CONTRACT_REF"):
+            return self.digit_groups(value)          # masks ('****', 'x') and separators are kept
+        if typ == "SEPA_CREDITOR_ID":
+            return self.sepa_creditor(value)
+        if typ == "BE_NATIONAL_NUMBER":
+            return self.be_national_number(value)
+        if typ == "BE_STRUCTURED_COMM":
             return self.numeric_id(value)
         if typ == "BE_VAT":
             return self.numeric_id(value, keep_country=True)

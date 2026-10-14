@@ -13,7 +13,8 @@ anonymizer/
   render.py              drawing replacement text on digital pages and scanned images
 static/                  frontend (index.html, app.js, style.css)
 docs/                    config.example.yaml, PROJECT_CONTEXT.md
-sample_data/             fake PDFs to try it on
+sample_data/             fake PDFs to try it on (Dossier Test 0: simple FR statement, Dossier Test 1: harder BE one)
+tools/                   make_test_statement.py: regenerates Dossier Test 1
 ```
 
 ## Install

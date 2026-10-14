@@ -35,8 +35,11 @@ SUFFIX = "_anonymized"
 # ---------------------------------------------------------------------------
 
 ACTIVE_TYPES = ["IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "BE_NATIONAL_NUMBER", "BE_VAT",
-                "BE_STRUCTURED_COMM", "STREET_ADDRESS", "POSTAL_CITY", "ACCOUNT_NUMBER", "BANK_CODE"]
-SPLIT_TYPES = ("ACCOUNT_NUMBER", "BANK_CODE")   # their digit groups (>= 5 digits) are also replaced alone
+                "BE_STRUCTURED_COMM", "STREET_ADDRESS", "POSTAL_CITY", "ACCOUNT_NUMBER", "BANK_CODE",
+                "CARD_NUMBER", "SEPA_CREDITOR_ID", "CONTRACT_REF"]
+# their digit groups are also replaced alone (>= 5 digits; >= 4 for the visible ends of a masked card number,
+# which OCR may read without the stars: "6703 **** 4471" or "Carte 6703")
+SPLIT_TYPES = {"ACCOUNT_NUMBER": 5, "BANK_CODE": 5, "CARD_NUMBER": 4}
 TYPE_ORDER = ["PERSON"] + ACTIVE_TYPES + ["DATE", "ORG", "LOCATION"]
 
 _STOP = set("""
@@ -200,7 +203,12 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, salt: s
         firsts = [t for t, k in zip(toks, faker.name_kinds(toks)) if k == "first"]
         return faker.gender_of(firsts[0], e["title"]) if firsts else None
 
-    for e in sorted(persons, key=lambda e: -e["count"]):
+    # full names before names with an initial ('Élodie Vermeulen' before 'É. Vermeulen'), so the initial
+    # can follow the replacement of the full first name
+    def has_initial(e):
+        return any(re.fullmatch(r"[^\W\d_]\.?", t) for t in e["value"].split())
+
+    for e in sorted(persons, key=lambda e: (has_initial(e), -e["count"])):
         if accept_person(e["value"], e["honorific"], e["ner"]):
             g = gender(e)
             active.append({**e, "replace": faker.person(e["value"], g), "note": ""})
@@ -232,7 +240,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, salt: s
             for grp in groups if len(groups) > 1 else []:
                 # e.g. the 11-digit account inside '05871 00001234567 02', or the branch code '05871',
                 # so they are replaced (with the same digits) wherever they appear alone
-                if len(grp) < 5 or norm_value(grp) in numbers_added:
+                if len(grp) < SPLIT_TYPES[t] or norm_value(grp) in numbers_added:
                     continue
                 numbers_added.add(norm_value(grp))
                 active.append({"type": t, "value": grp, "count": 0, "files": set(), "pages": set(),
@@ -243,11 +251,31 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, salt: s
         else:  # ORG, LOCATION: noisy NER output, off by default
             off.append({**e, "replace": faker.suggest(t, e["value"]), "note": "NER guess"})
 
+    _align_contained_numbers(active)
     text = render_config(rel, pdfs, active, off, default_ocr_lang)
     stats = {"files": len(pdfs), "active": len(active), "inactive": len(off), "seconds": round(time.time() - t0, 1)}
     log(f"Done: {len(active)} active replacement(s), {len(off)} suggestion(s) left commented out "
         f"({stats['seconds']}s)")
     return {"config": text, "stats": stats}
+
+
+def _align_contained_numbers(active: list[dict]):
+    """A number found inside a longer one (e.g. '07.30-142.16' read as a phone inside the national number
+    '85.07.30-142.16') takes the matching slice of the longer one's replacement, so both stay consistent."""
+    def numeric(v):
+        return sum(c.isdigit() for c in v) >= max(4, len(v.replace(" ", "")) * 0.6)
+
+    nums = [e for e in active if e["type"] != "PERSON" and numeric(e["value"])]
+    for e in nums:
+        hosts = [h for h in nums if h is not e and len(h["value"]) > len(e["value"]) and e["value"] in h["value"]
+                 and len(h["replace"]) == len(h["value"])]
+        if not hosts:
+            continue
+        h = max(hosts, key=lambda h: len(h["value"]))
+        i = h["value"].index(e["value"])
+        piece = h["replace"][i:i + len(e["value"])]
+        if piece != e["value"]:
+            e["replace"] = piece
 
 
 def _q(s: str) -> str:
