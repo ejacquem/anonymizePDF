@@ -113,6 +113,10 @@ spans stay valid), and on scans `term_regex(..., ocr=True)` accepts look-alikes 
 a space inside a number). The leftover check on scans uses the tolerant regex too.
 Scan replacement text: ink height measured on the original text (tight OCR boxes), same baseline, ink colour sampled,
 may extend into free space like digital (`render.scan_text_layout`, `render.ink_color`).
+Bold on scans (`render.BoldMeter`): median width of horizontal ink runs / font size estimated from the text, compared with
+the page median (light-on-dark handled). Bold if > 1.4x. Calibrated on the sample scan vs its digital twin (764 words, 40 bold):
+regular max 1.38, 1 bold word below 1.4; no false bold. Needs >= 15 measurable words on the page, else never bold.
+The font family itself is not detected on scans (always Arial / Arial Bold).
 
 Tesseract: `tesseract_words()` does two passes (default layout, then `--psm 6`). Second-pass lines are split at wide gaps (columns),
 and replace first-pass words when pass 1 looks garbled (mean conf < 80 and pass 2 better by 10); if the passes disagree textually, both readings are kept.

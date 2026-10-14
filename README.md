@@ -103,7 +103,8 @@ names of similar length, birth dates shift by a few days and years. Names are re
 * A PDF is treated as *digital* or *scan* as a whole (a mixed document gets a warning).
 * Digital PDFs: the replacement keeps the size, colour and baseline of the original, and its font when possible
   (the font embedded in the PDF if it has the needed letters, else the same font installed on this PC, else the
-  closest standard font). The Log says which was used. Scans use a generic font.
+  closest standard font). The Log says which was used. Scans use Arial (bold when the original
+  text is detected as bold), sized and coloured like the original.
 
 ## Privacy
 

@@ -379,22 +379,25 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> list:
         draw = ImageDraw.Draw(img)
         pad = 3
         # measure everything before painting (ink colour, free space on the right)
-        looks = [(render.ink_color(img, boxes[0]), render.free_right(words, boxes[0], img.width))
-                 for _, boxes in plan]
-        for (m, boxes), (ink, limit) in zip(plan, looks):
+        bold = render.BoldMeter(img, words)
+        looks = [(render.ink_color(img, boxes[0]), render.free_right(words, boxes[0], img.width),
+                  bold.is_bold(boxes[0], m.value)) for m, boxes in plan]
+        n_bold = sum(1 for look in looks if look[2])
+        for (m, boxes), (ink, limit, is_bold) in zip(plan, looks):
             m.replacement = _adjust(cfg, m)
             for i, b in enumerate(boxes):
                 box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
                 fill = (0, 0, 0) if blackbox else render.background_color(img, box)
                 draw.rectangle(box, fill=fill)
                 if not blackbox and i == 0 and m.replacement:
-                    font, xy = render.scan_text_layout(m.value, m.replacement, b, limit)
+                    font, xy = render.scan_text_layout(m.value, m.replacement, b, limit, is_bold)
                     lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
                     ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
                     color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
                     draw.text(xy, m.replacement, font=font, anchor="ls", fill=color)
             records.append({"page": pno, "original": m.value, "replacement": m.replacement})
-        log(f"   page {pno}/{len(src)}: OCR {len(words)} words, {len(plan)} replacement(s) ({time.time() - t0:.0f}s)")
+        log(f"   page {pno}/{len(src)}: OCR {len(words)} words, {len(plan)} replacement(s)"
+            f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         newp = dst.new_page(width=page.rect.width, height=page.rect.height)

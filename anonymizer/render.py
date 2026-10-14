@@ -7,6 +7,7 @@ on this computer, then the closest standard PDF font: Helvetica / Times / Courie
 """
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -233,10 +234,12 @@ def apply_redactions(page):
 # ---------------------------------------------------------------------------
 
 _FONT_CANDIDATES = ["arial.ttf", "Arial.ttf", "Helvetica.ttc", "LiberationSans-Regular.ttf", "DejaVuSans.ttf"]
+_BOLD_CANDIDATES = ["arialbd.ttf", "Arial Bold.ttf", "LiberationSans-Bold.ttf", "DejaVuSans-Bold.ttf"]
 
 
-def load_font(size: int):
-    for name in _FONT_CANDIDATES:
+@lru_cache(maxsize=256)
+def load_font(size: int, bold: bool = False):
+    for name in (_BOLD_CANDIDATES if bold else []) + _FONT_CANDIDATES:
         try:
             return ImageFont.truetype(name, size)
         except OSError:
@@ -245,6 +248,54 @@ def load_font(size: int):
         return ImageFont.load_default(size=size)
     except TypeError:
         return ImageFont.load_default()
+
+
+# ----- bold detection on scans -----
+# Stroke thickness (median width of horizontal ink runs) divided by the font size estimated from the text,
+# compared with the same measure for the whole page. Calibrated on the sample scan against its digital twin:
+# regular text <= 1.38 x the page median, bold >= 1.33 (1 of 40 bold words below 1.4): threshold 1.4.
+BOLD_THRESHOLD = 1.4
+
+
+def _em_size(text: str, box) -> float:
+    """Font size (px) that gives `text` the ink height of `box`."""
+    _, top, _, bottom = load_font(100).getbbox(text, anchor="ls")
+    return 100 * (box[3] - box[1]) / max(bottom - top, 1)
+
+
+def stroke_ratio(gray: np.ndarray, box, text: str) -> float | None:
+    x0, y0, x1, y1 = [int(round(v)) for v in box]
+    crop = gray[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)].astype(float)
+    if crop.shape[0] < 6 or crop.shape[1] < 6 or not text.strip():
+        return None
+    lo, hi = np.percentile(crop, 3), np.percentile(crop, 97)
+    if hi - lo < 40:                                   # no contrast: nothing to measure
+        return None
+    dark = (hi - crop) / (hi - lo)
+    ink = dark > 0.5
+    if ink.mean() > 0.5:                               # light text on a dark background
+        ink = ~ink
+    d = np.diff(np.pad(ink, ((0, 0), (1, 1))).astype(np.int8), axis=1)
+    runs = np.where(d == -1)[1] - np.where(d == 1)[1]
+    if len(runs) < 3:
+        return None
+    return float(np.median(runs)) / _em_size(text, box)
+
+
+class BoldMeter:
+    """Decides if a piece of a scanned page is bold, relative to the page's own text."""
+
+    def __init__(self, img, words: list[dict]):
+        self.gray = np.asarray(img.convert("L"))
+        ratios = [r for w in words if len(w["text"]) >= 2
+                  for r in [stroke_ratio(self.gray, w["box"], w["text"])] if r]
+        self.ref = float(np.median(ratios)) if len(ratios) >= 15 else None   # too little text: don't guess
+
+    def is_bold(self, box, text: str) -> bool:
+        if self.ref is None:
+            return False
+        r = stroke_ratio(self.gray, box, text)
+        return r is not None and r > BOLD_THRESHOLD * self.ref
 
 
 def fit_font(text, max_w, h):
@@ -257,23 +308,23 @@ def fit_font(text, max_w, h):
     return load_font(8)
 
 
-def scan_text_layout(original: str, new: str, box, limit_x: float | None = None):
+def scan_text_layout(original: str, new: str, box, limit_x: float | None = None, bold: bool = False):
     """Font and baseline position so that `new` looks like `original` did in `box` (unpadded word box):
     same ink height (the size is measured on the original text, so tight OCR boxes give the right size)
-    and same baseline. Shrinks only if `new` would run past `limit_x` (next word / margin)."""
+    and same baseline, in bold if the original was. Shrinks only if `new` would run past `limit_x`."""
     x0, y0, x1, y1 = box
-    probe = load_font(100)
+    probe = load_font(100, bold)
     _, top, _, bottom = probe.getbbox(original or new, anchor="ls")   # top < 0 (above baseline)
     ink = bottom - top
     size = max(int(round(100 * (y1 - y0) / ink)), 6) if ink > 0 else max(int((y1 - y0) * 0.8), 8)
-    font = load_font(size)
+    font = load_font(size, bold)
     descent = max(font.getbbox(original or new, anchor="ls")[3], 0)   # part of the original below the baseline
     avail = max(x1 - x0, 1)
     if limit_x is not None:
         avail = max(avail, min(limit_x - x0, avail * 1.35))
     while size > 6 and font.getlength(new) > avail:
         size -= 1
-        font = load_font(size)
+        font = load_font(size, bold)
     return font, (x0, y1 - descent)
 
 
