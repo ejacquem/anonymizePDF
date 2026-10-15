@@ -3,7 +3,7 @@
 const $ = (s) => document.querySelector(s);
 const state = {
   tree: null, nodes: {}, folder: null, file: null,
-  open: new Set([""]), dirty: false, running: false, hasConfig: false, report: null,
+  open: new Set([""]), dirty: false, running: false, hasConfig: false, report: null, status: null,
 };
 
 // ---------- helpers ----------
@@ -66,6 +66,10 @@ function renderNode(node, parent, depth) {
     if (node.pdf_count) badges += `<span class="badge">${node.pdf_count} pdf</span>`;
     if (node.has_config) badges += `<span class="badge cfg">cfg</span>`;
     if (node.has_report) badges += `<span class="badge done">done</span>`;
+    if (node.anon_count) {
+      const all = node.reviewed_count === node.anon_count;
+      badges += `<span class="badge rev${all ? " all" : ""}" title="manually reviewed / anonymized files">✓ ${node.reviewed_count}/${node.anon_count}</span>`;
+    }
     row.innerHTML = `<span class="caret">${open ? "▾" : "▸"}</span><span>📁</span><span class="name">${esc(node.name)}</span>${badges}`;
     row.onclick = async () => {
       if (state.open.has(node.path) && state.folder === node.path) state.open.delete(node.path);
@@ -80,7 +84,8 @@ function renderNode(node, parent, depth) {
     row.className = "row" + (node.anonymized ? " anon" : "") + (state.file === node.path ? " selected" : "");
     row.style.paddingLeft = 8 + depth * 14 + 14 + "px";
     row.innerHTML = `<span>${node.anonymized ? "🔒" : "📄"}</span><span class="name" title="${esc(node.name)}">${esc(node.name)}</span>` +
-      (!node.anonymized && node.anon ? `<span class="badge done">anon</span>` : "");
+      (!node.anonymized && node.anon ? `<span class="badge done">anon</span>` : "") +
+      (node.reviewed ? `<span class="rev-mark" title="anonymized file reviewed by hand">✓</span>` : "");
     row.onclick = () => openFile(node.path);
     parent.appendChild(row);
   }
@@ -371,8 +376,36 @@ async function openFile(path) {
   setViewer("orig", orig);
   setViewer("anon", anon);
   $("#anonEmpty").textContent = "Not generated yet";
+  updateReviewButton();
   renderTree();
 }
+
+// ---------- manual review flag ----------
+function currentOriginalNode() {
+  const node = state.file ? state.nodes[state.file] : null;
+  if (!node) return null;
+  return node.anonymized ? state.nodes[node.original] : node;
+}
+
+function updateReviewButton() {
+  const btn = $("#btnReviewed"), node = currentOriginalNode();
+  btn.hidden = !(node && node.anon);
+  if (btn.hidden) return;
+  btn.classList.toggle("on", !!node.reviewed);
+  btn.textContent = node.reviewed ? "✓ Reviewed" : "Mark as reviewed";
+}
+
+$("#btnReviewed").onclick = async () => {
+  const node = currentOriginalNode();
+  if (!node) return;
+  try {
+    await put("/api/review", { folder: dirname(node.path), file: node.name, reviewed: !node.reviewed });
+  } catch (e) { alert(e.message); return; }
+  await loadTree();
+  updateReviewButton();
+  if (state.status) await loadStatus();
+  renderRecap();
+};
 
 // ---------- folder selection / config ----------
 async function selectFolder(path) {
@@ -383,6 +416,7 @@ async function selectFolder(path) {
   state.dirty = false;
   setViewer("orig", null);
   setViewer("anon", null);
+  updateReviewButton();
   await loadConfig();
   await loadReport();
   updateToolbar();
@@ -509,13 +543,84 @@ $("#btnRefresh").onclick = loadTree;
 async function loadReport() {
   if (state.folder === null) return;
   try { state.report = await api(`/api/report?folder=${encodeURIComponent(state.folder)}`); } catch (e) { state.report = null; }
+  await loadStatus();
   renderRecap();
+}
+
+// ---------- batch: overview of the client folders below the selected one ----------
+function hasSubfolders(node) {
+  return !!node && (node.children || []).some((c) => c.type === "dir");
+}
+
+async function loadStatus() {
+  const node = state.nodes[state.folder];
+  state.status = null;
+  if (!hasSubfolders(node)) return;
+  try { state.status = await api(`/api/status?folder=${encodeURIComponent(state.folder)}`); } catch (e) { state.status = null; }
+  renderRecap();
+}
+
+function renderOverview() {
+  const st = state.status;
+  if (!st || !st.length) return "";
+  const noCfg = st.filter((f) => !f.config).length, todo = st.filter((f) => f.to_do).length;
+  const tot = (k) => st.reduce((a, f) => a + f[k], 0);
+  let h = `<div class="overview"><div class="sum"><b>${st.length} client folder(s)</b> below this one ·
+    ${tot("pdfs")} PDF(s) · ${tot("anonymized")} anonymized · ${tot("reviewed")} reviewed</div>
+    <div class="actions">
+      <button id="btnBatchScan" ${state.running || !noCfg ? "disabled" : ""}
+        title="Scan & draft a config in every folder that has none yet (existing configs are never overwritten)">Scan ${noCfg} folder(s) without config</button>
+      <button id="btnBatchRun" class="primary" ${state.running || !todo ? "disabled" : ""}
+        title="Anonymize every folder whose outputs are missing or whose config changed since the last run">Anonymize ${todo} folder(s) to do</button>
+      <label class="chk" title="Also redo the folders that are already done (scan: replaces existing configs!)"><input type="checkbox" id="batchRedo"> redo all</label>
+    </div>
+    <table class="ov"><tr><th>Folder</th><th>PDFs</th><th>Config</th><th>Anonymized</th><th>Leftovers</th><th>Reviewed</th></tr>`;
+  for (const f of st) {
+    const anon = f.anonymized === f.pdfs ? `<span class="ok">${f.anonymized}/${f.pdfs}</span>` : `${f.anonymized}/${f.pdfs}`;
+    const left = f.errors ? `<span class="bad">${f.errors} error(s)</span>` : f.leftovers ? `<span class="bad">${f.leftovers}</span>` : (f.anonymized ? `<span class="ok">0</span>` : "–");
+    const rev = f.anonymized ? (f.reviewed === f.anonymized ? `<span class="ok">✓ ${f.reviewed}/${f.anonymized}</span>` : `${f.reviewed}/${f.anonymized}`) : "–";
+    const cfg = f.config ? (f.to_do ? `<span class="warn" title="outputs missing or config changed">to do</span>` : `<span class="ok">✓</span>`) : "–";
+    h += `<tr class="click" data-path="${esc(f.path)}"><td class="name">${esc(f.path || f.name)}</td><td>${f.pdfs}</td><td>${cfg}</td>
+      <td>${anon}</td><td>${left}</td><td>${rev}</td></tr>`;
+  }
+  return h + `</table></div>`;
+}
+
+async function runBatch(action) {
+  const redo = $("#batchRedo") && $("#batchRedo").checked;
+  if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder and replaces their configs (your edits are lost). Continue?")) return;
+  if (state.dirty && !(await saveConfig())) return;
+  await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: $("#ocrVerify").checked },
+    action === "scan" ? "Batch scan" : "Batch anonymize");
+  await loadTree();
+  await loadConfig();
+  await loadReport();
+  showTab("recap");
+}
+
+function bindOverview(box) {
+  const s = box.querySelector("#btnBatchScan"), r = box.querySelector("#btnBatchRun");
+  if (s) s.onclick = () => runBatch("scan");
+  if (r) r.onclick = () => runBatch("anonymize");
+  box.querySelectorAll("tr.click").forEach((tr) => {
+    tr.onclick = async () => {
+      const p = tr.dataset.path;
+      p.split("/").forEach((_, i, parts) => state.open.add(parts.slice(0, i + 1).join("/")));
+      await selectFolder(p);
+      renderTree();
+    };
+  });
 }
 
 function renderRecap() {
   const box = $("#tab-recap");
   const r = state.report;
-  if (!r) { box.innerHTML = `<div class="muted">Nothing anonymized yet in this folder.</div>`; return; }
+  const ov = renderOverview();
+  if (!r) {
+    box.innerHTML = ov + (ov && !(state.nodes[state.folder] || {}).pdf_count ? "" : `<div class="muted">Nothing anonymized yet in this folder.</div>`);
+    bindOverview(box);
+    return;
+  }
   const total = r.files.reduce((a, f) => a + f.replaced, 0);
   const bad = r.files.filter((f) => f.leftovers.length || f.error).length;
   let h = `<div class="sum"><b>${esc(r.folder || ".")}</b> · ${esc(r.generated.replace("T", " "))}<br>
@@ -528,6 +633,8 @@ function renderRecap() {
     else if (f.leftovers.length) pills.push(`<span class="pill bad">⚠ ${f.leftovers.length} left</span>`);
     else pills.push(`<span class="pill ok">✓ clean</span>`);
     if (f.warnings.length) pills.push(`<span class="pill warn">warning</span>`);
+    const fnode = state.nodes[(state.folder ? state.folder + "/" : "") + f.file];
+    if (fnode && fnode.anon) pills.push(fnode.reviewed ? `<span class="pill ok">✓ reviewed</span>` : `<span class="pill">not reviewed</span>`);
     const black = f.blackouts || [];
     if (black.length) {
       const count = (k) => black.filter((b) => b.kind === k).length;
@@ -556,7 +663,8 @@ function renderRecap() {
     } else if (!f.error) h += `<div class="note muted">Nothing was replaced in this file.</div>`;
     h += `</details>`;
   }
-  box.innerHTML = h;
+  box.innerHTML = ov + h;
+  bindOverview(box);
   box.querySelectorAll("button[data-open]").forEach((b) => {
     b.onclick = (ev) => {
       ev.preventDefault(); ev.stopPropagation();

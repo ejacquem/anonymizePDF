@@ -76,9 +76,16 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Toolbar: **1 · Scan & draft config**, **Save config** (Ctrl+S), **2 · Anonymize folder**, "OCR check for digital PDFs".
 - Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format.
 - Header: OCR engine in use and spaCy models.
+- Review flag: 'Mark as reviewed' in the Anonymized pane head; `anon_review.json` per folder = {original name: {at,
+  sha256 of the output}}; a flag counts only while the output's hash matches (regenerated or edited -> not reviewed);
+  `run_anonymize` also clears the flag of each file it regenerates. Tree badges `✓` (file) and `✓ r/n` (folder).
+- Batch: selecting a folder with subfolders shows an overview in Recap (`/api/status`: per client folder PDFs, config,
+  anonymized, to_do = outputs missing or config newer than the report, leftovers, reviewed) and two buttons
+  (`POST /api/batch` action scan = folders without config only, anonymize = folders to do; `redo` = all).
 
 API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api/page?path=&page=&scale=`,
 `GET|PUT /api/config?folder=`, `GET /api/report?folder=`, `POST /api/scan`, `POST /api/anonymize` (job id),
+`GET|PUT /api/review?folder=`, `GET /api/status?folder=`, `POST /api/batch`,
 `GET /api/job/<id>?since=N` (log lines + status). Jobs run in a thread, one at a time.
 
 ## 5. Pipeline

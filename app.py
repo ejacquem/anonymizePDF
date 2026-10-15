@@ -11,6 +11,7 @@ inside --root. Original PDFs are never modified; results are written next to the
 (both contain real personal data - keep them out of git).
 """
 import argparse
+import hashlib
 import json
 import threading
 import time
@@ -92,12 +93,19 @@ def build_tree(d: Path) -> dict | None:
                 "anon": rel_of(anon) if anon.exists() else None,
             })
     own_pdfs = [c for c in children if c["type"] == "file"]
+    reviewed = reviewed_files(d) if (d / REVIEW_NAME).exists() else {}
+    for c in own_pdfs:
+        c["reviewed"] = not c["anonymized"] and c["name"] in reviewed
+        if c["anonymized"] and c["original"]:
+            c["reviewed"] = Path(c["original"]).name in reviewed
     if not children and d != STATE["root"]:
         return None
     return {"type": "dir", "name": d.name if d != STATE["root"] else (d.name or str(d)), "path": rel_of(d),
             "children": children,
             "pdf_count": sum(1 for c in own_pdfs if not c["anonymized"]),
-            "has_config": (d / eng.CONFIG_NAME).exists(), "has_report": (d / eng.REPORT_NAME).exists()}
+            "has_config": (d / eng.CONFIG_NAME).exists(), "has_report": (d / eng.REPORT_NAME).exists(),
+            "anon_count": sum(1 for c in own_pdfs if not c["anonymized"] and c["anon"]),
+            "reviewed_count": sum(1 for c in own_pdfs if not c["anonymized"] and c["reviewed"])}
 
 
 @app.get("/api/tree")
@@ -207,6 +215,111 @@ def get_report():
 
 
 # ---------------------------------------------------------------------------
+# manual review flags: anon_review.json in each folder, {original file name: {at, sha256 of the output}}.
+# A flag only counts while the anonymized file is the one that was reviewed: regenerating it (here or
+# elsewhere) changes its hash, so it falls back to 'not reviewed'.
+# ---------------------------------------------------------------------------
+
+REVIEW_NAME = "anon_review.json"
+
+
+def _sha(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def read_reviews(folder: Path) -> dict[str, dict]:
+    f = folder / REVIEW_NAME
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def reviewed_files(folder: Path) -> dict[str, str]:
+    """{original file name: date} for the files whose CURRENT anonymized output was reviewed."""
+    out = {}
+    for name, info in read_reviews(folder).items():
+        anon = folder / (Path(name).stem + eng.SUFFIX + ".pdf")
+        if anon.exists() and info.get("sha256") == _sha(anon):
+            out[name] = info.get("at", "")
+    return out
+
+
+@app.get("/api/review")
+def get_review():
+    try:
+        folder = folder_arg(request.args)
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    return jsonify(reviewed_files(folder))
+
+
+@app.put("/api/review")
+def put_review():
+    data = request.get_json(force=True)
+    try:
+        folder = folder_arg(data)
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    name = Path(str(data.get("file", ""))).name
+    anon = folder / (Path(name).stem + eng.SUFFIX + ".pdf")
+    if not name or not anon.exists():
+        return bad("no anonymized file for this document", 404)
+    reviews = read_reviews(folder)
+    if data.get("reviewed"):
+        reviews[name] = {"at": time.strftime("%Y-%m-%d %H:%M"), "sha256": _sha(anon)}
+    else:
+        reviews.pop(name, None)
+    (folder / REVIEW_NAME).write_text(json.dumps(reviews, indent=2, ensure_ascii=False), encoding="utf-8")
+    return jsonify(reviewed_files(folder))
+
+
+def client_folders(base: Path) -> list[Path]:
+    """`base` and every folder below it that directly contains PDFs to anonymize."""
+    out = []
+    for d in [base] + sorted((p for p in base.rglob("*") if p.is_dir()), key=lambda p: str(p).lower()):
+        if any(part.startswith(".") or part == "__pycache__" for part in d.relative_to(base).parts):
+            continue
+        if eng.list_pdfs(d):
+            out.append(d)
+    return out
+
+
+def folder_status(d: Path) -> dict:
+    pdfs = eng.list_pdfs(d)
+    cfg, rep = d / eng.CONFIG_NAME, d / eng.REPORT_NAME
+    outputs = [p for p in pdfs if (d / (p.stem + eng.SUFFIX + ".pdf")).exists()]
+    report = None
+    if rep.exists():
+        try:
+            report = json.loads(rep.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            report = None
+    files = (report or {}).get("files", [])
+    reviewed = reviewed_files(d)
+    # 'to do' for batch anonymize: no output yet, or the config changed after the last run
+    stale = cfg.exists() and (len(outputs) < len(pdfs) or not rep.exists() or cfg.stat().st_mtime > rep.stat().st_mtime)
+    return {"path": rel_of(d), "name": d.name or str(d), "pdfs": len(pdfs), "config": cfg.exists(),
+            "anonymized": len(outputs), "to_do": bool(stale),
+            "leftovers": sum(len(f.get("leftovers", [])) for f in files),
+            "errors": sum(1 for f in files if f.get("error")),
+            "reviewed": sum(1 for p in outputs if p.name in reviewed)}
+
+
+@app.get("/api/status")
+def status():
+    try:
+        base = folder_arg(request.args)
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    return jsonify([folder_status(d) for d in client_folders(base)])
+
+
+# ---------------------------------------------------------------------------
 # jobs (scan and anonymize can take a while: run in a thread, poll the log)
 # ---------------------------------------------------------------------------
 
@@ -289,6 +402,59 @@ def anonymize():
     return jsonify({"job": job["id"]}) if job else bad("Another job is running", 409)
 
 
+@app.post("/api/batch")
+def batch():
+    """Scan or anonymize every client folder below the selected one, one after the other.
+    scan: only folders without a config (a reviewed config is never overwritten) unless 'redo'.
+    anonymize: only folders 'to do' (no output yet, or config changed since the last run) unless 'redo'."""
+    data = request.get_json(force=True)
+    try:
+        base = folder_arg(data)
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    action, redo, ocr_verify = data.get("action"), bool(data.get("redo")), bool(data.get("ocr_verify"))
+    if action not in ("scan", "anonymize"):
+        return bad("action must be 'scan' or 'anonymize'")
+
+    def work(log):
+        folders = client_folders(base)
+        done, skipped, failed = [], [], []
+        log(f"Batch {action}: {len(folders)} folder(s) with PDFs under '{rel_of(base) or '.'}'")
+        for k, d in enumerate(folders, start=1):
+            rel = rel_of(d) or "."
+            st = folder_status(d)
+            if action == "scan" and st["config"] and not redo:
+                skipped.append(rel)
+                log(f"[{k}/{len(folders)}] {rel}: already has a config -> skipped")
+                continue
+            if action == "anonymize" and not st["config"]:
+                skipped.append(rel)
+                log(f"[{k}/{len(folders)}] {rel}: no config yet -> skipped (scan it first)")
+                continue
+            if action == "anonymize" and not st["to_do"] and not redo:
+                skipped.append(rel)
+                log(f"[{k}/{len(folders)}] {rel}: up to date -> skipped")
+                continue
+            log(f"[{k}/{len(folders)}] {rel}: {action} ...")
+            try:
+                if action == "scan":
+                    res = eng.scan_folder(d, rel_of(d), get_ner(log), STATE["ocr_lang"], lambda m: log("   " + m))
+                    (d / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+                else:
+                    text = (d / eng.CONFIG_NAME).read_text(encoding="utf-8")
+                    eng.run_anonymize(d, rel_of(d), text, STATE["ocr_lang"], ocr_verify, lambda m: log("   " + m))
+                done.append(rel)
+            except Exception as e:  # noqa: BLE001  (one folder failing must not stop the others)
+                failed.append(rel)
+                log(f"   ERROR in {rel}: {e}")
+        log(f"Batch finished: {len(done)} done, {len(skipped)} skipped, {len(failed)} failed"
+            + (f" ({', '.join(failed)})" if failed else ""))
+        return {"done": done, "skipped": skipped, "failed": failed}
+
+    job = start_job(f"batch-{action}", work)
+    return jsonify({"job": job["id"]}) if job else bad("Another job is running", 409)
+
+
 @app.get("/api/job/<job_id>")
 def job_status(job_id):
     job = JOBS.get(job_id)
@@ -314,6 +480,7 @@ def main():
     ap.add_argument("--ocr-engine", choices=ocr.ENGINES, default=None,
                     help="auto (default: Tesseract if installed, else Windows OCR) | tesseract | windows")
     ap.add_argument("--spacy-model", action="append", help="spaCy model(s) for names; default = installed ones")
+    ap.add_argument("--open", action="store_true", help="open the app in the default browser once the server is up")
     args = ap.parse_args()
 
     root = Path(args.root).expanduser().resolve()
@@ -328,7 +495,11 @@ def main():
         raise SystemExit(str(e))
     print(f"Root: {root}\nOCR: {ocr.describe(args.ocr_lang) or 'none (scanned PDFs cannot be processed)'}")
     print(f"Secret key for fake values: {secret.key_path()}  (keep it private, back it up, never commit it)")
-    print(f"Open http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
+    url = f"http://127.0.0.1:{args.port}"
+    print(f"Open {url}  (Ctrl+C to stop)")
+    if args.open:
+        import webbrowser
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)
 
 

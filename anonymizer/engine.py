@@ -764,6 +764,18 @@ def summarize(records: list[dict], cfg: dict) -> list[dict]:
     return sorted(rows, key=lambda r: (order.get(r["type"], 99), -r["count"], r["original"]))
 
 
+def _clear_review(folder: Path, name: str):
+    f = folder / "anon_review.json"
+    if not f.exists():
+        return
+    try:
+        reviews = json.loads(f.read_text(encoding="utf-8"))
+        if reviews.pop(name, None) is not None:
+            f.write_text(json.dumps(reviews, indent=2, ensure_ascii=False), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+
+
 def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log) -> dict:
     t_all = time.time()
     cfg = parse_config(config_text)
@@ -777,6 +789,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
     files = []
     for i, pdf in enumerate(pdfs, start=1):
         out = pdf.with_name(pdf.stem + SUFFIX + ".pdf")
+        _clear_review(folder, pdf.name)                # a new output has not been reviewed yet
         t0 = time.time()
         entry = {"file": pdf.name, "output": out.name, "mode": "?", "pages": 0, "replaced": 0, "items": [],
                  "leftovers": [], "warnings": [], "error": None, "seconds": 0}

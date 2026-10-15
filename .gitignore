@@ -1,6 +1,9 @@
 # real personal data: never commit
 anon_config.yaml
 anon_report.json
+anon_review.json
+start_root.txt
+wheels/
 secret.key
 *.pdf
 !sample_data/**/*.pdf

@@ -109,6 +109,19 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 6. The **Recap** tab lists, per file, every replaced value (type, original → replacement, count, pages), the black
    boxes (■ photos, QR codes, signatures), the MRZ, the time taken, and any original value still found in the
    output ("leftovers"). The **Log** tab shows the run (OCR engine, fonts used, bold, black boxes...).
+7. Once you have checked an anonymized file by eye, press **Mark as reviewed** (top of the *Anonymized* pane). The tree
+   shows `✓` on the file and `✓ 2/3` on the folder. If the file is generated again (or changed in any way), the flag
+   goes back to *not reviewed* by itself. Flags are stored in `anon_review.json` in the folder.
+
+### Many folders at once (batch)
+
+Select a folder that contains client folders (e.g. the root): the **Recap** tab shows an overview of every client
+folder below it (PDFs, config, anonymized, leftovers, reviewed); click a row to open that folder.
+* **Scan … folder(s) without config** drafts a config in every folder that has none (existing configs are never
+  overwritten, so your reviewed edits are safe).
+* **Anonymize … folder(s) to do** runs every folder whose outputs are missing or whose config changed since the last
+  run. *redo all* also redoes the folders already done.
+A folder that fails does not stop the others; the Log tab lists what was done, skipped or failed.
 
 ## What is detected
 

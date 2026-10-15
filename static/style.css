@@ -87,6 +87,21 @@ main:not(.native) .viewer .pages { cursor: grab; user-select: none; }
 .badge { font-size: 10px; padding: 0 5px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
 .badge.cfg { color: var(--accent); border-color: var(--accent); }
 .badge.done { color: var(--ok); border-color: var(--ok); }
+.badge.rev { color: var(--muted); }
+.badge.rev.all { color: var(--ok); border-color: var(--ok); }
+.row .rev-mark { color: var(--ok); font-weight: 700; }
+button.review { margin-left: auto; flex: none; }
+button.review.on { color: var(--ok); border-color: var(--ok); font-weight: 600; }
+/* batch overview */
+.overview { margin-bottom: 14px; }
+.overview .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+table.ov { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.ov th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+table.ov td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.ov td.name { white-space: normal; word-break: break-word; }
+table.ov tr.click { cursor: pointer; }
+table.ov tr.click:hover { background: var(--sel); }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
 
 /* tabs */
 .tabs { display: flex; border-bottom: 1px solid var(--line); }
