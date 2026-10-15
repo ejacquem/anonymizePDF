@@ -4,7 +4,7 @@ Engine used by the web app (and usable from Python directly).
 
   scan_folder()     detect personal data in every PDF of ONE folder -> draft config (YAML text)
   load_config()     parse the (reviewed) config
-  run_anonymize()   apply that one config to every PDF of the folder -> *_anonymized.pdf + report
+  run_anonymize()   apply that one config to every PDF / image of the folder -> *_anonymized.pdf + report
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import numpy as np
 import yaml
 from PIL import ImageDraw
 
-from . import fields, ocr, regions, render
+from . import faces, fields, ocr, regions, render
 from .fake import Faker, match_case
 from .ocr import ocr_words, render_page
 from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz,
@@ -59,8 +59,53 @@ _HONORIFIC_START = re.compile(rf"^{_HONORIFIC}\s+")
 _TITLE_BEFORE = re.compile(rf"({_HONORIFIC})\s*$")
 
 
-def list_pdfs(folder: Path) -> list[Path]:
-    return sorted((p for p in folder.glob("*.pdf") if not p.stem.endswith(SUFFIX)), key=lambda p: p.name.lower())
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+SOURCE_SUFFIXES = {".pdf"} | IMAGE_SUFFIXES
+SCAN_DPI = 300
+
+
+def is_source(p: Path) -> bool:
+    return p.is_file() and p.suffix.lower() in SOURCE_SUFFIXES and not p.stem.endswith(SUFFIX)
+
+
+def list_sources(folder: Path) -> list[Path]:
+    """Files to anonymize: PDFs and images (an image is handled as a one-page scan)."""
+    return sorted((p for p in folder.iterdir() if not p.name.startswith(".") and is_source(p)),
+                  key=lambda p: p.name.lower())
+
+
+def find_original(folder: Path, anon: Path) -> Path | None:
+    """The source file of an output `<name>_anonymized.pdf`, if it exists."""
+    base = anon.stem[: -len(SUFFIX)] if anon.stem.endswith(SUFFIX) else None
+    if base is None:
+        return None
+    for ext in SOURCE_SUFFIXES:
+        p = folder / (base + ext)
+        if p.is_file():
+            return p
+    return None
+
+
+def output_of(src: Path) -> Path:
+    """Where the anonymized file goes: a PDF for a PDF, an image of the same format for an image."""
+    if src.suffix.lower() in IMAGE_SUFFIXES:
+        return src.with_name(src.stem + SUFFIX + src.suffix.lower())
+    return src.with_name(src.stem + SUFFIX + ".pdf")
+
+
+def open_source(path: Path):
+    """A PyMuPDF document for a source file. An image becomes a one-page PDF-like document with the image at
+    SCAN_DPI, so it goes through exactly the same path as a scanned PDF page."""
+    if path.suffix.lower() == ".pdf":
+        return fitz.open(path)
+    from PIL import Image
+
+    with Image.open(path) as im:                        # pixels (PyMuPDF sizes an image by its dpi tag instead)
+        w, h = im.size
+    doc = fitz.open()
+    page = doc.new_page(width=w * 72 / SCAN_DPI, height=h * 72 / SCAN_DPI)
+    page.insert_image(page.rect, filename=str(path))
+    return doc
 
 
 def _first_names() -> set[str]:
@@ -175,7 +220,7 @@ def parse_config(text: str) -> dict:
         "style": style, "ocr_lang": data.get("ocr_lang"),
         # missing in older configs: on (the safe choice)
         "blackout": {"photos": bool(blackout.get("photos", True)),
-                     "photos_only_on_id_documents": bool(blackout.get("photos_only_on_id_documents", True)),
+                     "photos_only_on_id_documents": bool(blackout.get("photos_only_on_id_documents", False)),
                      "signatures": bool(blackout.get("signatures", True)),
                      "qr_codes": bool(blackout.get("qr_codes", True))},
         "mrz": mrz,
@@ -224,7 +269,7 @@ def _detect_words(found: dict, words: list[dict], ocr_page: bool, ner, file: str
 
 def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None) -> dict:
     t0 = time.time()
-    pdfs = list_pdfs(folder)
+    pdfs = list_sources(folder)
     if not pdfs:
         raise ValueError("No PDF in this folder")
     can_ocr = ocr.available()
@@ -232,7 +277,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         log(f"OCR engine for scanned pages: {ocr.describe(default_ocr_lang)}")
     found: dict = {}
     for fi, pdf in enumerate(pdfs, start=1):
-        doc = fitz.open(pdf)
+        doc = open_source(pdf)
         layouts = [page_layout(p) for p in doc]
         modes = sorted({page_mode_name(l) for l in layouts})
         log(f"[{fi}/{len(pdfs)}] {pdf.name}: {len(doc)} page(s), {', '.join(modes)}")
@@ -385,8 +430,8 @@ def render_config(rel: str, pdfs: list[Path], active: list[dict], off: list[dict
         "  digital_fill: none         # digital PDFs: none = keep the page background | white = white rectangle",
         "                             # (scans are always painted over with the sampled paper colour)",
         "blackout:                    # black boxes over what cannot be replaced by fake text",
-        "  photos: true               # identity photos (and the faded 'ghost' copy on passports / ID cards)",
-        "  photos_only_on_id_documents: true   # true: only on pages that look like a passport / ID card / permit",
+        "  photos: true               # faces of people (ID photos, passports, portraits): the head is covered",
+        "  photos_only_on_id_documents: false  # false: faces on every page | true: only on pages that look like an ID",
         "  signatures: true           # handwritten signatures next to a 'Signature' label",
         "  qr_codes: true             # QR codes and other 2D barcodes (they can contain personal data)",
         "mrz: regenerate              # machine readable zone (passport, ID card): regenerate in the same format | keep",
@@ -526,7 +571,7 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         words = lay["words"]
         bo = cfg["blackout"]
         want_photos = bo["photos"] and (not bo["photos_only_on_id_documents"] or fields.is_id_document(words))
-        black = [("photo", r) for r in (regions.find_photos_digital(page) if want_photos else [])]
+        black = [("photo", r) for r in (faces.find_faces_digital(page) if want_photos else [])]
         black += [("qr code", r) for r in (regions.find_codes_digital(page) if bo["qr_codes"] else [])]
         black += [("signature", r) for r in
                   (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
@@ -645,9 +690,30 @@ def _finish_digital(doc, out: Path):
     doc.close()
 
 
+def _scan_image(src: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list, dict]:
+    """A scanned image: the anonymized page is saved as an image of the same kind (not a PDF)."""
+    pc = pii_cfg(cfg)
+    numberer, records = Numberer(), []
+    extras: dict = {"blackouts": [], "mrz": []}
+    page = open_source(src)[0]
+    img = _scan_page(page, 1, 1, cfg, pc, ocr_lang, numberer, records, extras, log)
+    if out.suffix.lower() in (".jpg", ".jpeg"):
+        img.convert("RGB").save(out, quality=95)
+    else:
+        img.save(out)
+    return records, extras
+
+
+def _scan_source(src: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list, dict]:
+    """Scanned source -> anonymized output: an image for an image, a new PDF for a PDF."""
+    if src.suffix.lower() in IMAGE_SUFFIXES:
+        return _scan_image(src, out, cfg, ocr_lang, log)
+    return _scan_pdf(src, out, cfg, ocr_lang, log)
+
+
 def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list, dict]:
     """A document made only of scanned pages: a brand new PDF with one new image per page."""
-    src, dst = fitz.open(pdf), fitz.open()
+    src, dst = open_source(pdf), fitz.open()
     pc = pii_cfg(cfg)
     numberer, records = Numberer(), []
     extras: dict = {"blackouts": [], "mrz": []}
@@ -675,12 +741,15 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     zone = fields.mrz_zone(mrz) if mrz else None
     id_page = fields.is_id_document(words, bool(mrz))
     want_photos = bo["photos"] and (id_page or not bo["photos_only_on_id_documents"])
-    found_photos = regions.find_photos(img, 300)
-    photos = [regions.trim_to_text(b, words) for b in found_photos] if want_photos else []
+    found_photos = faces.find_faces(img, 300)
+    photos = found_photos if want_photos else []
     codes = regions.find_codes(img, 300) if bo["qr_codes"] else []
     # photos / codes / MRZ are not signature ink (a photo often sits right above the signature label);
     # photos count for this even when they are not blacked out on this page
-    not_ink = ([zone] if zone else []) + codes + found_photos
+    # a face, with its hair and its shoulders (the photo around it): not signature ink either
+    photo_area = [(b[0] - 0.5 * (b[2] - b[0]), b[1] - 0.5 * (b[3] - b[1]), b[2] + 0.5 * (b[2] - b[0]),
+                   b[3] + 0.5 * (b[3] - b[1])) for b in found_photos]
+    not_ink = ([zone] if zone else []) + codes + photo_area
     signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
     if cfg["mrz"] == "keep":
         mrz = zone = None
@@ -782,19 +851,19 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
     if not cfg["terms"] and not cfg["regex"]:
         raise ValueError("The config has no active replacement")
     ocr_lang = cfg.get("ocr_lang") or default_ocr_lang
-    pdfs = list_pdfs(folder)
+    pdfs = list_sources(folder)
     if not pdfs:
         raise ValueError("No PDF in this folder")
     log(f"Config: {len(cfg['terms'])} replacement(s), {len(cfg['regex'])} regex rule(s). {len(pdfs)} file(s).")
     files = []
     for i, pdf in enumerate(pdfs, start=1):
-        out = pdf.with_name(pdf.stem + SUFFIX + ".pdf")
+        out = output_of(pdf)
         _clear_review(folder, pdf.name)                # a new output has not been reviewed yet
         t0 = time.time()
         entry = {"file": pdf.name, "output": out.name, "mode": "?", "pages": 0, "replaced": 0, "items": [],
                  "leftovers": [], "warnings": [], "error": None, "seconds": 0}
         try:
-            doc = fitz.open(pdf)
+            doc = open_source(pdf)
             layouts = [page_layout(p) for p in doc]
             doc.close()
             kinds = {l["kind"] for l in layouts}
@@ -808,7 +877,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                     raise RuntimeError("scanned pages / images but no OCR engine is available (Tesseract or Windows OCR)")
                 log(f"   OCR engine: {ocr.describe(ocr_lang)}")
             if mode == "scan":
-                records, extras = _scan_pdf(pdf, out, cfg, ocr_lang, log)
+                records, extras = _scan_source(pdf, out, cfg, ocr_lang, log)
             else:
                 records, extras = _digital(pdf, out, cfg, ocr_lang, log, layouts)
             entry["items"] = summarize(records, cfg)
@@ -819,6 +888,17 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
             entry["replaced"] = len(records)
             log(f"   {len(records)} replacement(s), verifying...")
             entry["leftovers"] = verify_output(out, cfg, ocr_lang, use_ocr=(mode != "digital" or ocr_verify))
+            if entry["leftovers"] and mode == "scan":
+                # a scanned page is only read once by OCR: a value the first pass missed (small print, a second
+                # label) is searched again on the new output, and replaced if found
+                log(f"   second pass on the scanned output ({len(entry['leftovers'])} value(s) left)")
+                tmp = out.with_name(out.stem + ".pass2" + out.suffix)
+                more, _ = _scan_source(out, tmp, cfg, ocr_lang, log)
+                tmp.replace(out)
+                records += more
+                entry["replaced"] = len(records)
+                entry["items"] = summarize(records, cfg)
+                entry["leftovers"] = verify_output(out, cfg, ocr_lang, use_ocr=True)
             if entry["leftovers"]:
                 log(f"   WARNING: {len(entry['leftovers'])} original value(s) still found in the output")
         except Exception as e:  # noqa: BLE001

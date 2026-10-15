@@ -12,3 +12,6 @@ secret.key
 __pycache__/
 .venv/
 *.zip
+
+# real client documents (test folder with real PDFs / images): never commit, whatever the patterns above
+sample_data/Dossier Test Reel/

@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-from PIL import ImageFont
+from PIL import Image, ImageFont
 
 from .pii import fitz
 
@@ -426,11 +426,30 @@ def _mrz_font(char_w: float):
     return ImageFont.truetype(path, max(int(round(100 * char_w / adv)), 6))
 
 
+def _erase_ink(img, zone, h: float):
+    """Remove the dark text inside `zone` only: each dark pixel takes the local paper colour (the brightest pixels
+    around it, which follows the card's shading). Nothing else of the card is painted over."""
+    from PIL import ImageFilter
+
+    x0, y0, x1, y1 = (int(v) for v in zone)
+    box = (max(x0, 0), max(y0, 0), min(x1, img.width), min(y1, img.height))
+    crop = img.crop(box)
+    size = max(int(0.3 * h) | 1, 3)                          # wider than a stroke of the text
+    lum = np.asarray(crop.convert("L")).astype(int)
+    paper_lum = np.asarray(crop.convert("L").filter(ImageFilter.MaxFilter(size))).astype(int)
+    dark = Image.fromarray(((lum < paper_lum - 12) * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(3))
+    dark = np.asarray(dark) > 0                              # the anti-aliased edge of the strokes too
+    bands = [np.asarray(b).copy() for b in crop.split()]
+    paper = [np.asarray(b.filter(ImageFilter.MaxFilter(size))) for b in crop.split()]
+    for arr, pap in zip(bands, paper):
+        arr[dark] = pap[dark]
+    img.paste(Image.fromarray(np.dstack(bands).astype(np.uint8)), box)
+
+
 def draw_mrz(img, draw, info: dict, zone: tuple, lines: list[str]):
-    """Paint the MRZ zone with the paper colour and write the new lines at the old positions."""
-    bg = background_color(img, zone)
-    ink = ink_color(img, info["lines"][0])
-    draw.rectangle(zone, fill=bg)
+    """Erase the old MRZ text (paper colour, see _erase_ink) and write the new lines at the old positions."""
+    ink = ink_color(img, info["lines"][0])                  # before the old text is erased
+    _erase_ink(img, zone, info["height"])
     font = _mrz_font(info["char_w"])
     h = info["height"]
     pitch = (info["lines"][1][3] - info["lines"][0][3]) if len(info["lines"]) > 1 else 1.8 * h

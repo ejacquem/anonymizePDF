@@ -8,8 +8,8 @@ style:
   mode: replace              # replace = new text in place | blackbox = black box only
   digital_fill: none         # digital PDFs: none = keep the page background | white = white rectangle
 blackout:                    # black boxes over what cannot be replaced by fake text
-  photos: true               # identity photos (and the faded 'ghost' copy on passports / ID cards)
-  photos_only_on_id_documents: true   # true: only on pages that look like a passport / ID card / permit
+  photos: true               # faces of people (ID photos, passports, portraits): the head is covered
+  photos_only_on_id_documents: false  # false: faces on every page | true: only on pages that look like an ID
   signatures: true           # handwritten signatures next to a 'Signature' label
   qr_codes: true             # QR codes and other 2D barcodes
 mrz: regenerate              # machine readable zone (passport, ID card): regenerate in the same format | keep

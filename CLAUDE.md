@@ -26,7 +26,8 @@ Repo: `C:\Users\Lucas\Project\anonymizePDF` (Windows 10, Git Bash + PowerShell).
 - Privacy first: when in doubt, cover more (over-redaction) rather than leak. A black box must remove the data from
   the file, not only hide it.
 - Keep the scope small, no build step for the frontend, no new heavy dependency (no OpenCV / scipy / PyTorch:
-  image analysis is done with numpy + Pillow).
+  image analysis is done with numpy + Pillow). The one exception: onnxruntime (CPU, face detection), offline with its
+  model file in the repo.
 - Commit only when the user asks; commit messages end with the attribution line given in the session.
 
 ## 3. Layout
@@ -44,7 +45,9 @@ anonymizer/
   render.py            digital: FontBook, page_spans, style_at, free_right, insert_replacement, black_out_digital;
                        scans: scan_text_layout, BoldMeter, ink_color, background_color, draw_mrz
   fields.py            identity documents: lines_of, find_labeled, is_id_document; MRZ: find_mrz, build_mrz, mrz_zone
-  regions.py           find_photos, find_codes, find_signatures (+ *_digital variants), trim_to_text, is_signature_label
+  regions.py           find_codes, find_signatures (+ *_digital variants), is_signature_label
+  faces.py             faces of people (YuNet, ONNX Runtime, offline): detect, find_faces, find_faces_digital
+  models/              face_detection_yunet_2023mar.onnx (OpenCV zoo, MIT; sha256 checked at load)
   configmodel.py       anon_config.yaml <-> review-table model (settings, entries incl. the commented suggestions)
 static/                index.html, app.js, style.css (vanilla JS)
 docs/config.example.yaml
@@ -56,8 +59,12 @@ sample_data/Dossier Test 4/   FR ID card (2021 model) front + back on one scan: 
                               QR-like code, TD1 MRZ (OCR reads none of the MRZ lines)
 sample_data/Dossier Test 5/   mixed PDFs built from Test 0: searchable scan (images + invisible OCR text), digital
                               statement with a scanned page 3, contract with a pasted image of bank details (pixels only)
-tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py
-                       (generators, Windows fonts); check_all.py (end-to-end test suite, see section 12)
+sample_data/Dossier Test 6/   faces: digital page (2 portraits), scan (3 portraits + ID card + a sideways page),
+                              photo of a card on a table (rotated), a page without any face; faces_truth.json
+sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
+tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
+                       make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
+                       Wikimedia Commons + reference face boxes faces.json); check_all.py (test suite, section 12)
 ```
 (There is no "Dossier Test 2".) The original numbered CLI scripts were removed long ago.
 
@@ -136,7 +143,7 @@ ocr_lang: "fra+eng"
 case_sensitive: false
 match_case: true                    # UPPER / lower / Title case of the original applied to the fake
 style: {mode: replace, digital_fill: none}   # mode: replace | blackbox ; digital_fill: none | white
-blackout: {photos: true, photos_only_on_id_documents: true, signatures: true, qr_codes: true}
+blackout: {photos: true, photos_only_on_id_documents: false, signatures: true, qr_codes: true}   # photos = faces
 mrz: regenerate                     # regenerate | keep   (old value 'blackout' is read as regenerate)
 replacements:
   - {find: "Thomas Marchand", replace: "Alexis Beaumont", type: PERSON}
@@ -204,7 +211,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   colour sampled for the patch. Bold (`BoldMeter`): median horizontal ink run / estimated font size vs the page
   median, bold if > 1.4× (calibrated against Test 1's digital twin). Fails on ID documents (mostly bold text, no
   regular reference). Font: Arial / Arial Bold.
-- MRZ (`draw_mrz`): OCR-B if installed, else Consolas, character advance fitted to the measured pitch.
+- MRZ (`draw_mrz`): OCR-B if installed, else Consolas. The character advance comes from the OCR box of the chevron
+  line (`find_mrz`, not from the ink of the page: a card edge next to the MRZ made the text too wide). The old text is
+  erased pixel by pixel (`_erase_ink`: dark pixels take the local paper colour), never with a flat rectangle, then the
+  new lines are written with the same ink colour.
 
 ## 11. Identity documents: MRZ, photos, QR codes, signatures
 
@@ -214,20 +224,27 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   TD1 (3×30); `P` or > 40 chars → TD3 (2×44); `IDFRA` → FR_ID (old French card 2×36); else TD2 (2×36).
   `_new_mrz`: page fields after replacement (`_fake_text`), doc code / country from the OCR'd first line, names fall
   back on the config's PERSON replacements, missing values random of the right shape; check digits always valid.
-- **Photos** (`find_photos`, 50 dpi): darker than the local paper (max filter ~15 mm; the brightest 1 % — scanner bed,
-  plain paper — is not used as reference), opening 2.5 mm, closing 3.5 mm, portrait shape 8–60 × 10–75 mm, solid,
-  with clearly dark parts (10th percentile < paper − 35). Finds the photo and the ghost image. `trim_to_text` nibbles
-  ≤ 15 % at the edges so nearby text is not cut. Digital: images 10–60 × 12–80 mm with h/w 1.1–1.7.
-  Only on ID pages unless `photos_only_on_id_documents: false`.
+- **Faces** (`faces.py`, replaces the old photo heuristic, which was calibrated in mm on flatbed scans and failed on
+  photos of cards on a table): YuNet face detector (ONNX Runtime, CPU, offline; the model file is in
+  `anonymizer/models/`, its sha256 is checked before loading). Runs on the whole image at 640 px, at 1280 px and at
+  full size (windows of 640 px, 75 % overlap) and on the three quarter turns for the coarse scales, merged by NMS
+  (score ≥ 0.6). The box is widened to the whole head (+20 % sides, +35 % hair above, +15 % chin). Digital pages are
+  rendered at 150 dpi and searched the same way. Kind in the report: `photo`. Searched on every page unless
+  `photos_only_on_id_documents: true`. Limits: frontal model (profiles can be missed), no face on a document
+  that is far below ~25 px.
 - **QR / 2D codes** (`find_codes`, 100 dpi): dark modules merged by closings of 3 / 5 / 7 px into a mostly solid square
   7–60 mm; accepted if fine checkerboard (density 0.3–0.75, ≥ 0.45 transitions / mm both ways) or structured
   (`_code_structure`: QR finder squares in ≥ 2 corners, or Data Matrix solid left + bottom edges). Digital pages are
   rendered at 150 dpi and searched the same way (image and vector codes).
 - **Signatures**: `is_signature_label` (signature / handtekening / unterschrift among the first two words of the line,
   or a line of ≤ 4 words — not a sentence; `firma` was dropped: it means "company" in NL/DE). Ink not OCR text of
-  normal height, not a ruled line, not in MRZ / photos / codes; seeded next to the label, grown through strokes
-  ≤ 3 mm apart (`_grow`) in a large window, so long strokes are covered but a distant stamp is not. The label is
-  spared only if the strokes do not touch it. Digital: drawings / images grown the same way.
+  normal height, not a ruled line, not in MRZ / photos (the face area widened by 50 %) / codes; seeded next to the
+  label, grown through strokes ≤ 3 mm apart (`_grow`) in a window of 12 mm above / below the label and 5 / 80 mm
+  around it. Components that are solid (fill ≥ 0.4) or lie mostly inside an OCR word box are print, not ink.
+  The label is spared only if the strokes do not touch it. Digital: drawings / images grown the same way.
+  A box never covers an OCR word: it is cut on the side that keeps the most dark (signature) pixels and still holds
+  the middle of the label (`_clear_of_text`, `ink_mass`). Known limit: a signature on a card whose guilloche is
+  connected to it gives a wide box (Reel "Lucas Jacquemin Id Cards": 62 x 12 mm, lower part of the card).
 - **Removal guarantee** (verified by extracting the output objects): scans are rebuilt from one new image per page.
   Digital: `black_out_digital` redacts with `images=2, graphics=2` (text removed, covered pixels overwritten, fully
   covered images and their SMask dropped, touched drawings removed — MuPDF's "remove if covered" mode keeps
@@ -255,6 +272,9 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
 ## 13. Known limits / ideas
 
 - Scans depend on OCR quality; names are heuristic (review step). Leftover check only knows the config's values.
+- Faces: frontal detector (profiles may be missed), tested on public-domain portraits (tools/test_faces) and
+  generated pages (Dossier Test 6). Signatures are still ink-based: on a card photographed on a dark table or on a
+  printed chip they can grow into a large box (over-redaction, never a leak).
 - MRZ only exact for fields read on the page (sex often `<` with Windows OCR); MRZ in a digital text layer not handled.
 - Photo / QR / MRZ detection are image heuristics tested only on generated documents.
 - Text inside images of digital pages is only replaced where OCR reads it; the rest of the image is kept.

@@ -83,13 +83,13 @@ def build_tree(d: Path) -> dict | None:
             sub = build_tree(p)
             if sub:
                 children.append(sub)
-        elif p.suffix.lower() == ".pdf":
+        elif p.suffix.lower() in eng.SOURCE_SUFFIXES:
             is_anon = p.stem.endswith(eng.SUFFIX)
-            orig = p.with_name(p.stem[: -len(eng.SUFFIX)] + ".pdf") if is_anon else p
-            anon = p if is_anon else p.with_name(p.stem + eng.SUFFIX + ".pdf")
+            orig = eng.find_original(d, p) if is_anon else p
+            anon = p if is_anon else eng.output_of(p)
             children.append({
                 "type": "file", "name": p.name, "path": rel_of(p), "anonymized": is_anon,
-                "original": rel_of(orig) if orig.exists() else None,
+                "original": rel_of(orig) if orig else None,
                 "anon": rel_of(anon) if anon.exists() else None,
             })
     own_pdfs = [c for c in children if c["type"] == "file"]
@@ -115,7 +115,7 @@ def tree():
 
 def pdf_arg() -> Path:
     p = safe(request.args.get("path", ""))
-    if not p.is_file() or p.suffix.lower() != ".pdf":
+    if not p.is_file() or p.suffix.lower() not in eng.SOURCE_SUFFIXES:
         raise FileNotFoundError("not found")
     return p
 
@@ -293,7 +293,7 @@ def reviewed_files(folder: Path) -> dict[str, str]:
     """{original file name: date} for the files whose CURRENT anonymized output was reviewed."""
     out = {}
     for name, info in read_reviews(folder).items():
-        anon = folder / (Path(name).stem + eng.SUFFIX + ".pdf")
+        anon = eng.output_of(folder / name)
         if anon.exists() and info.get("sha256") == _sha(anon):
             out[name] = info.get("at", "")
     return out
@@ -316,7 +316,7 @@ def put_review():
     except (PermissionError, FileNotFoundError) as e:
         return bad(str(e), 404)
     name = Path(str(data.get("file", ""))).name
-    anon = folder / (Path(name).stem + eng.SUFFIX + ".pdf")
+    anon = eng.output_of(folder / name)
     if not name or not anon.exists():
         return bad("no anonymized file for this document", 404)
     reviews = read_reviews(folder)
@@ -334,15 +334,15 @@ def client_folders(base: Path) -> list[Path]:
     for d in [base] + sorted((p for p in base.rglob("*") if p.is_dir()), key=lambda p: str(p).lower()):
         if any(part.startswith(".") or part == "__pycache__" for part in d.relative_to(base).parts):
             continue
-        if eng.list_pdfs(d):
+        if eng.list_sources(d):
             out.append(d)
     return out
 
 
 def folder_status(d: Path) -> dict:
-    pdfs = eng.list_pdfs(d)
+    pdfs = eng.list_sources(d)
     cfg, rep = d / eng.CONFIG_NAME, d / eng.REPORT_NAME
-    outputs = [p for p in pdfs if (d / (p.stem + eng.SUFFIX + ".pdf")).exists()]
+    outputs = [p for p in pdfs if eng.output_of(p).exists()]
     report = None
     if rep.exists():
         try:

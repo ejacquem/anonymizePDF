@@ -18,7 +18,7 @@ import yaml
 
 SETTINGS_DEFAULT = {
     "ocr_lang": "fra+eng", "case_sensitive": False, "match_case": True, "mode": "replace", "digital_fill": "none",
-    "photos": True, "photos_only_on_id_documents": True, "signatures": True, "qr_codes": True, "mrz": "regenerate",
+    "photos": True, "photos_only_on_id_documents": False, "signatures": True, "qr_codes": True, "mrz": "regenerate",
 }
 TYPE_ORDER = ["PERSON", "IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "CARD_NUMBER", "BE_NATIONAL_NUMBER", "BE_VAT",
               "BE_STRUCTURED_COMM", "SEPA_CREDITOR_ID", "STREET_ADDRESS", "POSTAL_CITY", "BIRTH_PLACE", "ACCOUNT_NUMBER",
@@ -110,8 +110,8 @@ def to_yaml(model: dict, folder: str = "") -> str:
         f"  mode: {s['mode']}              # replace = new text in place | blackbox = black box only",
         f"  digital_fill: {s['digital_fill']}         # digital PDFs: none = keep the page background | white = white rectangle",
         "blackout:                    # black boxes over what cannot be replaced by fake text",
-        f"  photos: {_b(s['photos'])}               # identity photos (and the faded 'ghost' copy on passports / ID cards)",
-        f"  photos_only_on_id_documents: {_b(s['photos_only_on_id_documents'])}   # true: only on pages that look like an identity document",
+        f"  photos: {_b(s['photos'])}               # faces of people (ID photos, passports, portraits): the head is covered",
+        f"  photos_only_on_id_documents: {_b(s['photos_only_on_id_documents'])}  # false: faces on every page | true: only on pages that look like an ID",
         f"  signatures: {_b(s['signatures'])}           # handwritten signatures next to a 'Signature' label",
         f"  qr_codes: {_b(s['qr_codes'])}             # QR codes and other 2D barcodes",
         f"mrz: {s['mrz']}              # machine readable zone (passport, ID card): regenerate in the same format | keep",

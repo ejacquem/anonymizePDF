@@ -522,8 +522,8 @@ function settingsHtml(s) {
     <span>Digital PDFs</span>${sel("digital_fill", [["none", "keep the page background"], ["white", "white box behind the text"]])}
     <span>Case</span><span>${chk("match_case", "keep UPPER / lower case", "MARCHAND -> BEAUMONT, Vermeulen -> Hendrickx")}
       ${chk("case_sensitive", "case-sensitive search", "Off: 'marchand' also matches 'MARCHAND'")}</span>
-    <span>Black boxes</span><span>${chk("photos", "photos", "Identity photos and the faded ghost copy")}
-      ${chk("photos_only_on_id_documents", "only on ID documents", "Photos only on pages that look like a passport / ID card")}
+    <span>Black boxes</span><span>${chk("photos", "faces", "Faces of people (photos, portraits, ID photos): the head is covered")}
+      ${chk("photos_only_on_id_documents", "only on ID documents", "Faces only on pages that look like a passport / ID card")}
       ${chk("signatures", "signatures", "Handwriting next to a 'Signature' label")}
       ${chk("qr_codes", "QR codes", "QR codes and other 2D barcodes")}</span>
     <span>MRZ</span>${sel("mrz", [["regenerate", "rebuild from the fake values"], ["keep", "keep as is (real data!)"]])}

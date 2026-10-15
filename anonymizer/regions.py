@@ -36,20 +36,6 @@ def is_signature_label(text: str) -> bool:
     return bool(hits) and (hits[0] < 2 or len(words) <= 4)
 
 
-def _max_filter(a: np.ndarray, size: int) -> np.ndarray:
-    """Maximum over a size x size square, computed separably (rows then columns): same result as Pillow's
-    MaxFilter(size), much faster for big windows."""
-    r = size // 2
-    out = a
-    for axis in (0, 1):
-        pad = [(0, 0), (0, 0)]
-        pad[axis] = (r, r)
-        padded = np.pad(out, pad, mode="edge")
-        n = out.shape[axis]
-        out = np.max(np.stack([np.take(padded, range(i, i + n), axis=axis) for i in range(size)]), axis=0)
-    return out
-
-
 def _components(mask: np.ndarray) -> list[tuple[int, int, int, int, int]]:
     """Connected components (8-neighbour) of a boolean mask -> [(x0, y0, x1, y1, pixel_count)].
     Works on runs of pixels per row (union-find), not pixel by pixel: fast enough for a whole page."""
@@ -105,46 +91,6 @@ def _components(mask: np.ndarray) -> list[tuple[int, int, int, int, int]]:
 # ---------------------------------------------------------------------------
 # scans
 # ---------------------------------------------------------------------------
-
-def find_photos(img: Image.Image, dpi: int) -> list[tuple]:
-    """Boxes (image pixels) of identity photos on a page image."""
-    work_dpi = 50
-    k = dpi / work_dpi
-    small = img.convert("L").resize((max(int(img.width / k), 1), max(int(img.height / k), 1)), Image.BOX)
-    # darker than the LOCAL paper (brightest value within ~15 mm): catches the photo and its backdrop, and
-    # the faded ghost image too, whatever the scan's overall brightness
-    lum = np.asarray(small).astype(np.int16)
-    # the brightest areas (scanner bed around a card or a booklet, plain white paper) are not used as the
-    # reference: each document is compared with its own background, so a whole ID card on a white scanner bed
-    # does not look 'darker than the paper'
-    bright = lum >= np.percentile(lum, 99) - 6
-    paper = _max_filter(np.where(bright, 0, lum), 31)
-    diff = paper - lum
-    dark = Image.fromarray((((diff > 16) & ~bright) * 255).astype(np.uint8))
-    # erase thin strokes (text, guilloche lines, big letters) with an opening of ~2.5 mm
-    size = 5                                                    # 5 px at 50 dpi = 2.5 mm
-    opened = dark.filter(ImageFilter.MinFilter(size)).filter(ImageFilter.MaxFilter(size))
-    # merge the parts of one portrait (hair, face, shoulders) with a closing of ~3 mm
-    merged = opened.filter(ImageFilter.MaxFilter(7)).filter(ImageFilter.MinFilter(7))
-    mask = np.asarray(merged) > 0
-    px_mm = work_dpi / MM_PER_INCH
-    boxes = []
-    for x0, y0, x1, y1, n in _components(mask):
-        w_mm, h_mm = (x1 - x0) / px_mm, (y1 - y0) / px_mm
-        if not (8 <= w_mm <= 60 and 10 <= h_mm <= 75):        # ghost image (~15 mm) to large photo (~45 mm)
-            continue
-        if not (0.85 <= h_mm / w_mm <= 2.2):                   # portrait-like
-            continue
-        if n / ((x1 - x0) * (y1 - y0)) < 0.35:                  # a solid shape, not a frame or scattered marks
-            continue
-        # a portrait has clearly dark parts (hair, eyes, clothes), even when faded; a tinted area does not
-        if np.percentile(lum[y0:y1, x0:x1], 10) > np.median(paper[y0:y1, x0:x1]) - 35:
-            continue
-        m = 1 * px_mm                                           # 1 mm margin
-        boxes.append((max(x0 - m, 0) * k, max(y0 - m, 0) * k,
-                      min(x1 + m, small.width) * k, min(y1 + m, small.height) * k))
-    return boxes
-
 
 def _grow(boxes: list[tuple], seed: tuple, gap: float) -> list[tuple]:
     """Boxes touching the seed area, then every box within `gap` of a selected one (a signature's strokes,
@@ -236,6 +182,37 @@ def find_codes_digital(page) -> list[tuple]:
     return [(x0 * f, y0 * f, x1 * f, y1 * f) for x0, y0, x1, y1 in find_codes(img, dpi)]
 
 
+def _clear_of_text(box, words: list[dict], mass, anchor_x: float):
+    """The box, shrunk so that it never covers a word of the page: each overlapping word is removed by cutting the
+    box on one side. The side kept is the one with the most signature (`mass(box)`: ink, or drawing area), and it
+    must still hold `anchor_x` (the middle of the label: the signature is written next to it). None when nothing
+    is left."""
+    def overlaps(b, w):
+        return not (w[2] <= b[0] or w[0] >= b[2] or w[3] <= b[1] or w[1] >= b[3])
+
+    texts = [tuple(float(v) for v in w["box"]) for w in words]
+    b = tuple(float(v) for v in box)
+    for _ in range(100):
+        over = [w for w in texts if overlaps(b, w)]
+        if not over:
+            return b
+        best = None
+        for w in over:
+            for cand in ((b[0], b[1], b[2], w[1]), (b[0], w[3], b[2], b[3]),
+                         (b[0], b[1], w[0], b[3]), (w[2], b[1], b[2], b[3])):
+                if cand[2] <= cand[0] or cand[3] <= cand[1]:
+                    continue
+                if anchor_x is not None and not cand[0] <= anchor_x <= cand[2]:
+                    continue
+                score = mass(cand)
+                if best is None or score > best[0]:
+                    best = (score, cand)
+        if best is None or best[0] <= 0:
+            return None
+        b = best[1]
+    return None
+
+
 def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = (), dpi: int = 300) -> list[tuple]:
     """Boxes (image pixels) of handwritten signatures next to a 'Signature' label.
     `exclude`: areas that are known not to be a signature (e.g. the MRZ lines)."""
@@ -247,15 +224,30 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
     for ln in lines:
         if is_signature_label(ln["text"]):
             label_words.update(ln["words"])
+    # ink that can be a signature: dark pixels, not in an OCR word (print) nor in an excluded area (photos, MRZ)
+    not_sig = np.zeros((H, W), dtype=bool)
+    for w in words:
+        x0, y0, x1, y1 = (int(v) for v in w["box"])
+        not_sig[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)] = True
+    for box_ in exclude:
+        x0, y0, x1, y1 = (int(v) for v in box_)
+        not_sig[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)] = True
+    sig_ink = (gray < 150) & ~not_sig
+
+    def ink_mass(c):
+        x0, y0, x1, y1 = (int(max(v, 0)) for v in c)
+        return float(sig_ink[y0:y1, x0:x1].sum())
+
     out = []
     for ln in lines:
         if not is_signature_label(ln["text"]):
             continue
         lx0, ly0, lx1, ly1 = ln["box"]
         lh = max(ly1 - ly0, 4)
-        # search area: large (a signature can run far); the strokes must start next to the label (seed)
-        wx0, wx1 = int(max(lx0 - 15 * mm, 0)), int(min(lx0 + 100 * mm, W))
-        wy0, wy1 = int(max(ly0 - 30 * mm, 0)), int(min(ly1 + 30 * mm, H))
+        # search area: close to the label. A wide area let the grow reach the card's guilloche and the print of the
+        # next card; the strokes must start next to the label (seed)
+        wx0, wx1 = int(max(lx0 - 5 * mm, 0)), int(min(lx0 + 80 * mm, W))
+        wy0, wy1 = int(max(ly0 - 12 * mm, 0)), int(min(ly1 + 12 * mm, H))
         ink = gray[wy0:wy1, wx0:wx1] < 150
 
         def clear(x0, y0, x1, y1, m=2):
@@ -275,6 +267,15 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
         f = 3
         small = ink[: ink.shape[0] // f * f, : ink.shape[1] // f * f]
         small = small.reshape(small.shape[0] // f, f, small.shape[1] // f, f).any(axis=(1, 3))
+        # printed text (OCR words, any size, with 1 mm around them): the strokes of a component that lies mostly
+        # inside it are print, and they must not chain the signature to the text next to it
+        text = np.zeros(ink.shape, dtype=bool)
+        for w in words:
+            x0, y0, x1, y1 = w["box"]
+            text[max(int(y0 - mm - wy0), 0):max(int(y1 + mm - wy0), 0),
+                 max(int(x0 - mm - wx0), 0):max(int(x1 + mm - wx0), 0)] = True
+        text = text[: ink.shape[0] // f * f, : ink.shape[1] // f * f]
+        text = text.reshape(text.shape[0] // f, f, text.shape[1] // f, f).any(axis=(1, 3))
         comps = []
         for x0, y0, x1, y1, n in _components(small):
             bw, bh = x1 - x0, y1 - y0
@@ -282,8 +283,13 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
                 continue
             if (bh <= 2 and bw >= 12) or (bw <= 2 and bh >= 12):   # ruled line / border
                 continue
+            if n / (bw * bh) >= 0.4:                             # solid or dense: printed text, a photo, a chip
+                continue
+            in_text = (small[y0:y1, x0:x1] & text[y0:y1, x0:x1]).sum() / max(n, 1)
+            if in_text >= 0.7:
+                continue
             comps.append((x0 * f + wx0, y0 * f + wy0, x1 * f + wx0, y1 * f + wy0))
-        seed = (lx0 - 3 * lh, ly0 - 6 * lh, lx1 + 4 * lh, ly1 + 8 * lh)   # where a signature starts
+        seed = (lx0 - 3 * lh, ly0 - 2 * lh, lx1 + 4 * lh, ly1 + 8 * lh)   # where a signature starts
         keep = _grow(comps, seed, 3 * mm)
         if not keep:
             continue
@@ -301,50 +307,16 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
             elif y1 <= ly0 + 1:
                 box[3] = ly0 - 1
         if box[3] - box[1] > 0.5 * lh:
-            out.append(tuple(box))
+            box = _clear_of_text(box, words, ink_mass, lx0 + (lx1 - lx0) / 2)   # never over a word of the page
+            if box and box[3] - box[1] > 0.5 * lh:
+                out.append(box)
     return out
 
 
-def trim_to_text(box: tuple, words: list[dict]) -> tuple:
-    """Shrink a black box so it does not cut into text next to it (OCR words whose centre is outside the box)."""
-    x0, y0, x1, y1 = box
-    for w in words:
-        a0, b0, a1, b1 = w["box"]
-        if a1 <= x0 or a0 >= x1 or b1 <= y0 or b0 >= y1:
-            continue                                     # no overlap
-        cx, cy = (a0 + a1) / 2, (b0 + b1) / 2
-        if x0 <= cx <= x1 and y0 <= cy <= y1:
-            continue                                     # the word is inside: it is covered on purpose
-        # move the edge that needs the smallest change
-        moves = {"top": b1 - y0 if cy < y0 else None, "bottom": y1 - b0 if cy > y1 else None,
-                 "left": a1 - x0 if cx < x0 else None, "right": x1 - a0 if cx > x1 else None}
-        side = min((k for k, v in moves.items() if v is not None), key=lambda k: moves[k], default=None)
-        if side is None or moves[side] > 0.15 * ((y1 - y0) if side in ("top", "bottom") else (x1 - x0)):
-            continue                                     # only nibble at the edges (a big word across: keep)
-        if side == "top":
-            y0 = b1 + 1
-        elif side == "bottom":
-            y1 = b0 - 1
-        elif side == "left":
-            x0 = a1 + 1
-        elif side == "right":
-            x1 = a0 - 1
-    return (x0, y0, x1, y1)
-
-
-# ---------------------------------------------------------------------------
-# digital PDFs
-# ---------------------------------------------------------------------------
-
-def find_photos_digital(page) -> list[tuple]:
-    """Rects (PDF points) of embedded images shaped like identity photos."""
-    out = []
-    for info in page.get_image_info():
-        x0, y0, x1, y1 = info["bbox"]
-        w_mm, h_mm = (x1 - x0) / 72 * MM_PER_INCH, (y1 - y0) / 72 * MM_PER_INCH
-        if 10 <= w_mm <= 60 and 12 <= h_mm <= 80 and 1.1 <= h_mm / max(w_mm, 0.1) <= 1.7:   # square: a code
-            out.append((x0, y0, x1, y1))
-    return out
+def _area_in(c, parts) -> float:
+    """Area of the parts (rects) that lie in the box c: the drawings of a digital signature."""
+    return sum(max(0.0, min(c[2], p[2]) - max(c[0], p[0])) * max(0.0, min(c[3], p[3]) - max(c[1], p[1]))
+               for p in parts)
 
 
 def find_signatures_digital(page, words: list[dict], exclude: list[tuple] = ()) -> list[tuple]:
@@ -381,5 +353,8 @@ def find_signatures_digital(page, words: list[dict], exclude: list[tuple] = ()) 
         for k in keep[1:]:
             r |= fitz.Rect(k)
         if r.width >= 2.5 * lh:
-            out.append(tuple(r + (-0.3 * lh, -0.3 * lh, 0.3 * lh, 0.3 * lh)))
+            box = _clear_of_text(tuple(r + (-0.3 * lh, -0.3 * lh, 0.3 * lh, 0.3 * lh)), words,
+                                 lambda c, keep=keep: _area_in(c, keep), lx0 + (lx1 - lx0) / 2)
+            if box:
+                out.append(box)
     return out

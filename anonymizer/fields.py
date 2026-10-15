@@ -90,10 +90,76 @@ def _below(lines, ref, h, x0):
     return best
 
 
+# words that belong to a bilingual label ('Nom / Name', 'Lieu et date de naissance / Place and date of birth'):
+# on Belgian cards the value is written on the same line, right after them
+_LABEL_WORDS = {"nom", "name", "names", "prénoms", "prenoms", "given", "surname", "sexe", "sex", "lieu", "place",
+                "date", "de", "du", "et", "and", "of", "naissance", "birth", "nationalité", "nationality", "nationaliteit",
+                "geboortedatum", "geboorteplaats", "achternaam", "voornamen", "voornaam", "naam", "geslacht", "n°", "no",
+                "carte", "card", "identité", "identity", "identiteitskaart", "personalausweis", "/", "|", "l", "i", "1"}
+
+
+_NAME_TOKEN = re.compile(r"^[A-ZÀ-ÝÉÈ][A-Za-zÀ-ÿ'’\-]*$")
+
+
+def inline_value(ln: dict, words: list[dict], kind: str) -> str | None:
+    """A name written on the label's own line, after the label words ('Nom / Name Jacquemin' -> 'Jacquemin').
+    Only for surname / given names, and only when the rest of the line is capitalised words: OCR mixes the
+    label with the value on other fields too ('Date de naiss. / Date of birth' must not give a value)."""
+    if kind not in ("surname", "given"):
+        return None
+    toks = [words[i] for i in ln["words"]]
+    k = 0
+    while k < len(toks) and re.sub(r"[^\w/|]", "", toks[k]["text"]).casefold() in _LABEL_WORDS:
+        k += 1
+    rest = [t["text"] for t in toks[k:]]
+    if not rest or not all(_NAME_TOKEN.match(t) and len(t) >= 2 for t in rest):
+        return None
+    return " ".join(rest)
+
+
+def _right_of(lines, ref: dict):
+    """A line that starts to the right of the label, on the same row, and is not a label itself."""
+    x0, y0, x1, y1 = ref["box"]
+    h = max(y1 - y0, 1)
+    best = None
+    for other in lines:
+        if other is ref or _label_kind(other["text"]):
+            continue
+        ox0, oy0, ox1, oy1 = other["box"]
+        if abs((oy0 + oy1) - (y0 + y1)) > 0.6 * h or ox0 < x1 - 0.2 * h:
+            continue
+        if best is None or ox0 < best["box"][0]:
+            best = other
+    return best
+
+
+# EU driving licence: numbered fields ('1. Jacquemin', '2. Lucas', '3. 21.06.2002 Arlon', '5. 1705952955')
+_LICENCE_WORDS = re.compile(r"(?i)(permis\s+de\s+conduire|driving\s+licen[cs]e|rijbewijs|f[üu]hrerschein)")
+_LICENCE_FIELDS = {"1": "surname", "2": "given", "5": "doc_number"}
+_LICENCE_BIRTH = re.compile(r"^3\s*[.,]\s*(?P<d>\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*(?P<p>.*)$")
+
+
+def _licence_fields(lines: list[dict], words: list[dict]) -> list[dict]:
+    if not _LICENCE_WORDS.search(" ".join(w["text"] for w in words)):
+        return []
+    out = []
+    for ln in lines:
+        m = _LICENCE_BIRTH.match(ln["text"])
+        if m:
+            out.append({"kind": "birth_date", "value": m.group("d"), "line": ln})
+            if m.group("p").strip():
+                out.append({"kind": "birth_place", "value": m.group("p").strip(), "line": ln})
+            continue
+        num_m = re.match(r"^(\d)\s*[.,]\s*(?P<v>\S.*)$", ln["text"])
+        if num_m and num_m.group(1) in _LICENCE_FIELDS:
+            out.append({"kind": _LICENCE_FIELDS[num_m.group(1)], "value": num_m.group("v").strip(), "line": ln})
+    return out
+
+
 def find_labeled(words: list[dict]) -> list[dict]:
     """[{'kind', 'value', 'line'}] for every label found with its value (one entry per line for an address)."""
     lines = lines_of(words)
-    found = []
+    found = _licence_fields(lines, words)
     for ln in lines:
         for kind, rx in _LABEL_INLINE:                      # 'Nom : DUPONT'
             m = rx.match(ln["text"])
@@ -106,6 +172,10 @@ def find_labeled(words: list[dict]) -> list[dict]:
         x0, y0, x1, y1 = ln["box"]
         h = max(y1 - y0, 1)
         ref, taken = ln["box"], 0
+        inline = inline_value(ln, words, kind)
+        if inline and kind not in MULTILINE:                 # 'Nom / Name Jacquemin'
+            found.append({"kind": kind, "value": inline, "line": ln})
+            continue
         while True:
             nxt = _below([o for o in lines if o is not ln], ref, h, x0)
             if nxt is None or any(f["line"] is nxt for f in found):
@@ -118,6 +188,10 @@ def find_labeled(words: list[dict]) -> list[dict]:
             if kind not in MULTILINE or taken >= 4:
                 break
             ref = nxt["box"]
+        if not taken and kind not in MULTILINE:              # nothing below: the value on the same row, further right
+            right = _right_of(lines, ln)
+            if right:
+                found.append({"kind": kind, "value": right["text"], "line": right})
     return found
 
 
@@ -254,7 +328,10 @@ def find_mrz(words: list[dict], gray) -> dict | None:
     best = None
     for ln in lines_of(words):
         compact = re.sub(r"\s", "", ln["text"])
-        if len(_CHEVRONS.findall(compact)) >= 4 and len(compact) >= 10:
+        chevrons = len(_CHEVRONS.findall(compact))
+        # OCR often drops the chevron filler at the end of a line: 'IDBEL592993879<2591' is still an MRZ line
+        if (chevrons >= 4 and len(compact) >= 10) or (chevrons >= 1 and len(compact) >= 12
+                                                      and re.fullmatch(r"[A-Z0-9<«‹]+", compact)):
             if best is None or ln["box"][1] < best["box"][1]:
                 best = ln
     if best is None:
@@ -264,8 +341,15 @@ def find_mrz(words: list[dict], gray) -> dict | None:
     x0, y0, x1, y1 = (int(v) for v in best["box"])
     h = max(y1 - y0, 4)
     H, W = gray.shape
+    # the OCR box of the line gives the character pitch: its recognised characters are at the right place. Ink
+    # measured on the page is not used for it (a card's edge next to the MRZ is ink too: it made the MRZ too wide)
+    read = len(re.sub(r"\s", "", best["text"])) if best is not None else 0
+    adv = (x1 - x0) / max(read - 0.15, 1) if read >= 6 and x1 > x0 else None
+    if adv:
+        cx0, cx1 = max(int(x0 - 0.5 * adv), 0), min(int(x0 + 36 * adv), W)
+    else:
+        cx0, cx1 = max(x0 - 3 * h, 0), min(x1 + 30 * h, W)
     # horizontal range to look at: from a little left of the OCR line to far right (MRZ lines are long)
-    cx0, cx1 = max(x0 - 3 * h, 0), min(x1 + 30 * h, W)
     dark = (gray[:, cx0:cx1] < 140).mean(axis=1) > 0.02
     # other MRZ lines above / below: a band of the same height, within 2.5 line heights, that also looks
     # like MRZ (many evenly spaced characters); a band is followed to its end even past the search window
@@ -325,9 +409,13 @@ def find_mrz(words: list[dict], gray) -> dict | None:
     else:
         fmt = "TD2" if runs > 33 else "TD1"
     n_lines_fmt, n_chars = FORMATS[fmt]
-    width = end - start + 1
-    char_w = width / (n_chars - 0.25)
-    ext = (cx0 + start, cx0 + end + 1)
+    if adv:
+        char_w = adv
+        ext = (x0, x0 + n_chars * adv)
+    else:
+        width = end - start + 1
+        char_w = width / (n_chars - 0.25)
+        ext = (cx0 + start, cx0 + end + 1)
     boxes = [(ext[0], ly0, ext[1], ly1) for ly0, ly1 in lines][:n_lines_fmt]
     return {"lines": boxes, "format": fmt, "n_chars": n_chars, "n_lines": n_lines_fmt, "first": first,
             "char_w": char_w, "height": h, "x": ext[0], "runs": runs}

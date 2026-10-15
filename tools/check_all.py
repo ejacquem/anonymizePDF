@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import secrets as pysecrets
@@ -71,6 +72,13 @@ EXPECT = {
                         "35000"], {
         "carte_identite_scan.pdf": ("scan", ["photo", "photo", "qr code", "signature"], ["TD1"]),
     }),
+    "Dossier Test 6": (["DUBOIS", "DURAND", "PETIT"], {
+        # faces: tools/make_test_faces.py writes faces_truth.json (every face, in PDF points)
+        "visages_digital.pdf": ("mixed", ["photo", "photo", "photo"], []),
+        "visages_scan.pdf": ("scan", ["photo"] * 6, []),
+        "photo_table.jpg": ("scan", ["photo"], []),
+        "sans_visage.pdf": ("digital", [], []),
+    }),
     "Dossier Test 5": (STATEMENT_0, {
         "contrat_image_collee.pdf": ("mixed", [], []),
         "releve_annexe_scannee.pdf": ("mixed", [], []),
@@ -113,7 +121,7 @@ def page_images(doc) -> dict[str, tuple]:
     out = {}
     for page in doc:
         for info in page.get_image_info(xrefs=True):
-            if info["xref"]:
+            if info.get("xref"):
                 out[hashlib.sha256(doc.xref_stream(info["xref"])).hexdigest()] = tuple(info["bbox"])
     return out
 
@@ -123,7 +131,7 @@ def check_output(src: Path, out: Path, f: dict, secrets: list[str], cfg_text: st
     mode, kinds, mrz_formats = expect
     check(f"{name}: no error", f["error"] is None, str(f["error"]))
     check(f"{name}: processed as {mode}", f["mode"] == mode, f"got {f['mode']} {f.get('page_modes')}")
-    doc = fitz.open(out)
+    doc = engine.open_source(out)          # an image output is shown as a page of its pixel size
     layer, seen = "", ""
     for page in doc:
         layer += words_to_text(digital_words(page))[0] + "\n"
@@ -153,7 +161,7 @@ def check_output(src: Path, out: Path, f: dict, secrets: list[str], cfg_text: st
                     and (fitz.Rect(d["rect"]) & r).get_area() > 0.5 * max(fitz.Rect(d["rect"]).get_area(), 0.01)]
             check(f"{name}: {b['kind']} p{b['page']} no drawing left under the box", not left, str(len(left)))
             check(f"{name}: {b['kind']} p{b['page']} no text under the box", not page.get_textbox(r).strip())
-    originals = page_images(fitz.open(src))
+    originals = page_images(engine.open_source(src))
     if f["mode"] == "scan":
         check(f"{name}: no original image in the output", not (set(page_images(doc)) & set(originals)))
     else:
@@ -203,7 +211,7 @@ def run_folder(folder: str, work_root: Path, ner, edit=lambda c: c, files_only=N
     work = work_root / folder
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
-    for pdf in sorted(src.glob("*.pdf")):
+    for pdf in sorted(p for p in src.iterdir() if p.suffix.lower() in engine.SOURCE_SUFFIXES):
         if not pdf.stem.endswith("_anonymized") and (files_only is None or pdf.name in files_only):
             shutil.copy(pdf, work)
     cfg = edit(engine.scan_folder(work, folder, ner, "fra+eng", lambda *a: None)["config"])
@@ -211,9 +219,21 @@ def run_folder(folder: str, work_root: Path, ner, edit=lambda c: c, files_only=N
     return cfg, rep
 
 
+def check_faces(folder: str, f: dict, truth: list):
+    """Every face of the truth file is under a black box (the box covers at least 80 % of the face)."""
+    for t in truth:
+        x0, y0, x1, y1 = t["box"]
+        area = max((x1 - x0) * (y1 - y0), 1e-6)
+        best = max((((min(x1, b[2]) - max(x0, b[0])) * (min(y1, b[3]) - max(y0, b[1]))) / area
+                    for b in (x["box"] for x in f.get("blackouts", []) if x["page"] == t["page"] and x["kind"] == "photo")
+                    if min(x1, b[2]) > max(x0, b[0]) and min(y1, b[3]) > max(y0, b[1])), default=0)
+        check(f"{f['file']}: face p{t['page']} covered by a black box", best >= 0.8,
+              f"best coverage {best:.0%} for face {[round(v) for v in t['box']]}")
+
+
 def full_run(folders, work_root: Path, ner):
     for folder in folders:
-        secrets, files = EXPECT[folder]
+        secrets, files = EXPECT.get(folder, ([], {}))     # a folder without expectations: leak checks only
         print(f"\n== {folder}")
         t0 = time.time()
         cfg, rep = run_folder(folder, work_root, ner)
@@ -227,6 +247,9 @@ def full_run(folders, work_root: Path, ner):
                 print(f"  (no expectation for {f['file']}, leak checks only)")
                 exp = (f["mode"], [b["kind"] for b in f.get("blackouts", [])], [m.get("format") for m in f.get("mrz", [])])
             check_output(work_root / folder / f["file"], work_root / folder / f["output"], f, secrets, cfg, exp)
+            truth_file = ROOT / "sample_data" / folder / "faces_truth.json"
+            if truth_file.exists():
+                check_faces(folder, f, json.loads(truth_file.read_text(encoding="utf-8")).get(f["file"], []))
         print(f"  ({time.time() - t0:.0f}s)")
 
 

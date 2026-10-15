@@ -3,6 +3,8 @@ pymupdf
 pyyaml
 pillow
 numpy
+# face detection (YuNet model in anonymizer/models, no download): ONNX Runtime, CPU only
+onnxruntime
 pytesseract
 spacy
 # Windows built-in OCR for scans (no admin rights needed; used when Tesseract is not installed)
