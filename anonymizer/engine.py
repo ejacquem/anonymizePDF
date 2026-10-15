@@ -630,7 +630,7 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
         m.replacement = _adjust(cfg, m)
         for b in boxes:
             page.add_redact_annot(fitz.Rect(b), fill=fill if not _inside(b, hidden) else False)
-        records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+        records.append({"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes)})
     render.apply_redactions(page)
     if not blackbox:
         for (m, boxes), style, limit in zip(plan, styles, limits):
@@ -655,7 +655,7 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
     todo = []
     for m, boxes in plan:
         m.replacement = _adjust(cfg, m)
-        records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+        records.append({"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes, k)})
         if _inside(boxes[0], black_px + ([zone] if zone else [])):
             continue                                   # covered by a black box / rebuilt with the MRZ
         ink = render.ink_color(img, boxes[0])
@@ -831,13 +831,18 @@ def _angle_at(angles: dict, box) -> float:
     return best
 
 
-def _pt_box(boxes) -> list:
-    """Union of the pixel boxes of a match, in PDF points (the same unit as the black boxes of the report)."""
+def _union_box(boxes, scale: float = 1.0) -> list:
+    """Union of the boxes of a match, scaled (pixels -> PDF points: 72 / dpi), rounded to 0.1 point."""
     x0 = min(b[0] for b in boxes)
     y0 = min(b[1] for b in boxes)
     x1 = max(b[2] for b in boxes)
     y1 = max(b[3] for b in boxes)
-    return [round(float(v) * 72 / 300, 1) for v in (x0, y0, x1, y1)]
+    return [round(float(v) * scale, 1) for v in (x0, y0, x1, y1)]
+
+
+def _pt_box(boxes) -> list:
+    """Union of the pixel boxes of a match, in PDF points (the same unit as the black boxes of the report)."""
+    return _union_box(boxes, 72 / 300)
 
 
 def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log):

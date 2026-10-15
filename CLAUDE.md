@@ -82,7 +82,11 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   not a requestAnimationFrame lock (rAF does not run in hidden tabs; scroll events are not dispatched either).
 - "Viewer / PDF" switch (Original pane head): PDF = the browser's own PDF viewer in an iframe (`/api/pdf`, selectable
   text); Viewer = the page images, synced. Kept in localStorage (`anonymizePDF.sync`). The header has two lines: name,
-  then the tools (zoom, switch, Black box, Mark as reviewed).
+  then the tools (zoom, Changes, switch, Black box, Apply, Mark as reviewed).
+- Changes (Original pane head, `#btnChanges`, remembered in localStorage `anonymizePDF.changes`, off by default): a
+  frame (`.chg`, `drawChanges`) around each value replaced in the selected file, in both panes, from `items[].boxes`
+  of the report. Disabled while the report has no box for the file (anonymize it again: reports made before the
+  Changes feature have none). Black boxes and the rebuilt MRZ are not framed.
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Anonymize file** (either file of the pair; the
   report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).
@@ -151,7 +155,9 @@ API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api
      leftovers, `run_anonymize` runs a second pass on its output: text only (photos / codes / signatures are off in
      that pass, so a box the user removed is not blacked out again, and the report keeps the first pass's boxes).
    - Report `anon_report.json` per file: mode, pages, replaced, seconds, items, leftovers, warnings,
-     `blackouts: [{page, kind, box (PDF points)}]`, `mrz: [{page, action, format, lines}]`.
+     `blackouts: [{page, kind, box (PDF points)}]`, `mrz: [{page, action, format, lines}]`. Each item (one per
+     original value) has `boxes: [{page, box (PDF points)}]` = where the value was: scan, digital and pixel-pass
+     replacements all record it (`_union_box`), the Changes button draws them.
 
 ## 6. Config format (`anon_config.yaml`)
 

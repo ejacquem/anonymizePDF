@@ -71,7 +71,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .pane-tools button { height: 22px; box-sizing: border-box; line-height: 18px; padding-top: 0; padding-bottom: 0; }
 .pane-tools .seg { height: 22px; }
 .pane-tools .seg button { height: 100%; padding: 0 9px; font-size: 12px; line-height: 18px; }
-#btnBox.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+#btnBox.on, #btnChanges.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
 .pane-body { flex: 1; min-height: 0; overflow: auto; }
 .viewer { position: relative; overflow: auto; background: var(--viewer-bg); }
 .pages { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px; width: max-content;
@@ -201,6 +201,9 @@ details.grp[open] > summary::before { content: "▾"; }
 .bbox.auto { background: rgba(255, 255, 255, .06); outline: 1px dashed var(--accent); outline-offset: -1px; }
 .bbox.auto.sel { outline: 2px solid var(--accent); }
 .bbox.resizing, .bbox.auto.resizing { background: rgba(0, 0, 0, .35); }
+/* changed fields (Changes button): a frame around each replaced value, the clicks go through it */
+.chg { position: absolute; box-sizing: border-box; border: 2px solid var(--warn); z-index: 3; pointer-events: none;
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
 button.mdel { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
 .mrow .mrep { font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); background: transparent; color: var(--text); min-width: 0; }
 .mhead { padding-top: 4px; }

@@ -166,6 +166,7 @@ function sizePages(which) {
     el.style.height = v.pages[i].h * k + "px";
   });
   if (which === "anon") drawBoxes();
+  drawChanges(which);
 }
 
 function refreshVisibleImages() {
@@ -217,8 +218,43 @@ async function setViewer(which, path) {
   });
   if (zoom.fit) applyFit(); else sizePages(which);
   if (which === "anon") drawBoxes();
+  drawChanges(which);
   syncScroll(other(which));
 }
+
+// ----- changed fields: a rectangle around each value replaced in the file, in both panes (Changes button) -----
+const CHANGES_KEY = "anonymizePDF.changes";
+const btnChanges = $("#btnChanges");
+function changedBoxes() {
+  // every replaced value of the selected file: its boxes (PDF points) from the report of its last anonymization
+  const name = currentFileName();
+  const rep = name && state.report && (state.report.files || []).find((f) => f.file === name);
+  const out = [];
+  (rep ? rep.items || [] : []).forEach((it) => (it.boxes || []).forEach((b) => out.push({ page: b.page, box: b.box })));
+  return out;
+}
+function drawChanges(which) {
+  const v = viewers[which], k = pageScale();
+  const items = btnChanges.classList.contains("on") ? changedBoxes() : [];
+  [...v.list.children].forEach((el, i) => {
+    el.querySelectorAll(".chg").forEach((n) => n.remove());
+    items.filter((c) => c.page === i + 1).forEach((c) => {
+      const d = document.createElement("div");
+      d.className = "chg";
+      d.style.left = c.box[0] * k + "px";
+      d.style.top = c.box[1] * k + "px";
+      d.style.width = (c.box[2] - c.box[0]) * k + "px";
+      d.style.height = (c.box[3] - c.box[1]) * k + "px";
+      el.appendChild(d);
+    });
+  });
+}
+btnChanges.onclick = () => {
+  btnChanges.classList.toggle("on");
+  try { localStorage.setItem(CHANGES_KEY, btnChanges.classList.contains("on") ? "1" : "0"); } catch (e) { /* no storage */ }
+  VIEWERS.forEach(drawChanges);
+};
+try { if (localStorage.getItem(CHANGES_KEY) === "1") btnChanges.classList.add("on"); } catch (e) { /* no storage */ }
 
 // ----- zoom (always shared by both viewers) -----
 function updateZoomLabel() {
@@ -1121,6 +1157,11 @@ function updateToolbar() {
   $("#btnRunFile").classList.toggle("save-needed", pending);
   $("#btnApply").disabled = state.running || !cur || !state.hasConfig || !pending;
   $("#btnApply").classList.toggle("save-needed", pending);
+  const nChanges = changedBoxes().length;
+  btnChanges.disabled = !nChanges;
+  btnChanges.title = nChanges
+    ? `Draw a rectangle around the ${nChanges} replaced field(s) of this file, in both panes`
+    : "No replaced field recorded for this file: anonymize it to see them";
   $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig);
 }
 
@@ -1206,6 +1247,7 @@ async function loadReport() {
   if (state.folder === null) return;
   try { state.report = await api(`/api/report?folder=${encodeURIComponent(state.folder)}`); } catch (e) { state.report = null; }
   await loadStatus();
+  VIEWERS.forEach(drawChanges);            // the report may have new boxes for the replaced fields
   renderRecap();
 }
 
