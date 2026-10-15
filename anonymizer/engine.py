@@ -198,6 +198,14 @@ def parse_config(text: str) -> dict:
         types.setdefault(norm_value(str(find)), "TERM")
     # manual values win over the automatic ones: an automatic value with the same text is dropped
     manual_boxes = []
+    removed_boxes = []
+    for i, item in enumerate(data.get("removed_blackouts") or [], start=1):
+        box = item.get("box") if isinstance(item, dict) else None
+        if not isinstance(item, dict) or not item.get("file") or not item.get("kind") or not isinstance(box, list) \
+                or len(box) != 4:
+            raise ValueError(f"removed_blackouts item #{i} must look like: - {{file: \"x.pdf\", page: 1, kind: photo, box: [x0, y0, x1, y1]}}")
+        removed_boxes.append({"file": str(item["file"]), "page": int(item.get("page") or 1), "kind": str(item["kind"]),
+                              "box": [float(v) for v in box]})
     for i, item in enumerate(data.get("manual_replacements") or [], start=1):
         if not isinstance(item, dict) or not str(item.get("find") or "").strip():
             raise ValueError(f"manual_replacements item #{i} must look like: - {{find: \"...\", replace: \"...\"}}")
@@ -244,6 +252,7 @@ def parse_config(text: str) -> dict:
         "mrz": mrz,
         "match_case": bool(data.get("match_case", True)),
         "manual_blackouts": manual_boxes,
+        "removed_blackouts": removed_boxes,
     }
 
 
@@ -597,6 +606,8 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         black += [("qr code", r) for r in (regions.find_codes_digital(page) if bo["qr_codes"] else [])]
         black += [("signature", r) for r in
                   (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
+        removed = cfg.get("removed_boxes", {}).get(pno, [])
+        black = [(k, r) for k, r in black if not _is_removed(removed, k, r)]     # removed by the user
         manual = cfg.get("manual_boxes", {}).get(pno, [])
         black += [("manual", r) for r in manual]
         plan = [(m, bx) for m, bx in plan_page(words, pc, [], numberer) if not _inside(bx[0], manual)]
@@ -863,6 +874,13 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     manual = [tuple(v * 300 / 72 for v in b) for b in cfg.get("manual_boxes", {}).get(pno, [])]   # pt -> px
     not_ink = ([zone] if zone else []) + codes + photo_area + manual
     signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
+    removed = cfg.get("removed_boxes", {}).get(pno, [])     # automatic boxes the user removed: not painted
+    if removed:
+        def _pt(b):
+            return tuple(v * 72 / 300 for v in b)
+        photos = [b for b in photos if not _is_removed(removed, "photo", _pt(b))]
+        codes = [b for b in codes if not _is_removed(removed, "qr code", _pt(b))]
+        signs = [b for b in signs if not _is_removed(removed, "signature", _pt(b))]
     if cfg["mrz"] == "keep":
         mrz = zone = None
     covered = photos + codes + signs + manual + ([zone] if zone else [])
@@ -978,6 +996,30 @@ def _manual_boxes(cfg: dict, name: str) -> dict:
     return out
 
 
+def _removed_boxes(cfg: dict, name: str) -> dict:
+    """{page: [(kind, box in PDF points)]} of the automatic black boxes the user removed or moved."""
+    out: dict = {}
+    for b in cfg.get("removed_blackouts") or []:
+        if b["file"] == name:
+            out.setdefault(int(b["page"]), []).append((b["kind"], tuple(b["box"])))
+    return out
+
+
+def _is_removed(removed: list, kind: str, box) -> bool:
+    """Is this automatic box one the user removed? Same kind, and most of the same area (the boxes are found again
+    by the same detectors, so they match closely)."""
+    for k, r in removed:
+        if k != kind:
+            continue
+        ix = max(0.0, min(box[2], r[2]) - max(box[0], r[0]))
+        iy = max(0.0, min(box[3], r[3]) - max(box[1], r[1]))
+        inter = ix * iy
+        union = (box[2] - box[0]) * (box[3] - box[1]) + (r[2] - r[0]) * (r[3] - r[1]) - inter
+        if union > 0 and inter / union >= 0.5:
+            return True
+    return False
+
+
 def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log,
                   only: list[str] | None = None) -> dict:
     """Anonymize every source of the folder, or only the files named in `only` (their entries replace the ones of
@@ -1014,7 +1056,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 if not ocr.available():
                     raise RuntimeError("scanned pages / images but no OCR engine is available (Tesseract or Windows OCR)")
                 log(f"   OCR engine: {ocr.describe(ocr_lang)}")
-            fcfg = {**cfg, "manual_boxes": _manual_boxes(cfg, pdf.name)}
+            fcfg = {**cfg, "manual_boxes": _manual_boxes(cfg, pdf.name), "removed_boxes": _removed_boxes(cfg, pdf.name)}
             if mode == "scan":
                 records, extras = _scan_source(pdf, out, fcfg, ocr_lang, log)
             else:
