@@ -463,8 +463,8 @@ def batch():
     except (PermissionError, FileNotFoundError) as e:
         return bad(str(e), 404)
     action, redo, ocr_verify = data.get("action"), bool(data.get("redo")), bool(data.get("ocr_verify"))
-    if action not in ("scan", "anonymize"):
-        return bad("action must be 'scan' or 'anonymize'")
+    if action not in ("scan", "anonymize", "all"):
+        return bad("action must be 'scan', 'anonymize' or 'all'")
 
     def work(log):
         folders = client_folders(base)
@@ -473,6 +473,24 @@ def batch():
         for k, d in enumerate(folders, start=1):
             rel = rel_of(d) or "."
             st = folder_status(d)
+            if action == "all":                         # scan if needed, then anonymize if needed
+                try:
+                    if not st["config"] or redo:
+                        log(f"[{k}/{len(folders)}] {rel}: scan ...")
+                        res = eng.scan_folder(d, rel_of(d), get_ner(log), STATE["ocr_lang"], lambda m: log("   " + m))
+                        (d / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+                    if folder_status(d)["to_do"] or redo:
+                        log(f"[{k}/{len(folders)}] {rel}: anonymize ...")
+                        text = (d / eng.CONFIG_NAME).read_text(encoding="utf-8")
+                        eng.run_anonymize(d, rel_of(d), text, STATE["ocr_lang"], ocr_verify, lambda m: log("   " + m))
+                        done.append(rel)
+                    else:
+                        skipped.append(rel)
+                        log(f"[{k}/{len(folders)}] {rel}: up to date -> skipped")
+                except Exception as e:  # noqa: BLE001
+                    failed.append(rel)
+                    log(f"   ERROR in {rel}: {e}")
+                continue
             if action == "scan" and st["config"] and not redo:
                 skipped.append(rel)
                 log(f"[{k}/{len(folders)}] {rel}: already has a config -> skipped")

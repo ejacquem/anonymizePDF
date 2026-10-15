@@ -86,7 +86,10 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   `run_anonymize` also clears the flag of each file it regenerates. Tree badges `✓` (file) and `✓ r/n` (folder).
 - Batch: selecting a folder with subfolders shows an overview in Recap (`/api/status`: per client folder PDFs, config,
   anonymized, to_do = outputs missing or config newer than the report, leftovers, reviewed) and two buttons
-  (`POST /api/batch` action scan = folders without config only, anonymize = folders to do; `redo` = all).
+  (`POST /api/batch` action scan = folders without config only, anonymize = folders to do, all = scan if no config
+  then anonymize if to do; `redo` = all folders). The toolbar buttons switch to batch mode (`state.batchMode`) on such
+  a folder. Layout: tree / side widths in localStorage (`treeHidden` for the ☰ toggle); the PDF panes are `flex: 1 1 0`
+  so they always stay equal.
 
 API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api/page?path=&page=&scale=`,
 `GET|PUT /api/config?folder=`, `GET /api/report?folder=`, `POST /api/scan`, `POST /api/anonymize` (job id),

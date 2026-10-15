@@ -60,7 +60,7 @@ function renderNode(node, parent, depth) {
   if (node.type === "dir") {
     const row = document.createElement("div");
     row.className = "row" + (state.folder === node.path ? " selected" : "");
-    row.style.paddingLeft = 8 + depth * 14 + "px";
+    row.style.paddingLeft = 6 + depth * 10 + "px";
     const open = state.open.has(node.path);
     let badges = "";
     if (node.pdf_count) badges += `<span class="badge">${node.pdf_count} pdf</span>`;
@@ -70,7 +70,7 @@ function renderNode(node, parent, depth) {
       const all = node.reviewed_count === node.anon_count;
       badges += `<span class="badge rev${all ? " all" : ""}" title="manually reviewed / anonymized files">✓ ${node.reviewed_count}/${node.anon_count}</span>`;
     }
-    row.innerHTML = `<span class="caret">${open ? "▾" : "▸"}</span><span>📁</span><span class="name">${esc(node.name)}</span>${badges}`;
+    row.innerHTML = `<span class="caret">${open ? "▾" : "▸"}</span><span class="ico">📁</span><span class="name" title="${esc(node.name)}">${esc(node.name)}</span><span class="badges">${badges}</span>`;
     row.onclick = async () => {
       if (state.open.has(node.path) && state.folder === node.path) state.open.delete(node.path);
       else state.open.add(node.path);
@@ -82,7 +82,7 @@ function renderNode(node, parent, depth) {
   } else {
     const row = document.createElement("div");
     row.className = "row" + (node.anonymized ? " anon" : "") + (state.file === node.path ? " selected" : "");
-    row.style.paddingLeft = 8 + depth * 14 + 14 + "px";
+    row.style.paddingLeft = 6 + depth * 10 + 12 + "px";
     row.innerHTML = `<span>${node.anonymized ? "🔒" : "📄"}</span><span class="name" title="${esc(node.name)}">${esc(node.name)}</span>` +
       (!node.anonymized && node.anon ? `<span class="badge done">anon</span>` : "") +
       (node.reviewed ? `<span class="rev-mark" title="anonymized file reviewed by hand">✓</span>` : "");
@@ -421,6 +421,7 @@ async function selectFolder(path) {
   await loadReport();
   updateToolbar();
   renderTree();
+  if (state.batchMode) showTab("recap");
   return true;
 }
 
@@ -533,7 +534,15 @@ function settingsHtml(s) {
 function renderTable() {
   const box = $("#cfgTable");
   const m = state.model;
-  if (!m) { box.innerHTML = ""; return; }
+  if (!m) {
+    const node = state.nodes[state.folder];
+    box.innerHTML = !node ? "" : hasSubfolders(node) && !node.pdf_count
+      ? `<div class="cfghint muted">This folder contains client folders. Each one has its own config: open a client
+         folder in the tree, or use <b>1 · Scan all subfolders</b> / <b>2 · Anonymize all subfolders</b> (overview in
+         the Recap tab).</div>`
+      : `<div class="cfghint muted">No config for this folder yet: click <b>1 · Scan &amp; draft config</b>.</div>`;
+    return;
+  }
   const q = ($("#cfgSearch").value || "").trim().toLowerCase();
   const groups = new Map();
   m.entries.forEach((e, i) => {
@@ -680,9 +689,15 @@ function updateToolbar() {
   $("#folderInfo").innerHTML = node
     ? `Working folder: <b>${esc(node.name)}</b> · ${n} PDF${n === 1 ? "" : "s"}${n ? "" : " (no PDF directly in this folder)"}`
     : "Select a folder in the tree (click a folder or a file).";
-  $("#btnScan").disabled = state.running || !n;
+  const batch = !n && hasSubfolders(node);               // a folder of client folders: the buttons act on all of them
+  state.batchMode = batch;
+  $("#btnScan").textContent = batch ? "1 · Scan all subfolders" : "1 · Scan & draft config";
+  $("#btnRun").textContent = batch ? "2 · Anonymize all subfolders" : "2 · Anonymize folder";
+  $("#btnScan").title = batch ? "Draft a config in every client folder below that has none (existing configs are kept)" : "";
+  $("#btnRun").title = batch ? "Anonymize every client folder below whose outputs are missing or whose config changed" : "";
+  $("#btnScan").disabled = state.running || (!n && !batch);
   $("#btnSave").disabled = state.running || !state.hasConfig || !state.dirty;
-  $("#btnRun").disabled = state.running || !n || !state.hasConfig;
+  $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
 }
 
 // ---------- jobs ----------
@@ -720,6 +735,7 @@ async function runJob(kind, url, body, label) {
 }
 
 $("#btnScan").onclick = async () => {
+  if (state.batchMode) return runBatch("scan");
   if (state.hasConfig && !confirm("This folder already has a config. Scanning again replaces it (your edits are lost). Continue?")) return;
   const r = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan");
   await loadTree();
@@ -731,6 +747,7 @@ $("#btnScan").onclick = async () => {
 };
 
 $("#btnRun").onclick = async () => {
+  if (state.batchMode) return runBatch("anonymize");
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("anonymize", "/api/anonymize", { folder: state.folder, ocr_verify: $("#ocrVerify").checked }, "Anonymize");
   await loadTree();
@@ -776,6 +793,8 @@ function renderOverview() {
         title="Scan & draft a config in every folder that has none yet (existing configs are never overwritten)">Scan ${noCfg} folder(s) without config</button>
       <button id="btnBatchRun" class="primary" ${state.running || !todo ? "disabled" : ""}
         title="Anonymize every folder whose outputs are missing or whose config changed since the last run">Anonymize ${todo} folder(s) to do</button>
+      <button id="btnBatchAll" ${state.running || (!noCfg && !todo) ? "disabled" : ""}
+        title="One click: draft the missing configs, then anonymize everything that is to do (without reviewing the new configs!)">Scan + anonymize all</button>
       <label class="chk" title="Also redo the folders that are already done (scan: replaces existing configs!)"><input type="checkbox" id="batchRedo"> redo all</label>
     </div>
     <table class="ov"><tr><th>Folder</th><th>PDFs</th><th>Config</th><th>Anonymized</th><th>Leftovers</th><th>Reviewed</th></tr>`;
@@ -792,10 +811,11 @@ function renderOverview() {
 
 async function runBatch(action) {
   const redo = $("#batchRedo") && $("#batchRedo").checked;
+  if (action === "all" && !confirm("Scan the folders without config and anonymize them right away, without reviewing the new configs?")) return;
   if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder and replaces their configs (your edits are lost). Continue?")) return;
   if (state.dirty && !(await saveConfig())) return;
   await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: $("#ocrVerify").checked },
-    action === "scan" ? "Batch scan" : "Batch anonymize");
+    { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize" }[action]);
   await loadTree();
   await loadConfig();
   await loadReport();
@@ -806,6 +826,8 @@ function bindOverview(box) {
   const s = box.querySelector("#btnBatchScan"), r = box.querySelector("#btnBatchRun");
   if (s) s.onclick = () => runBatch("scan");
   if (r) r.onclick = () => runBatch("anonymize");
+  const a = box.querySelector("#btnBatchAll");
+  if (a) a.onclick = () => runBatch("all");
   box.querySelectorAll("tr.click").forEach((tr) => {
     tr.onclick = async () => {
       const p = tr.dataset.path;
@@ -880,39 +902,44 @@ function renderRecap() {
 
 // ---------- resizable panes ----------
 const LAYOUT_KEY = "anonymizePDF.layout";
-const LAYOUT_DEFAULT = { tree: 260, side: 440, orig: 0.5 };
+const LAYOUT_DEFAULT = { tree: 220, side: 440, treeHidden: false };
 const layout = { ...LAYOUT_DEFAULT };
 try { Object.assign(layout, JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}")); } catch (e) { /* no storage */ }
 
 function applyLayout() {
   const m = $("main");
-  const total = m.clientWidth - 16 - 3 * 8;            // main padding + 3 splitters
-  const minPdf = 250 + 160;                              // min widths of the two PDF panes
+  const tree = layout.treeHidden ? 0 : layout.tree;
+  const total = m.clientWidth - 8 - 5 * 4;               // main padding + gaps
+  const minPdf = 2 * 200;                                // min widths of the two PDF panes
   layout.tree = Math.round(Math.min(Math.max(layout.tree, 140), Math.max(140, total - layout.side - minPdf)));
-  layout.side = Math.round(Math.min(Math.max(layout.side, 260), Math.max(260, total - layout.tree - minPdf)));
-  layout.orig = Math.min(Math.max(layout.orig, 0.1), 0.9);
+  layout.side = Math.round(Math.min(Math.max(layout.side, 260), Math.max(260, total - tree - minPdf)));
   m.style.setProperty("--w-tree", layout.tree + "px");
   m.style.setProperty("--w-side", layout.side + "px");
-  m.style.setProperty("--r-orig", layout.orig);
-  m.style.setProperty("--r-anon", 1 - layout.orig);
+  m.classList.toggle("no-tree", !!layout.treeHidden);
+  $("#btnTree").classList.toggle("on", !layout.treeHidden);
 }
+
+$("#btnTree").onclick = () => {
+  layout.treeHidden = !layout.treeHidden;
+  applyLayout();
+  saveLayout();
+};
 
 function saveLayout() {
   try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch (e) { /* no storage */ }
 }
 
 document.querySelectorAll(".splitter").forEach((bar) => {
-  const key = { tree: "tree", side: "side", pdf: "orig" }[bar.dataset.split];
+  const key = { tree: "tree", side: "side" }[bar.dataset.split];
   bar.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     bar.setPointerCapture(e.pointerId);
     bar.classList.add("dragging");
     document.body.classList.add("resizing");
     const x0 = e.clientX, start = layout[key];
-    const pdfWidth = $("#origPane").offsetWidth + $("#anonPane").offsetWidth;
     const move = (ev) => {
       const dx = ev.clientX - x0;
-      layout[key] = key === "tree" ? start + dx : key === "side" ? start - dx : start + dx / pdfWidth;
+      layout[key] = key === "tree" ? start + dx : start - dx;
       applyLayout();
     };
     const up = () => {

@@ -120,7 +120,8 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 5. Compare **Original** and **Anonymized** side by side:
    * *Sync* ticked (default): both PDFs zoom together (−/+, *Fit*, Ctrl+wheel) and scroll together; **click and
      drag** to move around the page. Untick *Sync* to get the browser's own PDF viewer back (text can be selected).
-   * Drag the bars between the panes to resize them (double-click a bar to reset).
+   * The two PDF panes always keep the same width. Drag the bars beside the tree and the side panel to resize
+     them (double-click a bar to reset). **☰** (top left) shows / hides the file tree.
 6. The **Recap** tab lists, per file, every replaced value (type, original → replacement, count, pages), the black
    boxes (■ photos, QR codes, signatures), the MRZ, the time taken, and any original value still found in the
    output ("leftovers"). The **Log** tab shows the run (OCR engine, fonts used, bold, black boxes...).
@@ -131,7 +132,9 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 ### Many folders at once (batch)
 
 Select a folder that contains client folders (e.g. the root): the **Recap** tab shows an overview of every client
-folder below it (PDFs, config, anonymized, leftovers, reviewed); click a row to open that folder.
+folder below it (PDFs, config, anonymized, leftovers, reviewed); click a row to open that folder. The toolbar
+buttons become **Scan all subfolders** / **Anonymize all subfolders**, and **Scan + anonymize all** does both in
+one go (scan where there is no config yet, then anonymize what is to do).
 * **Scan … folder(s) without config** drafts a config in every folder that has none (existing configs are never
   overwritten, so your reviewed edits are safe).
 * **Anonymize … folder(s) to do** runs every folder whose outputs are missing or whose config changed since the last
