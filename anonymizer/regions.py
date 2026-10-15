@@ -129,6 +129,27 @@ def _grow(boxes: list[tuple], seed: tuple, gap: float) -> list[tuple]:
     return chosen
 
 
+def _code_structure(region: np.ndarray) -> bool:
+    """QR code: solid finder squares in 3 corners (their outer edges are dark); Data Matrix: solid left column
+    and bottom row. Text, photos or logos do not have these."""
+    h, w = region.shape
+    if h < 12 or w < 12:
+        return False
+    t = 2                                                          # edge band thickness (pixels)
+    top, bottom = region[:t].any(axis=0), region[-t:].any(axis=0)
+    left, right = region[:, :t].any(axis=1), region[:, -t:].any(axis=1)
+    L = max(int(0.18 * min(h, w)), 3)                              # a finder is ~7/25 of the side
+
+    def solid(edge):
+        return edge.mean() >= 0.85
+
+    corners = [solid(top[:L]) and solid(left[:L]),                 # top-left
+               solid(top[-L:]) and solid(right[:L]),               # top-right
+               solid(bottom[:L]) and solid(left[-L:])]             # bottom-left
+    datamatrix = solid(left) and solid(bottom)
+    return sum(corners) >= 2 or datamatrix
+
+
 def find_codes(img: Image.Image, dpi: int) -> list[tuple]:
     """Boxes (image pixels) of QR codes / 2D barcodes (Data Matrix, the French '2D-Doc' seal...): a square of
     small black and white modules - dense, high contrast and full of transitions, unlike text, photos or logos."""
@@ -137,13 +158,18 @@ def find_codes(img: Image.Image, dpi: int) -> list[tuple]:
     small = np.asarray(img.convert("L").resize((max(int(img.width / k), 1), max(int(img.height / k), 1)),
                                                Image.BOX)).astype(np.int16)
     dark = small < 110
-    # merge the modules of one code into a solid square (closing of ~0.75 mm)
-    closed = Image.fromarray((dark * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(3)) \
-        .filter(ImageFilter.MinFilter(3))
-    mask = np.asarray(closed) > 0
     px_mm = work_dpi / MM_PER_INCH
     out = []
-    for x0, y0, x1, y1, n in _components(mask):
+    # merge the modules of one code into a solid square; module sizes differ (0.3 mm on an ID card, 1 mm or more
+    # on an invoice), so the closing is tried at several sizes
+    comps = []
+    for size in (3, 5, 7):
+        closed = Image.fromarray((dark * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(size)) \
+            .filter(ImageFilter.MinFilter(size))
+        comps += _components(np.asarray(closed) > 0)
+    for x0, y0, x1, y1, n in comps:
+        if any(not (x1 * k <= o[0] or o[2] <= x0 * k or y1 * k <= o[1] or o[3] <= y0 * k) for o in out):
+            continue                                              # already found at another closing size
         w_mm, h_mm = (x1 - x0) / px_mm, (y1 - y0) / px_mm
         if not (7 <= w_mm <= 60 and 7 <= h_mm <= 60 and 0.8 <= h_mm / w_mm <= 1.25):
             continue
@@ -154,7 +180,10 @@ def find_codes(img: Image.Image, dpi: int) -> list[tuple]:
         # transitions black <-> white per mm, horizontally and vertically: a code is a checkerboard of modules
         th = np.abs(np.diff(region.astype(np.int8), axis=1)).sum() / max(region.shape[0], 1) / w_mm
         tv = np.abs(np.diff(region.astype(np.int8), axis=0)).sum() / max(region.shape[1], 1) / h_mm
-        if 0.3 <= density <= 0.75 and th >= 0.45 and tv >= 0.45:
+        busy = 0.3 <= density <= 0.75 and th >= 0.45 and tv >= 0.45          # fine modules: a checkerboard
+        # big modules make fewer transitions per mm: then the code's own structure decides
+        structured = 0.25 <= density <= 0.8 and th >= 0.2 and tv >= 0.2 and _code_structure(region)
+        if busy or structured:
             m = 1.5 * px_mm                                       # cover the quiet zone too
             out.append((max(x0 - m, 0) * k, max(y0 - m, 0) * k, min(x1 + m, small.shape[1]) * k,
                         min(y1 + m, small.shape[0]) * k))
@@ -277,14 +306,17 @@ def find_photos_digital(page) -> list[tuple]:
     for info in page.get_image_info():
         x0, y0, x1, y1 = info["bbox"]
         w_mm, h_mm = (x1 - x0) / 72 * MM_PER_INCH, (y1 - y0) / 72 * MM_PER_INCH
-        if 10 <= w_mm <= 60 and 12 <= h_mm <= 80 and 1.0 <= h_mm / max(w_mm, 0.1) <= 1.7:
+        if 10 <= w_mm <= 60 and 12 <= h_mm <= 80 and 1.1 <= h_mm / max(w_mm, 0.1) <= 1.7:   # square: a code
             out.append((x0, y0, x1, y1))
     return out
 
 
-def find_signatures_digital(page, words: list[dict]) -> list[tuple]:
-    """Rects (PDF points) covering the drawings / images of a signature next to a 'Signature' label."""
+def find_signatures_digital(page, words: list[dict], exclude: list[tuple] = ()) -> list[tuple]:
+    """Rects (PDF points) covering the drawings / images of a signature next to a 'Signature' label.
+    `exclude`: photos / codes already found (not signature strokes)."""
     import pymupdf as fitz
+
+    excluded = [fitz.Rect(r) for r in exclude]
 
     mm = 72 / MM_PER_INCH
     parts_all = []
@@ -298,6 +330,7 @@ def find_signatures_digital(page, words: list[dict]) -> list[tuple]:
         parts_all.append(tuple(r))
     for info in page.get_image_info():
         parts_all.append(tuple(info["bbox"]))
+    parts_all = [r for r in parts_all if not any(fitz.Rect(r).intersects(x) for x in excluded)]
     out = []
     for ln in lines_of(words):
         if not is_signature_label(ln["text"]):

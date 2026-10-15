@@ -124,6 +124,14 @@ mrz: regenerate           # regenerate (same format, never blacked out) | keep; 
   but a distant stamp is not. The label is spared only if the strokes do not touch it (privacy first).
   Digital: drawings / images grown the same way (frames and rules skipped), redacted with images=2, graphics=1.
 - Report: `blackouts: [{page, kind, box (PDF points)}]`; Recap shows '■ 2 photos, 1 signature' and 'MRZ ...'.
+- Black boxes REMOVE the data (checked by extracting the output's objects): scans are rebuilt from one new image per
+  page (originals not in the file). Digital: `render.black_out_digital` removes text, overwrites covered image
+  pixels (fully covered images are dropped, SMask too) and removes vector drawings with MuPDF's 'remove if
+  touched' mode, because 'remove if covered' keeps strokes (a signature!); lines it removed that are not inside a
+  box (frames, borders) are redrawn from get_drawings(), then the boxes are painted again on top.
+- QR / 2D codes with big modules (vector codes on invoices): closing tried at 3 sizes, and a structural check
+  (`_code_structure`: QR finder squares in >= 2 corners, or Data Matrix solid left + bottom edges) replaces the
+  transitions-per-mm threshold. Digital photos need h/w >= 1.1 (square images are codes, not photos).
 
 ## 8. Detection
 

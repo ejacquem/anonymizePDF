@@ -473,18 +473,12 @@ def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list, dict]:
         black = [("photo", r) for r in (regions.find_photos_digital(page) if want_photos else [])]
         black += [("qr code", r) for r in (regions.find_codes_digital(page) if bo["qr_codes"] else [])]
         black += [("signature", r) for r in
-                  (regions.find_signatures_digital(page, words) if bo["signatures"] else [])]
+                  (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
         plan = plan_page(words, pc, [], numberer)
         if plan:
             _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno)
         if black:
-            # second pass: black boxes that also remove the image pixels / drawings underneath
-            for _, r in black:
-                page.add_redact_annot(fitz.Rect(r), fill=(0, 0, 0))
-            try:
-                page.apply_redactions(images=2, graphics=1)   # image pixels blanked, covered drawings removed
-            except TypeError:
-                page.apply_redactions(images=2)
+            render.black_out_digital(page, [r for _, r in black])
             extras["blackouts"] += [{"page": pno, "kind": k, "box": [round(v, 1) for v in r]} for k, r in black]
     if fonts.used:
         log("   fonts: " + ", ".join(f"{n} {k}" for k, n in sorted(fonts.used.items()))

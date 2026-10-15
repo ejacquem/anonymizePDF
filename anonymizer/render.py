@@ -256,6 +256,59 @@ def insert_replacement(page, box, text, style: dict | None = None, fonts: FontBo
     tw.write_text(page)
 
 
+def _drawing_key(d) -> tuple:
+    return (tuple(round(v, 1) for v in d["rect"]), d.get("color"), d.get("fill"), round(d.get("width") or 0, 2))
+
+
+def _redraw(page, d):
+    """Draw a path again from its get_drawings() description (lines, rectangles, quads, curves)."""
+    shape = page.new_shape()
+    for item in d["items"]:
+        op = item[0]
+        if op == "l":
+            shape.draw_line(item[1], item[2])
+        elif op == "re":
+            shape.draw_rect(item[1])
+        elif op == "qu":
+            shape.draw_quad(item[1])
+        elif op == "c":
+            shape.draw_bezier(item[1], item[2], item[3], item[4])
+    caps = d.get("lineCap") or (0,)
+    shape.finish(color=d.get("color"), fill=d.get("fill"), width=d.get("width") or 0, dashes=d.get("dashes"),
+                 even_odd=bool(d.get("even_odd")), closePath=bool(d.get("closePath")),
+                 lineCap=max(caps) if isinstance(caps, (tuple, list)) else caps,
+                 lineJoin=int(d.get("lineJoin") or 0),
+                 stroke_opacity=d.get("stroke_opacity") or 1, fill_opacity=d.get("fill_opacity") or 1)
+    shape.commit()
+
+
+def black_out_digital(page, rects: list):
+    """Black boxes that REALLY remove what is under them from the file, not just hide it:
+    - text under the box: removed;
+    - images under the box: covered pixels overwritten (fully covered images are dropped);
+    - vector drawings touching the box: removed. MuPDF's 'remove if covered' mode keeps strokes (a signature is
+      strokes), so the 'remove if touched' mode is used; it also removes lines that only cross the box (frames,
+      table borders): those are drawn again afterwards, then the black boxes are painted on top of them."""
+    import pymupdf as fitz
+
+    rects = [fitz.Rect(r) for r in rects]
+    before = page.get_drawings()
+    for r in rects:
+        page.add_redact_annot(r, fill=(0, 0, 0))
+    page.apply_redactions(images=2, graphics=2)
+    kept = {_drawing_key(d) for d in page.get_drawings()}
+    collateral = [d for d in before if _drawing_key(d) not in kept
+                  and not any(r.contains(fitz.Rect(d["rect"])) for r in rects)]   # inside a box: personal, gone
+    for d in collateral:
+        _redraw(page, d)
+    if collateral:
+        shape = page.new_shape()
+        for r in rects:
+            shape.draw_rect(r)
+        shape.finish(color=(0, 0, 0), fill=(0, 0, 0), width=0)
+        shape.commit()
+
+
 def apply_redactions(page):
     # images=0: leave images alone, graphics=0: leave lines/shapes alone (older PyMuPDF has no 'graphics')
     try:
