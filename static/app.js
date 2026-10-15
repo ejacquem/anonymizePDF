@@ -291,9 +291,13 @@ for (const which of VIEWERS) {
   const box = viewers[which].box;
   box.addEventListener("scroll", () => { if (!isProgrammatic(which)) syncScroll(which); });
   box.addEventListener("wheel", (e) => {
-    if (!(e.ctrlKey || e.metaKey)) return;
+    if (nativeMode() || !viewers[which].pages.length) return;   // the browser's own PDF viewer scrolls as usual
     e.preventDefault();
-    const r = box.getBoundingClientRect();
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey) {               // Shift + wheel: scroll through the pages
+      box.scrollTop += e.deltaY;
+      return;
+    }
+    const r = box.getBoundingClientRect();                      // wheel (or Ctrl + wheel): zoom around the pointer
     stepZoom(e.deltaY < 0 ? 1 : -1, { which, x: e.clientX - r.left, y: e.clientY - r.top });
   }, { passive: false });
 
@@ -376,8 +380,28 @@ async function openFile(path) {
   setViewer("anon", anon);
   $("#anonEmpty").textContent = "Not generated yet";
   updateReviewButton();
+  updateToolbar();
   renderTree();
 }
+
+// ---------- up / down arrows: the previous / next original file of the folder (wraps around) ----------
+function originalFiles() {
+  const node = state.folder !== null ? state.nodes[state.folder] : null;
+  return node ? (node.children || []).filter((c) => c.type === "file" && !c.anonymized).map((c) => c.path) : [];
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  const t = e.target;
+  if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;   // typing keeps its arrows
+  const files = originalFiles();
+  if (!files.length || state.running) return;
+  e.preventDefault();
+  const i = files.indexOf(state.file);
+  const next = e.key === "ArrowDown" ? (i + 1) % files.length : (i <= 0 ? files.length - 1 : i - 1);
+  openFile(files[next]);
+});
 
 // ---------- manual review flag ----------
 function currentOriginalNode() {
@@ -441,11 +465,11 @@ async function loadConfig() {
     renderTable();
     showConfigView();
     setDirty(false);
-    $("#configMsg").className = "muted small";
-    $("#configMsg").textContent = c.exists ? "Edit the replacements, then Save (Ctrl+S) and Anonymize." : "";
+    $("#configMsg").className = "small";
+    $("#configMsgText").textContent = "";
   } catch (e) {
     $("#configMsg").className = "err small";
-    $("#configMsg").textContent = e.message;
+    $("#configMsgText").textContent = e.message;
   }
 }
 
@@ -457,7 +481,7 @@ function setDirty(d) {
 }
 
 async function saveConfig() {
-  const msg = $("#configMsg");
+  const msg = $("#configMsgText");
   try {
     if (state.cfgView === "table" && state.model) {
       const r = await put("/api/config/model", { folder: state.folder, model: state.model });
@@ -499,8 +523,16 @@ const TYPE_LABELS = {
 const TYPE_ORDER = Object.keys(TYPE_LABELS);
 const VIEW_KEY = "anonymizePDF.configView";
 const SETTINGS_OPEN_KEY = "anonymizePDF.settingsOpen";
+const OCR_KEY = "anonymizePDF.ocrVerify";
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.id === "ocrVerify") {
+    state.ocrVerify = e.target.checked;
+    try { localStorage.setItem(OCR_KEY, state.ocrVerify ? "1" : "0"); } catch (err) { /* ignore */ }
+  }
+});
 state.cfgView = (() => { try { return localStorage.getItem(VIEW_KEY) || "table"; } catch (e) { return "table"; } })();
 state.model = null;
+state.ocrVerify = (() => { try { return localStorage.getItem(OCR_KEY) === "1"; } catch (e) { return false; } })();
 state.openGroups = null;          // types whose group is unfolded (null = default: groups with active entries)
 
 function infoShort(info) {
@@ -517,6 +549,8 @@ function settingsHtml(s) {
   let open = false;
   try { open = localStorage.getItem(SETTINGS_OPEN_KEY) === "1"; } catch (e) { /* ignore */ }
   return `<details class="settings"${open ? " open" : ""}><summary>Settings</summary><div class="setgrid">
+    <span>OCR check</span><label class="chk" title="Re-read the anonymized digital PDFs with OCR to look for leftovers (slower). Scanned PDFs are always OCR-checked.">
+      <input type="checkbox" id="ocrVerify"${state.ocrVerify ? " checked" : ""}> also on digital PDFs</label>
     <span>Replace with</span>${sel("mode", [["replace", "fake text"], ["blackbox", "a black box (every value)"]])}
     <span>Digital PDFs</span>${sel("digital_fill", [["none", "keep the page background"], ["white", "white box behind the text"]])}
     <span>Case</span><span>${chk("match_case", "keep UPPER / lower case", "MARCHAND -> BEAUMONT, Vermeulen -> Hendrickx")}
@@ -663,7 +697,7 @@ function showConfigView() {
 
 async function switchView(view) {
   if (view === state.cfgView) return;
-  const msg = $("#configMsg");
+  const msg = $("#configMsgText");
   try {
     if (view === "table" && state.hasConfig) {
       state.model = (await post("/api/config/model/parse", { text: $("#configText").value })).model;
@@ -697,6 +731,8 @@ function updateToolbar() {
   $("#btnScan").disabled = state.running || (!n && !batch);
   $("#btnSave").disabled = state.running || !state.hasConfig || !state.dirty;
   $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
+  const cur = state.file ? state.nodes[state.file] : null;
+  $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur || cur.anonymized;
 }
 
 // ---------- jobs ----------
@@ -748,12 +784,26 @@ $("#btnScan").onclick = async () => {
 $("#btnRun").onclick = async () => {
   if (state.batchMode) return runBatch("anonymize");
   if (state.dirty && !(await saveConfig())) return;
-  const r = await runJob("anonymize", "/api/anonymize", { folder: state.folder, ocr_verify: $("#ocrVerify").checked }, "Anonymize");
+  const r = await runJob("anonymize", "/api/anonymize", { folder: state.folder, ocr_verify: state.ocrVerify }, "Anonymize");
   await loadTree();
   await loadReport();
   if (r && r.status === "done") {
     showTab("recap");
     if (state.file) { const f = state.file; state.file = null; await openFile(f); }
+  }
+};
+
+$("#btnRunFile").onclick = async () => {
+  const cur = state.file ? state.nodes[state.file] : null;
+  if (!cur || cur.anonymized) return;
+  if (state.dirty && !(await saveConfig())) return;
+  const r = await runJob("anonymize", "/api/anonymize",
+    { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify }, "Anonymize file");
+  await loadTree();
+  await loadReport();
+  if (r && r.status === "done") {
+    showTab("recap");
+    const f = state.file; state.file = null; await openFile(f);
   }
 };
 
@@ -813,7 +863,7 @@ async function runBatch(action) {
   if (action === "all" && !confirm("Scan the folders without config and anonymize them right away, without reviewing the new configs?")) return;
   if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder and replaces their configs (your edits are lost). Continue?")) return;
   if (state.dirty && !(await saveConfig())) return;
-  await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: $("#ocrVerify").checked },
+  await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify },
     { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize" }[action]);
   await loadTree();
   await loadConfig();

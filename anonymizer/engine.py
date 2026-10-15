@@ -943,13 +943,18 @@ def _clear_review(folder: Path, name: str):
         pass
 
 
-def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log) -> dict:
+def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log,
+                  only: list[str] | None = None) -> dict:
+    """Anonymize every source of the folder, or only the files named in `only` (their entries replace the ones of
+    the report; the other entries are kept)."""
     t_all = time.time()
     cfg = parse_config(config_text)
     if not cfg["terms"] and not cfg["regex"]:
         raise ValueError("The config has no active replacement")
     ocr_lang = cfg.get("ocr_lang") or default_ocr_lang
     pdfs = list_sources(folder)
+    if only is not None:
+        pdfs = [p for p in pdfs if p.name in only]
     if not pdfs:
         raise ValueError("No PDF in this folder")
     log(f"Config: {len(cfg['terms'])} replacement(s), {len(cfg['regex'])} regex rule(s). {len(pdfs)} file(s).")
@@ -1005,6 +1010,16 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         entry["seconds"] = round(time.time() - t0, 1)
         log(f"   done in {entry['seconds']}s")
         files.append(entry)
+    if only is not None:                                # one file: keep the report of the other files
+        kept = []
+        rep_path = folder / REPORT_NAME
+        if rep_path.exists():
+            try:
+                kept = [f for f in json.loads(rep_path.read_text(encoding="utf-8")).get("files", [])
+                        if f.get("file") not in only]
+            except (OSError, ValueError):
+                kept = []
+        files = kept + files
     report = {"folder": rel, "generated": dt.datetime.now().isoformat(timespec="seconds"),
               "total_seconds": round(time.time() - t_all, 1), "ocr_verify": ocr_verify, "files": files}
     (folder / REPORT_NAME).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")

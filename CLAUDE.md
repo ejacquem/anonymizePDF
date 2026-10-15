@@ -77,11 +77,13 @@ Env: `ANON_SECRET_FILE` (key path), `ANON_OCR_ENGINE`, `TESSERACT_CMD`, `TESSDAT
 Directory tree | Original | Anonymized | right panel with tabs **Config / Recap / Log**.
 - The 3 bars between panes are draggable (pointer events, double-click resets), widths in localStorage.
 - Viewer: pages are rendered server-side to PNG (`/api/page`, PyMuPDF), shown in a scrollable column, lazily loaded
-  (IntersectionObserver). Zoom shared by both panes (−/+, Fit, Ctrl+wheel), scroll synced page by page,
+  (IntersectionObserver). Zoom shared by both panes (−/+, Fit, wheel; Shift+wheel scrolls), scroll synced page by page,
   click + drag pans both panes. Sync state uses "programmatic scroll" tracking (`setScroll` / `isProgrammatic`),
   not a requestAnimationFrame lock (rAF does not run in hidden tabs; scroll events are not dispatched either).
 - "Sync" unticked = the browser's own PDF viewer in an iframe (`/api/pdf`, selectable text); kept in localStorage.
-- Toolbar: **1 · Scan & draft config**, **Save config** (Ctrl+S), **2 · Anonymize folder**, "OCR check for digital PDFs".
+- Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Anonymize file** (the selected original only; the
+  report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
+  for digital PDFs" option is in Config › Settings (persisted in localStorage).
 - Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format.
 - Header: OCR engine in use and spaCy models.
 - Config tab: *Table* view (default, remembered) edits a model of the YAML (`anonymizer/configmodel.py`: `to_model`
@@ -99,7 +101,7 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   so they always stay equal.
 
 API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api/page?path=&page=&scale=`,
-`GET|PUT /api/config?folder=`, `GET /api/report?folder=`, `POST /api/scan`, `POST /api/anonymize` (job id),
+`GET|PUT /api/config?folder=`, `GET /api/report?folder=`, `POST /api/scan`, `POST /api/anonymize` (job id; `file` = one file name),
 `GET|PUT /api/review?folder=`, `GET /api/status?folder=`, `POST /api/batch`,
 `GET /api/job/<id>?since=N` (log lines + status). Jobs run in a thread, one at a time.
 

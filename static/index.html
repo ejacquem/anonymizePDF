@@ -17,12 +17,9 @@
   <button id="btnTree" class="mini" title="Show / hide the file tree">☰</button>
   <div id="folderInfo" class="muted">Select a folder in the tree (click a folder or a file).</div>
   <div class="spacer"></div>
-  <label class="chk" title="Re-read the anonymized digital PDFs with OCR to look for leftovers (slower). Scanned PDFs are always OCR-checked.">
-    <input type="checkbox" id="ocrVerify"> OCR check for digital PDFs
-  </label>
   <button id="btnScan" class="primary" disabled>1 · Scan &amp; draft config</button>
-  <button id="btnSave" disabled>Save config</button>
   <button id="btnRun" class="primary" disabled>2 · Anonymize folder</button>
+  <button id="btnRunFile" disabled title="Anonymize only the selected file (↑ ↓ in the tree switch file)">Anonymize file</button>
   <span id="status" class="status"></span>
 </div>
 
@@ -38,9 +35,9 @@
     <div class="pane-head">
       <span>Original</span> <span id="origName" class="muted"></span>
       <div class="zoom">
-        <button id="zoomOut" class="mini" title="Zoom out (Ctrl + wheel)">−</button>
+        <button id="zoomOut" class="mini" title="Zoom out (wheel; Shift + wheel scrolls)">−</button>
         <button id="zoomFit" class="mini zoom-label" title="Fit page width">Fit</button>
-        <button id="zoomIn" class="mini" title="Zoom in (Ctrl + wheel)">+</button>
+        <button id="zoomIn" class="mini" title="Zoom in (wheel; Shift + wheel scrolls)">+</button>
         <label class="chk" title="Ticked: image view, both PDFs zoom and scroll together.&#10;Unticked: the browser's own PDF viewer (text can be selected, copied, searched)."><input type="checkbox" id="syncScroll" checked> Sync</label>
       </div>
     </div>
@@ -81,7 +78,7 @@
       <div id="cfgTable" class="cfgtable"></div>
       <textarea id="configText" spellcheck="false" disabled
         placeholder="No config for this folder yet.&#10;Click “1 · Scan &amp; draft config” to detect personal data and get suggested replacements."></textarea>
-      <div id="configMsg" class="muted small"></div>
+      <div id="configMsg" class="small"><button id="btnSave" class="mini" disabled title="Save the config (Ctrl+S)">Save</button> <span id="configMsgText"></span></div>
     </div>
     <div id="tab-recap" class="tabbody" hidden></div>
     <div id="tab-log" class="tabbody" hidden><pre id="logBox"></pre></div>
