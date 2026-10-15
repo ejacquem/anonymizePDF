@@ -21,7 +21,7 @@ import numpy as np
 import yaml
 from PIL import ImageDraw
 
-from . import faces, fields, ocr, regions, render
+from . import configmodel, faces, fields, ocr, regions, render
 from .fake import Faker, match_case
 from .ocr import ocr_words, render_page
 from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz,
@@ -196,6 +196,24 @@ def parse_config(text: str) -> dict:
     for find, rep in (data.get("terms") or {}).items():
         terms[str(find)] = "" if rep is None else str(rep)
         types.setdefault(norm_value(str(find)), "TERM")
+    # manual values win over the automatic ones: an automatic value with the same text is dropped
+    manual_boxes = []
+    for i, item in enumerate(data.get("manual_replacements") or [], start=1):
+        if not isinstance(item, dict) or not str(item.get("find") or "").strip():
+            raise ValueError(f"manual_replacements item #{i} must look like: - {{find: \"...\", replace: \"...\"}}")
+        find = str(item["find"]).strip()
+        for old in [k for k in terms if norm_value(k) == norm_value(find)]:
+            del terms[old]
+        terms[find] = "" if item.get("replace") is None else str(item["replace"])
+        types[norm_value(find)] = "TERM"
+    for i, item in enumerate(data.get("manual_blackouts") or [], start=1):
+        box = item.get("box") if isinstance(item, dict) else None
+        if not isinstance(item, dict) or not item.get("file") or not isinstance(box, list) or len(box) != 4:
+            raise ValueError(f"manual_blackouts item #{i} must look like: - {{file: \"x.pdf\", page: 1, box: [x0, y0, x1, y1]}}")
+        x0, y0, x1, y1 = (float(v) for v in box)
+        if x1 <= x0 or y1 <= y0:
+            raise ValueError(f"manual_blackouts item #{i}: the box needs x1 > x0 and y1 > y0")
+        manual_boxes.append({"file": str(item["file"]), "page": int(item.get("page") or 1), "box": [x0, y0, x1, y1]})
     regex = data.get("regex") or []
     for r in regex:
         re.compile(r["pattern"])
@@ -225,6 +243,7 @@ def parse_config(text: str) -> dict:
                      "qr_codes": bool(blackout.get("qr_codes", True))},
         "mrz": mrz,
         "match_case": bool(data.get("match_case", True)),
+        "manual_blackouts": manual_boxes,
     }
 
 
@@ -372,6 +391,9 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     active_values = {norm_value(a["value"]) for a in active}
     off = [o for o in off if norm_value(o["value"]) not in active_values]
     text = render_config(rel, pdfs, active, off, default_ocr_lang)
+    old = folder / CONFIG_NAME                              # a new scan keeps the manual data of the old config
+    if old.exists():
+        text = configmodel.keep_manual(text, old.read_text(encoding="utf-8"))
     stats = {"files": len(pdfs), "active": len(active), "inactive": len(off), "seconds": round(time.time() - t0, 1)}
     log(f"Done: {len(active)} active replacement(s), {len(off)} suggestion(s) left commented out "
         f"({stats['seconds']}s)")
@@ -949,7 +971,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
     the report; the other entries are kept)."""
     t_all = time.time()
     cfg = parse_config(config_text)
-    if not cfg["terms"] and not cfg["regex"]:
+    if not cfg["terms"] and not cfg["regex"] and not cfg["manual_blackouts"]:
         raise ValueError("The config has no active replacement")
     ocr_lang = cfg.get("ocr_lang") or default_ocr_lang
     pdfs = list_sources(folder)

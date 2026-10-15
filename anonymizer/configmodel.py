@@ -48,14 +48,12 @@ def to_model(text: str) -> dict:
         s["mrz"] = "regenerate"
 
     entries, seen = [], set()
-    in_regex = False
+    section = ""                                          # the top-level key the line belongs to
     for line in text.splitlines():
-        if re.match(r"^regex\s*:", line):
-            in_regex = True
-        elif re.match(r"^\S", line) and not line.startswith("#"):
-            in_regex = False
+        if re.match(r"^\S", line) and not line.startswith("#"):
+            section = re.match(r"^([A-Za-z_]+)\s*:", line).group(1) if re.match(r"^[A-Za-z_]+\s*:", line) else ""
         m = _ENTRY.match(line)
-        if not m or in_regex:
+        if not m or section != "replacements":
             continue
         try:
             item = yaml.safe_load(m.group("map"))
@@ -74,8 +72,40 @@ def to_model(text: str) -> dict:
             entries.append({"find": str(item["find"]), "replace": "" if item.get("replace") is None else str(item["replace"]),
                             "type": str(item.get("type") or "TERM"), "active": True, "info": ""})
     extra = {k: v for k, v in data.items() if k in ("terms", "spacy_models")}
+    # manual data (kept by every scan): values typed by hand, and black boxes drawn by hand. A value of type TERM
+    # ('Added by hand' in the older files) is manual too.
+    manual_repl = [{"find": str(i["find"]), "replace": "" if i.get("replace") is None else str(i["replace"])}
+                   for i in data.get("manual_replacements") or [] if isinstance(i, dict) and i.get("find")]
+    for e in [e for e in entries if e["active"] and e["type"] == "TERM"]:
+        manual_repl.append({"find": e["find"], "replace": e["replace"]})
+    entries = [e for e in entries if not (e["active"] and e["type"] == "TERM")]
+    manual_boxes = [dict(i) for i in data.get("manual_blackouts") or [] if isinstance(i, dict) and "box" in i]
     return {"settings": s, "entries": entries, "regex": data.get("regex") or [], "extra": extra,
-            "folder": _folder_of(text)}
+            "folder": _folder_of(text), "manual": {"replacements": manual_repl, "blackouts": manual_boxes}}
+
+
+def has_manual(manual: dict | None) -> bool:
+    return bool(manual and (manual.get("replacements") or manual.get("blackouts")))
+
+
+def keep_manual(new_text: str, old_text: str) -> str:
+    """The text of a new scan, with the manual data of the previous config (if any) put back: the manual values
+    win over the automatic ones (an automatic value with the same text is dropped)."""
+    try:
+        old = to_model(old_text)
+    except ValueError:
+        return new_text
+    if not has_manual(old.get("manual")):
+        return new_text
+    model = to_model(new_text)
+    manual_keys = {_key(m["find"]) for m in old["manual"]["replacements"]}
+    model["entries"] = [e for e in model["entries"] if _key(e["find"]) not in manual_keys]
+    model["manual"] = old["manual"]
+    return to_yaml(model, model.get("folder") or "")
+
+
+def _key(s: str) -> str:
+    return " ".join(str(s).split()).casefold()
 
 
 def _folder_of(text: str) -> str:
@@ -145,6 +175,19 @@ def to_yaml(model: dict, folder: str = "") -> str:
                 L += ["", f"  # ---------- {cur} (not active) ----------"]
             L.append(line(e, "  # "))
     L.append("")
+    manual = model.get("manual") or {}
+    if manual.get("replacements"):
+        L += ["# Manual values: typed by hand, kept by every scan, they win over the automatic values.",
+              "manual_replacements:"]
+        L += [f"  - {{find: {_q(m['find'])}, replace: {_q(m.get('replace'))}}}" for m in manual["replacements"]]
+        L.append("")
+    if manual.get("blackouts"):
+        L += ["# Black boxes drawn by hand: PDF points, page 1 = first page of the file. Kept by every scan.",
+              "manual_blackouts:"]
+        for b in manual["blackouts"]:
+            box = ", ".join(f"{float(v):.1f}" for v in b["box"])
+            L.append(f"  - {{file: {_q(b['file'])}, page: {int(b['page'])}, box: [{box}]}}")
+        L.append("")
     regex = model.get("regex") or []
     if regex:
         L += ["# Regex rules (applied after 'replacements'):",
