@@ -452,10 +452,11 @@ def anonymize():
     rel = rel_of(folder)
     ocr_verify = bool(data.get("ocr_verify"))
     only = [Path(str(data["file"])).name] if data.get("file") else None     # one file, or the whole folder
+    removed = data.get("removed") if isinstance(data.get("removed"), list) else []   # automatic boxes removed: this run only
 
     def work(log):
         rep = eng.run_anonymize(folder, rel, cfg_file.read_text(encoding="utf-8"), STATE["ocr_lang"], ocr_verify, log,
-                                only=only)
+                                only=only, removed=removed)
         return {"files": len(rep["files"]), "seconds": rep["total_seconds"]}
 
     job = start_job("anonymize", work)

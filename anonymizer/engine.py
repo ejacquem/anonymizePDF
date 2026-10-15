@@ -198,14 +198,6 @@ def parse_config(text: str) -> dict:
         types.setdefault(norm_value(str(find)), "TERM")
     # manual values win over the automatic ones: an automatic value with the same text is dropped
     manual_boxes = []
-    removed_boxes = []
-    for i, item in enumerate(data.get("removed_blackouts") or [], start=1):
-        box = item.get("box") if isinstance(item, dict) else None
-        if not isinstance(item, dict) or not item.get("file") or not item.get("kind") or not isinstance(box, list) \
-                or len(box) != 4:
-            raise ValueError(f"removed_blackouts item #{i} must look like: - {{file: \"x.pdf\", page: 1, kind: photo, box: [x0, y0, x1, y1]}}")
-        removed_boxes.append({"file": str(item["file"]), "page": int(item.get("page") or 1), "kind": str(item["kind"]),
-                              "box": [float(v) for v in box]})
     for i, item in enumerate(data.get("manual_replacements") or [], start=1):
         if not isinstance(item, dict) or not str(item.get("find") or "").strip():
             raise ValueError(f"manual_replacements item #{i} must look like: - {{find: \"...\", replace: \"...\"}}")
@@ -221,7 +213,11 @@ def parse_config(text: str) -> dict:
         x0, y0, x1, y1 = (float(v) for v in box)
         if x1 <= x0 or y1 <= y0:
             raise ValueError(f"manual_blackouts item #{i}: the box needs x1 > x0 and y1 > y0")
-        manual_boxes.append({"file": str(item["file"]), "page": int(item.get("page") or 1), "box": [x0, y0, x1, y1]})
+        out = {"file": str(item["file"]), "page": int(item.get("page") or 1), "box": [x0, y0, x1, y1]}
+        if isinstance(item.get("replaces"), list) and len(item["replaces"]) == 4 and item.get("origin"):
+            out["replaces"] = [float(v) for v in item["replaces"]]                    # a moved automatic box:
+            out["origin"] = str(item["origin"])                                         # its kind and detected box
+        manual_boxes.append(out)
     regex = data.get("regex") or []
     for r in regex:
         re.compile(r["pattern"])
@@ -252,7 +248,6 @@ def parse_config(text: str) -> dict:
         "mrz": mrz,
         "match_case": bool(data.get("match_case", True)),
         "manual_blackouts": manual_boxes,
-        "removed_blackouts": removed_boxes,
     }
 
 
@@ -996,12 +991,28 @@ def _manual_boxes(cfg: dict, name: str) -> dict:
     return out
 
 
-def _removed_boxes(cfg: dict, name: str) -> dict:
-    """{page: [(kind, box in PDF points)]} of the automatic black boxes the user removed or moved."""
+def _session_removed(items: list | None) -> dict:
+    """{file: [(page, kind, box in PDF points)]} of the automatic black boxes the user removed in the Anonymized pane
+    since the last anonymization. They come with the run and are never written to the config."""
     out: dict = {}
-    for b in cfg.get("removed_blackouts") or []:
-        if b["file"] == name:
-            out.setdefault(int(b["page"]), []).append((b["kind"], tuple(b["box"])))
+    for it in items or []:
+        box = it.get("box") if isinstance(it, dict) else None
+        if isinstance(it, dict) and it.get("file") and it.get("kind") and isinstance(box, list) and len(box) == 4:
+            out.setdefault(str(it["file"]), []).append(
+                (int(it.get("page") or 1), str(it["kind"]), tuple(float(v) for v in box)))
+    return out
+
+
+def _removed_boxes(cfg: dict, session: dict, name: str) -> dict:
+    """{page: [(kind, box in PDF points)]} of the automatic black boxes not to draw on one file: the ones removed since
+    the last anonymization (`session`), and the ones a hand-drawn box replaces (manual_blackouts with 'origin' and
+    'replaces': the box the detector found before the user moved it)."""
+    out: dict = {}
+    for page, kind, box in session.get(name, []):
+        out.setdefault(page, []).append((kind, box))
+    for b in cfg.get("manual_blackouts") or []:
+        if b["file"] == name and b.get("origin") and b.get("replaces"):
+            out.setdefault(int(b["page"]), []).append((b["origin"], tuple(b["replaces"])))
     return out
 
 
@@ -1021,11 +1032,12 @@ def _is_removed(removed: list, kind: str, box) -> bool:
 
 
 def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log,
-                  only: list[str] | None = None) -> dict:
+                  only: list[str] | None = None, removed: list | None = None) -> dict:
     """Anonymize every source of the folder, or only the files named in `only` (their entries replace the ones of
-    the report; the other entries are kept)."""
+    the report; the other entries are kept). `removed`: the automatic black boxes the user removed since the last run."""
     t_all = time.time()
     cfg = parse_config(config_text)
+    session = _session_removed(removed)
     if not cfg["terms"] and not cfg["regex"] and not cfg["manual_blackouts"]:
         raise ValueError("The config has no active replacement")
     ocr_lang = cfg.get("ocr_lang") or default_ocr_lang
@@ -1056,7 +1068,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 if not ocr.available():
                     raise RuntimeError("scanned pages / images but no OCR engine is available (Tesseract or Windows OCR)")
                 log(f"   OCR engine: {ocr.describe(ocr_lang)}")
-            fcfg = {**cfg, "manual_boxes": _manual_boxes(cfg, pdf.name), "removed_boxes": _removed_boxes(cfg, pdf.name)}
+            fcfg = {**cfg, "manual_boxes": _manual_boxes(cfg, pdf.name), "removed_boxes": _removed_boxes(cfg, session, pdf.name)}
             if mode == "scan":
                 records, extras = _scan_source(pdf, out, fcfg, ocr_lang, log)
             else:

@@ -211,7 +211,7 @@ def mrz_valid(fmt: str, lines: list[str]) -> bool:
 # runs
 # ---------------------------------------------------------------------------
 
-def run_folder(folder: str, work_root: Path, ner, edit=lambda c: c, files_only=None) -> tuple[str, dict]:
+def run_folder(folder: str, work_root: Path, ner, edit=lambda c: c, files_only=None, removed=None) -> tuple[str, dict]:
     src = ROOT / "sample_data" / folder
     work = work_root / folder
     shutil.rmtree(work, ignore_errors=True)
@@ -220,7 +220,7 @@ def run_folder(folder: str, work_root: Path, ner, edit=lambda c: c, files_only=N
         if not pdf.stem.endswith("_anonymized") and (files_only is None or pdf.name in files_only):
             shutil.copy(pdf, work)
     cfg = edit(engine.scan_folder(work, folder, ner, "fra+eng", lambda *a: None)["config"])
-    rep = engine.run_anonymize(work, folder, cfg, "fra+eng", False, lambda *a: None)
+    rep = engine.run_anonymize(work, folder, cfg, "fra+eng", False, lambda *a: None, removed=removed)
     return cfg, rep
 
 
@@ -315,8 +315,7 @@ def option_tests(work_root: Path, ner):
     _, rep = run_folder("Dossier Test 6", work_root, ner, files_only=["visages_scan.pdf"])
     first = [b for b in rep["files"][0]["blackouts"] if b["kind"] == "photo"]
     check("visages_scan.pdf: photos found before removal", len(first) > 0, f"{len(first)} photo(s)")
-    removed = "".join(f'\n  - {{file: "visages_scan.pdf", page: {b["page"]}, kind: "photo", '
-                      f'box: [{", ".join(f"{v:.1f}" for v in b["box"])}]}}' for b in first)
+    removed = [{"file": "visages_scan.pdf", "page": b["page"], "kind": "photo", "box": b["box"]} for b in first]
     real_verify, calls = engine.verify_output, {"n": 0}
 
     def leftover_once(path, cfg, ocr_lang, use_ocr):          # the first check finds one value left: second pass
@@ -326,8 +325,7 @@ def option_tests(work_root: Path, ner):
 
     engine.verify_output = leftover_once
     try:
-        _, rep = run_folder("Dossier Test 6", work_root, ner, lambda c: c + "\nremoved_blackouts:" + removed + "\n",
-                            files_only=["visages_scan.pdf"])
+        _, rep = run_folder("Dossier Test 6", work_root, ner, files_only=["visages_scan.pdf"], removed=removed)
     finally:
         engine.verify_output = real_verify
     check("visages_scan.pdf: removed photos not in the report", not any(b["kind"] == "photo" for b in rep["files"][0]["blackouts"]))

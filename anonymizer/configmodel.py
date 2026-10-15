@@ -80,14 +80,13 @@ def to_model(text: str) -> dict:
         manual_repl.append({"find": e["find"], "replace": e["replace"]})
     entries = [e for e in entries if not (e["active"] and e["type"] == "TERM")]
     manual_boxes = [dict(i) for i in data.get("manual_blackouts") or [] if isinstance(i, dict) and "box" in i]
-    removed = [dict(i) for i in data.get("removed_blackouts") or [] if isinstance(i, dict) and "box" in i]
     return {"settings": s, "entries": entries, "regex": data.get("regex") or [], "extra": extra,
             "folder": _folder_of(text),
-            "manual": {"replacements": manual_repl, "blackouts": manual_boxes, "removed": removed}}
+            "manual": {"replacements": manual_repl, "blackouts": manual_boxes}}
 
 
 def has_manual(manual: dict | None) -> bool:
-    return bool(manual and (manual.get("replacements") or manual.get("blackouts") or manual.get("removed")))
+    return bool(manual and (manual.get("replacements") or manual.get("blackouts")))
 
 
 def keep_manual(new_text: str, old_text: str) -> str:
@@ -185,18 +184,14 @@ def to_yaml(model: dict, folder: str = "") -> str:
         L.append("")
     if manual.get("blackouts"):
         L += ["# Black boxes drawn by hand: PDF points, page 1 = first page of the file. Kept by every scan.",
+              "# origin / replaces: an automatic box moved by hand (its kind, and the box the detector found).",
               "manual_blackouts:"]
         for b in manual["blackouts"]:
             box = ", ".join(f"{float(v):.1f}" for v in b["box"])
             origin = f", origin: {_q(b['origin'])}" if b.get("origin") else ""
+            if b.get("replaces") and b.get("origin"):
+                origin += ", replaces: [" + ", ".join(f"{float(v):.1f}" for v in b["replaces"]) + "]"
             L.append(f"  - {{file: {_q(b['file'])}, page: {int(b['page'])}, box: [{box}]{origin}}}")
-        L.append("")
-    if manual.get("removed"):
-        L += ["# Automatic black boxes (photo, qr code, signature) removed or moved by hand. Kept by every scan.",
-              "removed_blackouts:"]
-        for b in manual["removed"]:
-            box = ", ".join(f"{float(v):.1f}" for v in b["box"])
-            L.append(f"  - {{file: {_q(b['file'])}, page: {int(b['page'])}, kind: {_q(b['kind'])}, box: [{box}]}}")
         L.append("")
     regex = model.get("regex") or []
     if regex:
