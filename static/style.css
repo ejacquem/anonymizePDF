@@ -97,7 +97,7 @@ main:not(.native) .viewer .pages { cursor: grab; user-select: none; }
 /* badges give way first when the tree is narrow, the name stays readable */
 .row .badges { display: flex; gap: 3px; overflow: hidden; flex: 0 1000 auto; min-width: 0; }
 .row .badge { flex: none; }
-.row .caret { width: 8px; flex: none; color: var(--muted); font-size: 10px; }
+.row .caret { width: 8px; flex: none; color: var(--muted); font-size: 10px; transform: scale(1.8); }
 .row.anon .name { color: var(--ok); }
 .badge { font-size: 10px; padding: 0 4px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
 .badge.cfg { color: var(--accent); border-color: var(--accent); }
@@ -147,7 +147,7 @@ details.settings > summary { cursor: pointer; font-weight: 600; font-size: 12px;
 details.grp { border-top: 1px solid var(--line); }
 details.grp > summary { cursor: pointer; padding: 5px 2px; display: flex; align-items: center; gap: 6px; list-style: none; }
 details.grp > summary::-webkit-details-marker { display: none; }
-details.grp > summary::before { content: "▸"; color: var(--muted); width: 7px; font-size: 10px; }
+details.grp > summary::before { content: "▸"; color: var(--muted); width: 7px; font-size: 10px; transform: scale(1.8); }
 details.grp[open] > summary::before { content: "▾"; }
 .erow { display: grid; grid-template-columns: 18px minmax(0, 1fr) 14px minmax(0, 1fr) 34px 22px; gap: 4px;
   align-items: center; padding: 1px 2px 1px 10px; border-radius: 4px; }
