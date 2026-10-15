@@ -906,8 +906,9 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             draw.rectangle(b, fill=(0, 0, 0))
             extras["blackouts"].append({"page": pno, "kind": kind,   # box in PDF points, like digital
                                         "box": [round(v * 72 / 300, 1) for v in b]})
-    if photos or codes or signs:
-        log(f"   page {pno}: blacked out {len(photos)} photo(s), {len(codes)} QR code(s), {len(signs)} signature(s)")
+    if photos or codes or signs or manual:
+        log(f"   page {pno}: blacked out {len(photos)} photo(s), {len(codes)} QR code(s), {len(signs)} signature(s), "
+            f"{len(manual)} box(es) drawn by hand")
     log(f"   page {pno}/{n_pages} (scan): OCR {len(words)} words, {len(plan)} replacement(s)"
         f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
     return img

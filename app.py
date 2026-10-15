@@ -25,6 +25,8 @@ from anonymizer import configmodel, ocr, secret
 from anonymizer.pii import fitz, load_ner
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+# the static files (the page script and style) are revalidated on each load: no stale copy after an update
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 STATE = {"root": None, "ocr_lang": "fra+eng", "spacy_models": None, "ner": None}
 JOBS: dict[str, dict] = {}
 JOB_LOCK = threading.Lock()
