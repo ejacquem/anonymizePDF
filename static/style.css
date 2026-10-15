@@ -79,6 +79,16 @@ main.native .zoom .mini { display: none; }
 /* image mode: click + drag to move around the page */
 main:not(.native) .viewer .pages { cursor: grab; user-select: none; }
 .viewer.panning, .viewer.panning * { cursor: grabbing !important; }
+/* black boxes drawn by hand (Anonymized pane) */
+.bbox { position: absolute; background: #000; box-sizing: border-box; cursor: move; z-index: 2; }
+.bbox.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bbox.draft { background: rgba(0, 0, 0, .35); outline: 1px dashed #fff; cursor: crosshair; pointer-events: none; }
+.bhandle { position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px; background: #fff; border: 1px solid #333; box-sizing: border-box; }
+.bhandle.h-nw { left: 0; top: 0; cursor: nwse-resize; } .bhandle.h-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.bhandle.h-ne { left: 100%; top: 0; cursor: nesw-resize; } .bhandle.h-sw { left: 0; top: 100%; cursor: nesw-resize; }
+.bhandle.h-n { left: 50%; top: 0; cursor: ns-resize; } .bhandle.h-s { left: 50%; top: 100%; cursor: ns-resize; }
+.bhandle.h-w { left: 0; top: 50%; cursor: ew-resize; } .bhandle.h-e { left: 100%; top: 50%; cursor: ew-resize; }
+.viewer.boxtool .page { cursor: crosshair; }
 .page .pno { position: absolute; right: 6px; bottom: 4px; font-size: 11px; color: #888; }
 .page.failed::after { content: "page could not be rendered"; position: absolute; inset: 0; display: flex;
   align-items: center; justify-content: center; color: #c0392b; font-size: 12px; }

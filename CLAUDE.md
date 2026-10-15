@@ -84,6 +84,8 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Anonymize file** (the selected original only; the
   report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).
+- Black boxes by hand: **▭ Black box** in the Anonymized pane (drag to draw, drag / handles to move and resize,
+  Delete to remove). Each change is saved in `manual_blackouts`; **Anonymize file** applies it (kind `manual`).
 - Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format.
 - Header: OCR engine in use and spaCy models.
 - Config tab: *Table* view (default, remembered) edits a model of the YAML (`anonymizer/configmodel.py`: `to_model`
@@ -151,6 +153,11 @@ replacements:
   - {find: "Thomas Marchand", replace: "Alexis Beaumont", type: PERSON}
   # - {find: "30/09/2024", replace: "22/03/2025", type: DATE}   # commented = not replaced
 regex: []                           # - {pattern: '...', replace: '...'}
+# Manual data (written by the app, kept by every scan; a manual value wins over the automatic one with the same text):
+manual_replacements:
+  - {find: "Acme Corp", replace: "Zeta Inc"}
+manual_blackouts:                   # black boxes drawn in the Anonymized pane: PDF points, page 1 = first page
+  - {file: "x.pdf", page: 1, box: [x0, y0, x1, y1]}
 ```
 Missing keys in older configs get the safe defaults (everything on). `find` matching (`pii.term_regex`): case-
 insensitive, flexible whitespace, word boundaries; on scans `ocr=True` also accepts 0/O/D, 1/l/I, 5/S, 8/B, 2/Z,

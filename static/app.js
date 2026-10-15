@@ -101,6 +101,9 @@ const viewers = {
 };
 const VIEWERS = ["orig", "anon"];
 let pageObserver = null;
+// black boxes drawn by hand (state, see the section below)
+const boxes = { tool: false, sel: null, drag: null };
+const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 // Scroll positions the program set itself, per pane. The scroll event they trigger is ignored, so syncing
 // one pane does not bounce back to the other. (No timer / animation frame: works even in a hidden tab.)
 const programmatic = { orig: null, anon: null };
@@ -158,6 +161,7 @@ function sizePages(which) {
     el.style.width = v.pages[i].w * k + "px";
     el.style.height = v.pages[i].h * k + "px";
   });
+  if (which === "anon") drawBoxes();
 }
 
 function refreshVisibleImages() {
@@ -208,6 +212,7 @@ async function setViewer(which, path) {
     if (pageObserver) pageObserver.observe(el); else loadPageImage(el);
   });
   if (zoom.fit) applyFit(); else sizePages(which);
+  if (which === "anon") drawBoxes();
   syncScroll(other(which));
 }
 
@@ -393,6 +398,8 @@ async function openFile(path) {
   setViewer("anon", anon);
   $("#anonEmpty").textContent = "Not generated yet";
   updateReviewButton();
+  boxes.tool = false;
+  boxes.sel = null;
   updateToolbar();
   renderTree();
 }
@@ -414,6 +421,170 @@ document.addEventListener("keydown", (e) => {
   const i = files.indexOf(state.file);
   const next = e.key === "ArrowDown" ? (i + 1) % files.length : (i <= 0 ? files.length - 1 : i - 1);
   openFile(files[next]);
+});
+
+// ---------- black boxes drawn by hand (Anonymized pane) -> manual_blackouts of the config ----------
+
+function currentFileName() {
+  const node = currentOriginalNode();
+  return node ? node.name : null;
+}
+
+function boxesOfFile() {
+  const name = currentFileName();
+  return state.model && name && state.model.manual ? state.model.manual.blackouts.filter((b) => b.file === name) : [];
+}
+
+function pageScale() { return zoom.scale * PT_TO_PX; }
+
+function drawBoxes() {
+  const v = viewers.anon;
+  const k = pageScale();
+  [...v.list.children].forEach((el, i) => {
+    el.querySelectorAll(".bbox").forEach((n) => n.remove());
+    boxesOfFile().filter((b) => b.page === i + 1).forEach((b) => {
+      const d = document.createElement("div");
+      d.className = "bbox" + (boxes.sel === b ? " sel" : "");
+      d.style.left = b.box[0] * k + "px";
+      d.style.top = b.box[1] * k + "px";
+      d.style.width = (b.box[2] - b.box[0]) * k + "px";
+      d.style.height = (b.box[3] - b.box[1]) * k + "px";
+      d.__box = b;
+      if (boxes.sel === b) {
+        HANDLES.forEach((h) => {
+          const hd = document.createElement("div");
+          hd.className = `bhandle h-${h}`;
+          hd.dataset.h = h;
+          d.appendChild(hd);
+        });
+      }
+      el.appendChild(d);
+    });
+  });
+  $("#btnBox").classList.toggle("on", boxes.tool);
+  v.box.classList.toggle("boxtool", boxes.tool);
+}
+
+function setBoxTool(on) {
+  boxes.tool = on;
+  boxes.sel = null;
+  drawBoxes();
+}
+
+function pagePoint(pageEl, e) {
+  const r = pageEl.getBoundingClientRect(), k = pageScale();
+  return [(e.clientX - r.left) / k, (e.clientY - r.top) / k];
+}
+
+async function saveBoxes(message) {
+  if (state.cfgView !== "table" || !state.model) {
+    setStatus("Black boxes are saved from the Table view of the config", "err");
+    return;
+  }
+  setDirty(true);
+  const ok = await saveConfig();
+  renderTable();
+  drawBoxes();
+  if (ok) setStatus(message, "ok");
+}
+
+$("#btnBox").onclick = () => {
+  if (!state.model) return;
+  setBoxTool(!boxes.tool);
+};
+
+viewers.anon.list.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || !viewers.anon.pages.length) return;
+  const pageEl = e.target.closest(".page");
+  if (!pageEl) return;
+  const handle = e.target.closest(".bhandle"), box = e.target.closest(".bbox");
+  const page = +pageEl.dataset.page;
+  if (box || boxes.tool) {
+    e.preventDefault();
+    e.stopPropagation();                                        // no pan while a box is drawn or edited
+    const [x, y] = pagePoint(pageEl, e);
+    if (box) {
+      boxes.sel = box.__box;
+      drawBoxes();
+      boxes.drag = { mode: handle ? handle.dataset.h : "move", box: box.__box, pageEl, page,
+                     x0: x, y0: y, orig: [...box.__box.box] };
+    } else {
+      boxes.sel = null;
+      const draft = document.createElement("div");
+      draft.className = "bbox draft";
+      pageEl.appendChild(draft);
+      boxes.drag = { mode: "create", page, pageEl, x0: x, y0: y, draft };
+    }
+  } else if (boxes.sel) {
+    boxes.sel = null;                                           // a click on the paper: deselect, the pan goes on
+    drawBoxes();
+  }
+});
+
+document.addEventListener("pointermove", (e) => {
+  const d = boxes.drag;
+  if (!d) return;
+  const [x, y] = pagePoint(d.pageEl, e);
+  const pw = viewers.anon.pages[d.page - 1].w, ph = viewers.anon.pages[d.page - 1].h;
+  const clamp = (v, max) => Math.min(Math.max(v, 0), max);
+  if (d.mode === "create") {
+    const x0 = clamp(Math.min(d.x0, x), pw), x1 = clamp(Math.max(d.x0, x), pw);
+    const y0 = clamp(Math.min(d.y0, y), ph), y1 = clamp(Math.max(d.y0, y), ph);
+    const k = pageScale();
+    Object.assign(d.draft.style, { left: x0 * k + "px", top: y0 * k + "px",
+      width: (x1 - x0) * k + "px", height: (y1 - y0) * k + "px" });
+    d.result = [x0, y0, x1, y1];
+    return;
+  }
+  const [ox0, oy0, ox1, oy1] = d.orig, dx = x - d.x0, dy = y - d.y0;
+  let [x0, y0, x1, y1] = [ox0, oy0, ox1, oy1];
+  if (d.mode === "move") {
+    const w = ox1 - ox0, h = oy1 - oy0;
+    x0 = clamp(ox0 + dx, pw - w);
+    y0 = clamp(oy0 + dy, ph - h);
+    x1 = x0 + w;
+    y1 = y0 + h;
+  } else {
+    const hm = d.mode;
+    if (hm.includes("w")) x0 = Math.min(clamp(ox0 + dx, pw), ox1 - 2);
+    if (hm.includes("e")) x1 = Math.max(clamp(ox1 + dx, pw), ox0 + 2);
+    if (hm.includes("n")) y0 = Math.min(clamp(oy0 + dy, ph), oy1 - 2);
+    if (hm.includes("s")) y1 = Math.max(clamp(oy1 + dy, ph), oy0 + 2);
+  }
+  d.box.box = [x0, y0, x1, y1];
+  drawBoxes();
+});
+
+document.addEventListener("pointerup", async () => {
+  const d = boxes.drag;
+  if (!d) return;
+  boxes.drag = null;
+  if (d.mode === "create") {
+    d.draft.remove();
+    const r = d.result;
+    if (!r || r[2] - r[0] < 2 || r[3] - r[1] < 2) return;
+    const b = { file: currentFileName(), page: d.page, box: r.map((v) => Math.round(v * 10) / 10) };
+    state.model.manual.blackouts.push(b);
+    boxes.sel = b;
+    return saveBoxes("Black box saved · click Anonymize file to apply it");
+  }
+  await saveBoxes("Black box saved · click Anonymize file to apply it");
+});
+
+document.addEventListener("keydown", (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+  if ((e.key === "Delete" || e.key === "Backspace") && boxes.sel && state.model) {
+    const list = state.model.manual.blackouts;
+    list.splice(list.indexOf(boxes.sel), 1);
+    boxes.sel = null;
+    e.preventDefault();
+    return saveBoxes("Black box removed · click Anonymize file to apply it");
+  }
+  if (e.key === "Escape") {
+    if (boxes.tool) setBoxTool(false);
+    else if (boxes.sel) { boxes.sel = null; drawBoxes(); }
+  }
 });
 
 // ---------- manual review flag ----------
@@ -774,6 +945,8 @@ function updateToolbar() {
   $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
   const cur = state.file ? state.nodes[state.file] : null;
   $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur || cur.anonymized;
+  const orig = currentOriginalNode();
+  $("#btnBox").hidden = !(orig && orig.anon && state.hasConfig);
 }
 
 // ---------- jobs ----------
