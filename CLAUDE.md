@@ -53,7 +53,10 @@ sample_data/Dossier Test 1/   BE bank statement: Calibri/Georgia/Consolas subset
 sample_data/Dossier Test 3/   FR passport, A4 flatbed scan: photo + ghost image, signature, TD3 MRZ, guilloche, SPECIMEN
 sample_data/Dossier Test 4/   FR ID card (2021 model) front + back on one scan: photo + ghost, signature, address,
                               QR-like code, TD1 MRZ (OCR reads none of the MRZ lines)
-tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py (generators, Windows fonts)
+sample_data/Dossier Test 5/   mixed PDFs built from Test 0: searchable scan (images + invisible OCR text), digital
+                              statement with a scanned page 3, contract with a pasted image of bank details (pixels only)
+tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py
+                       (generators, Windows fonts); check_all.py (end-to-end test suite, see section 12)
 ```
 (There is no "Dossier Test 2".) The original numbered CLI scripts were removed long ago.
 
@@ -80,23 +83,34 @@ API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api
 
 ## 5. Pipeline
 
-1. **Scan** (`scan_folder`): for each non-anonymized PDF directly in the folder, per page: words from the text layer,
-   or OCR if fewer than 3 words (`fix_digits` on OCR text). `detect_all` (structured detectors + NER, line by line)
-   and `_add_labeled` (identity fields by position). Aggregate by (type, normalized value). Persons: full names first,
+0. **Per page** (`page_layout`): a page is `scan` if it has fewer than 3 VISIBLE words (`pii.visible_words`:
+   text with render mode 3 or opacity 0 – the OCR layer of a searchable scan – does not count), else `digital`;
+   a digital page whose images cover >= 2 % of it also has `pixels` (OCR of what the visible text layer does not
+   cover, `_pixel_words`). File mode in the report: digital / scan / mixed, plus `page_modes`.
+1. **Scan** (`scan_folder`): per page, `_detect_words` on the text layer (digital), on the OCR (scan pages; the
+   invisible layer of a searchable scan is read too) and on the OCR of the images (pixels). `fix_digits` on OCR
+   text, `detect_all` (structured detectors + NER, line by line) and `_add_labeled` (identity fields by position). Aggregate by (type, normalized value). Persons: full names first,
    names with an initial last, plus their parts (≥ 4 letters). Generate fakes (`Faker.suggest` / `person`), align
    numbers contained in longer ones (`_align_contained_numbers`), drop commented suggestions that duplicate an active
-   value, write `anon_config.yaml` (`render_config`).
+   value, write `anon_config.yaml` (`render_config`). `faker.reserve()` gets every original value first, so no fake
+   is a word of the documents and no two names share a fake (with some keys 'Thomas' became 'Julien', the real first
+   name of someone else in the same statement).
 2. **Review**: user edits the YAML (Config tab). `parse_config` validates it.
 3. **Anonymize** (`run_anonymize`): every entry is a literal `find → replace` term (plus optional regex).
-   - Digital (`_digital`): `plan_page` → read fonts first (`page_spans`), redact matched words (graphics kept), write the
-     fake text with `insert_replacement` (same font / size / colour / baseline). Then black boxes
-     (`render.black_out_digital`). Finally annotations deleted, metadata / XML metadata wiped, `scrub`, `garbage=4`.
-   - Scan (`_scan_pdf`): render 300 dpi, OCR, OCR-tolerant matching. Before painting: MRZ zone, photos (if ID page or
+   - Only scan pages → `_scan_pdf` (a brand new PDF of images). Otherwise `_digital`, page by page:
+     scan pages are rebuilt with `_scan_page` and replace the original page (delete + new page with the image);
+     digital pages: `plan_page` → read fonts first (`page_spans`), redact matched words (graphics kept; matches in
+     invisible text are removed without a fake on top), write the fake with `insert_replacement` (same font / size /
+     colour / baseline); then `_pixel_pass` if the page has images (OCR minus visible text, redaction with
+     `images=2` and the sampled paper colour, fake written as Helvetica text sized on the ink height, MRZ in an
+     image rebuilt in Courier); then black boxes (`render.black_out_digital`). Finally annotations deleted,
+     bookmarks / metadata / XML metadata wiped, `scrub`, `garbage=4`.
+   - Scan page (`_scan_page`): render 300 dpi, OCR, OCR-tolerant matching. Before painting: MRZ zone, photos (if ID page or
      option), QR codes, signatures (excluding MRZ / photos / codes), ink colour, free space, bold. Paint each match with
      the sampled paper colour, write the fake (`scan_text_layout`), rebuild the MRZ, draw black boxes; the page is
      saved as a new JPEG in a new PDF (nothing of the original file is copied).
    - Verify (`verify_output`): searches the output for each original value (metadata, text layer, and OCR with the
-     tolerant regex for scans or when "OCR check" is ticked).
+     tolerant regex whenever the file is not purely digital, or when "OCR check" is ticked).
    - Report `anon_report.json` per file: mode, pages, replaced, seconds, items, leftovers, warnings,
      `blackouts: [{page, kind, box (PDF points)}]`, `mrz: [{page, action, format, lines}]`.
 
@@ -205,32 +219,34 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   strokes, i.e. signatures), redraws the collateral lines that are not inside a box (frames, table borders) from
   `get_drawings()`, then paints the boxes again on top.
 
-## 12. How changes were verified (do the same after changes)
+## 12. Test suite: `python tools/check_all.py`
 
-There is no committed test suite; checks were run as scripts on copies of `sample_data` with temporary keys
-(`ANON_SECRET_FILE=<tmp>`), never with the user's real key:
-- **Leak check**: every sensitive value written by the generators (names, numbers, MRZ forms like `LEFEVRE`,
-  `920514`) is searched in the output text layer / a fresh OCR read / metadata, case- and accent-insensitive.
-- **Black boxes**: each box listed in the report must be black in the output (mean luminance < 40).
-- **Forensics** (digital): no original image hash in the output, no drawing under a box except the box, no text
-  under a box, no earlier version, no metadata.
-- **MRZ**: line lengths per format, valid check digits, consistent with the active config replacements.
-- **Run with several random keys**: some bugs only show with some keys (e.g. `Inès` → `Ines`).
-- **No false positives** on the bank statements (no photo / QR / MRZ / signature where there is none) and
-  unchanged replacement counts (Test 0: 70 digital / 70 scan, Test 1: 49 / 49 at the time of writing).
-- UI changes: check in the Browser pane (the pane may be hidden: rAF and scroll events then do not fire).
-Idea: turn these scripts into `tools/check_all.py`.
+Run it after every change (exit code 0 = all passed; ~3 min with 2 keys, `--quick` = 1 key and no option tests,
+`--folder "Dossier Test 4"` to target, `--keep` to keep outputs). It copies `sample_data/*` to a temp dir and uses
+temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing into `sample_data/`.
+- Per output file: no error; expected mode (digital / scan / mixed); **leaks** in the text layer, a fresh OCR of every
+  page and the metadata (names as whole words, numbers / multi-word values as substrings, accent-insensitive);
+  report leftovers empty; expected black-box kinds, each black in the rendering; nothing under a box in digital
+  outputs (no text, no drawing but the box, no original image); no original image at all in scan outputs; MRZ
+  format, lengths, check digits, fake surname inside.
+- Expectations per file are in `EXPECT` (sensitive values written by the generators, mode, box kinds, MRZ formats).
+  A new test document needs an entry there.
+- Secret key and fake values: key creation / reuse / corrupt file, determinism, gender, initials, e-mails, OCR
+  misreadings, never the original without accents, a wrong key does not single out the true name.
+- Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements.
+- Several keys matter: some bugs only appear with some keys (`Inès` → `Ines`, `Thomas` → `Julien`).
+- UI changes: check in the Browser pane (it may be hidden: rAF and scroll events then do not fire).
 
 ## 13. Known limits / ideas
 
 - Scans depend on OCR quality; names are heuristic (review step). Leftover check only knows the config's values.
 - MRZ only exact for fields read on the page (sex often `<` with Windows OCR); MRZ in a digital text layer not handled.
 - Photo / QR / MRZ detection are image heuristics tested only on generated documents.
-- One mode per file (digital or scan); mixed documents get a warning.
+- Text inside images of digital pages is only replaced where OCR reads it; the rest of the image is kept.
 - Fake names are chosen by letter count, not rendered width; bold not detected on ID documents; scan font is Arial.
 - A partly covered image stays in a digital output with the covered pixels overwritten.
 - Ideas: review table with checkboxes instead of raw YAML, click-to-add from the viewer, highlights on the original,
-  hybrid per-page mode, MRZ in digital text layers, committed test suite.
+  MRZ in digital text layers, a second leak check that re-runs the detectors on the output.
 
 ## 14. Environment notes (Windows)
 
