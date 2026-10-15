@@ -1074,7 +1074,10 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 # label) is searched again on the new output, and replaced if found
                 log(f"   second pass on the scanned output ({len(entry['leftovers'])} value(s) left)")
                 tmp = out.with_name(out.stem + ".pass2" + out.suffix)
-                more, _ = _scan_source(out, tmp, cfg, ocr_lang, log)
+                # only text is replaced here: the photos, codes and signatures were decided by the first pass (the
+                # ones the user removed included), so they are not searched again on the output
+                text_only = {**cfg, "blackout": {**cfg["blackout"], "photos": False, "qr_codes": False, "signatures": False}}
+                more, _ = _scan_source(out, tmp, text_only, ocr_lang, log)
                 tmp.replace(out)
                 records += more
                 entry["replaced"] = len(records)

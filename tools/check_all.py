@@ -310,6 +310,36 @@ def option_tests(work_root: Path, ner):
                         lambda c: c.replace("photos_only_on_id_documents: true", "photos_only_on_id_documents: false"))
     check("statements, photos searched on every page: no false photo",
           all("photo" not in [b["kind"] for b in f["blackouts"]] for f in rep["files"]))
+    # a photo the user removed stays removed, also when the scanned output is searched a second time (leftovers):
+    # the second pass must not black it again, neither in the picture nor in the report
+    _, rep = run_folder("Dossier Test 6", work_root, ner, files_only=["visages_scan.pdf"])
+    first = [b for b in rep["files"][0]["blackouts"] if b["kind"] == "photo"]
+    check("visages_scan.pdf: photos found before removal", len(first) > 0, f"{len(first)} photo(s)")
+    removed = "".join(f'\n  - {{file: "visages_scan.pdf", page: {b["page"]}, kind: "photo", '
+                      f'box: [{", ".join(f"{v:.1f}" for v in b["box"])}]}}' for b in first)
+    real_verify, calls = engine.verify_output, {"n": 0}
+
+    def leftover_once(path, cfg, ocr_lang, use_ocr):          # the first check finds one value left: second pass
+        calls["n"] += 1
+        left = real_verify(path, cfg, ocr_lang, use_ocr)
+        return left + [{"where": "test", "find": "test", "count": 1}] if calls["n"] == 1 else left
+
+    engine.verify_output = leftover_once
+    try:
+        _, rep = run_folder("Dossier Test 6", work_root, ner, lambda c: c + "\nremoved_blackouts:" + removed + "\n",
+                            files_only=["visages_scan.pdf"])
+    finally:
+        engine.verify_output = real_verify
+    check("visages_scan.pdf: removed photos not in the report", not any(b["kind"] == "photo" for b in rep["files"][0]["blackouts"]))
+    doc = engine.open_source(work_root / "Dossier Test 6" / rep["files"][0]["output"])
+    pages = {}
+    for b in first:
+        p = b["page"]
+        if p not in pages:
+            pages[p] = np.asarray(ocr.render_page(doc[p - 1], 300).convert("L"))
+        x0, y0, x1, y1 = [int(round(v * 300 / 72)) for v in b["box"]]
+        black = float((pages[p][y0:y1, x0:x1] < 20).mean())
+        check(f"visages_scan.pdf: removed photo p{p} is not blacked out", black < 0.5, f"{black:.0%} black in its box")
 
 
 def key_and_fake_tests(tmp: Path):

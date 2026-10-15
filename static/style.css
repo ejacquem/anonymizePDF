@@ -185,6 +185,22 @@ details.grp[open] > summary::before { content: "▾"; }
 .mlist { display: grid; gap: 3px; padding: 4px 0; }
 .mrow { display: grid; grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) auto; gap: 4px; align-items: center; font-size: 12px; }
 .mrow .mfind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.boxpanel { margin: 6px 0; border-top: 1px solid var(--line); padding: 4px 0; }
+.boxpanel > summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
+.brow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; align-items: center; font-size: 12px;
+  padding: 3px 4px; border-radius: 4px; cursor: pointer; }
+.brow:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.brow.sel { background: var(--sel); }
+.brow.sel .bname, .brow.sel .btag { font-weight: 700; }
+.btag { border: 1px solid var(--line); border-radius: 8px; padding: 0 6px; white-space: nowrap; color: var(--muted); }
+.btag.k-photo { color: #d19a66; border-color: #d19a66; }
+.btag.k-qr { color: #61afef; border-color: #61afef; }
+.btag.k-sig { color: #c678dd; border-color: #c678dd; }
+.btag.k-hand { color: var(--ok); border-color: var(--ok); }
+.brow .bname { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bbox.auto { background: rgba(255, 255, 255, .06); outline: 1px dashed var(--accent); outline-offset: -1px; }
+.bbox.auto.sel { outline: 2px solid var(--accent); }
+.bbox.resizing, .bbox.auto.resizing { background: rgba(0, 0, 0, .35); }
 button.mdel { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
 .mrow .mrep { font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); background: transparent; color: var(--text); min-width: 0; }
 .mhead { padding-top: 4px; }

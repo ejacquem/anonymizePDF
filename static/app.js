@@ -101,8 +101,9 @@ const viewers = {
 };
 const VIEWERS = ["orig", "anon"];
 let pageObserver = null;
-// black boxes drawn by hand (state, see the section below)
-const boxes = { tool: false, sel: null, drag: null };
+// black boxes (state, see the section below)
+const boxes = { tool: false, selKey: null, drag: null, preview: null };
+const BOXES_OPEN_KEY = "anonymizePDF.boxesOpen";
 const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 // Scroll positions the program set itself, per pane. The scroll event they trigger is ignored, so syncing
 // one pane does not bounce back to the other. (No timer / animation frame: works even in a hidden tab.)
@@ -404,7 +405,8 @@ async function openFile(path) {
   $("#anonEmpty").textContent = "Not generated yet";
   updateReviewButton();
   boxes.tool = false;
-  boxes.sel = null;
+  boxes.selKey = null;
+  boxes.preview = null;
   updateToolbar();
   renderTree();
 }
@@ -435,19 +437,159 @@ document.addEventListener("keydown", (e) => {
   openFile(files[next]);
 });
 
-// ---------- black boxes drawn by hand (Anonymized pane) -> manual_blackouts of the config ----------
+// ---------- black boxes (Anonymized pane and the Black boxes list) -> the config ----------
+// A box is either hand-drawn (manual_blackouts) or automatic (photo, qr code, signature: the report of the last
+// anonymization). Both are listed for the selected file; a box is selected by its key, the same in the list and on
+// the page. Moving or resizing an automatic box removes it and keeps a hand-drawn box of the same kind instead.
+const BOX_KIND_LABEL = { manual: "Hand-drawn", photo: "Photo / face", "qr code": "QR code", signature: "Signature" };
+const BOX_KIND_CLASS = { manual: "hand", photo: "photo", "qr code": "qr", signature: "sig" };
 
 function currentFileName() {
   const node = currentOriginalNode();
   return node ? node.name : null;
 }
 
-function boxesOfFile() {
-  const name = currentFileName();
-  return state.model && name && state.model.manual ? state.model.manual.blackouts.filter((b) => b.file === name) : [];
+function pageScale() { return zoom.scale * PT_TO_PX; }
+
+function sameBox(a, b) {
+  return a.length === 4 && b.length === 4 && a.every((v, i) => Math.abs(v - b[i]) < 0.15);
 }
 
-function pageScale() { return zoom.scale * PT_TO_PX; }
+// every black box of the selected file: { key, type, idx, page, box, kind, label }
+function boxEntries() {
+  const name = currentFileName();
+  if (!name || !state.model || !state.model.manual) return [];
+  const man = state.model.manual, out = [];
+  man.blackouts.forEach((b, i) => {
+    if (b.file !== name) return;
+    out.push({ key: "m|" + i, type: "manual", idx: i, page: b.page, box: b.box,
+      kind: b.origin || "manual",
+      label: b.origin ? `${BOX_KIND_LABEL[b.origin] || b.origin} · edited` : BOX_KIND_LABEL.manual });
+  });
+  const rep = state.report && (state.report.files || []).find((f) => f.file === name);
+  (rep ? rep.blackouts || [] : []).forEach((b) => {
+    if (b.kind === "manual") return;
+    if ((man.removed || []).some((r) => r.file === name && r.page === b.page && r.kind === b.kind && sameBox(r.box, b.box))) return;
+    out.push({ key: `a|${b.kind}|${b.page}|${b.box.map((v) => Math.round(v)).join(",")}`, type: "auto",
+      page: b.page, box: b.box, kind: b.kind, label: BOX_KIND_LABEL[b.kind] || b.kind });
+  });
+  return out;
+}
+
+function drawBoxes() {
+  const v = viewers.anon;
+  const k = pageScale();
+  const entries = boxEntries();
+  [...v.list.children].forEach((el, i) => {
+    el.querySelectorAll(".bbox").forEach((n) => n.remove());
+    entries.filter((e) => e.page === i + 1).forEach((e) => {
+      const bx = boxes.preview && boxes.preview.key === e.key ? boxes.preview.box : e.box;
+      const d = document.createElement("div");
+      const resizing = boxes.drag && boxes.drag.ent && boxes.drag.ent.key === e.key && boxes.drag.mode !== "move";
+      d.className = "bbox" + (e.type === "auto" ? " auto" : "") + (boxes.selKey === e.key ? " sel" : "")
+        + (resizing ? " resizing" : "");                       // see-through while a side or corner is dragged
+      d.dataset.bkey = e.key;
+      d.style.left = bx[0] * k + "px";
+      d.style.top = bx[1] * k + "px";
+      d.style.width = (bx[2] - bx[0]) * k + "px";
+      d.style.height = (bx[3] - bx[1]) * k + "px";
+      if (boxes.selKey === e.key) {
+        HANDLES.forEach((h) => {
+          const hd = document.createElement("div");
+          hd.className = `bhandle h-${h}`;
+          hd.dataset.h = h;
+          d.appendChild(hd);
+        });
+      }
+      el.appendChild(d);
+    });
+  });
+  $("#btnBox").classList.toggle("on", boxes.tool);
+  v.box.classList.toggle("boxtool", boxes.tool);
+  renderBoxList();
+}
+
+function boxListInner() {
+  const name = currentFileName();
+  if (!name) return `<div class="muted small">Select a file to see its black boxes.</div>`;
+  const entries = boxEntries();
+  if (!entries.length) {
+    return `<div class="muted small">No black box on ${esc(name)}. Draw one with ▭ Black box, or Anonymize the file to see the automatic ones.</div>`;
+  }
+  return entries.map((e) => {
+    const w = Math.round(e.box[2] - e.box[0]), h = Math.round(e.box[3] - e.box[1]);
+    return `<div class="brow${boxes.selKey === e.key ? " sel" : ""}" data-bkey="${esc(e.key)}" title="Click to select it on the page">
+      <span class="btag k-${BOX_KIND_CLASS[e.kind] || "hand"}">${esc(e.label)}</span>
+      <span class="bname">p.${e.page} · ${w}×${h} pt</span>
+      <button class="mdel" data-bdel="${esc(e.key)}" title="Remove this black box">✕</button></div>`;
+  }).join("");
+}
+
+function boxPanelHtml() {
+  let open = true;
+  try { open = localStorage.getItem(BOXES_OPEN_KEY) !== "0"; } catch (e) { /* ignore */ }
+  return `<details class="boxpanel"${open ? " open" : ""}><summary>Black boxes <span class="muted small">of the selected file</span></summary>
+    <div id="boxList">${boxListInner()}</div></details>`;
+}
+
+function renderBoxList() {
+  const el = document.getElementById("boxList");
+  if (el) el.innerHTML = boxListInner();
+}
+
+function selectBox(key) {
+  boxes.selKey = key;
+  drawBoxes();
+}
+
+function setBoxTool(on) {
+  boxes.tool = on;
+  boxes.selKey = null;
+  drawBoxes();
+}
+
+function pagePoint(pageEl, e) {
+  const r = pageEl.getBoundingClientRect(), k = pageScale();
+  return [(e.clientX - r.left) / k, (e.clientY - r.top) / k];
+}
+
+// the automatic box of this key, removed from the detection, and the config: removed_blackouts
+function addRemoved(e) {
+  const man = state.model.manual;
+  man.removed = man.removed || [];
+  man.removed.push({ file: currentFileName(), page: e.page, kind: e.kind, box: e.box.map((v) => Math.round(v * 10) / 10) });
+}
+
+async function saveBoxes(message) {
+  if (state.cfgView !== "table") await switchView("table");   // the boxes live in the model: work from the table view
+  if (state.cfgView !== "table" || !state.model) {
+    setStatus("Black box not saved: the config is not readable in the Table view (see Config)", "err");
+    return;
+  }
+  setDirty(true);
+  const ok = await saveConfig();
+  renderTable();
+  drawBoxes();
+  if (ok) {
+    setStatus(message, "ok");
+    scheduleRegen();
+  }
+}
+
+function deleteBox(key) {
+  const e = boxEntries().find((x) => x.key === key);
+  if (!e) return;
+  if (e.type === "manual") state.model.manual.blackouts.splice(e.idx, 1);
+  else addRemoved(e);
+  boxes.selKey = null;
+  return saveBoxes("Black box removed · updating the anonymized file…");
+}
+
+$("#btnBox").onclick = async () => {
+  if (!state.model || $("#btnBox").disabled) return;
+  if (!boxes.tool && state.cfgView !== "table") await switchView("table");
+  setBoxTool(!boxes.tool);
+};
 
 // after a change of a black box, the anonymized file is regenerated by itself (queued if a job is running)
 let regenTimer = null;
@@ -479,67 +621,6 @@ async function regenNow() {
   drawBoxes();
 }
 
-function drawBoxes() {
-  const v = viewers.anon;
-  const k = pageScale();
-  [...v.list.children].forEach((el, i) => {
-    el.querySelectorAll(".bbox").forEach((n) => n.remove());
-    boxesOfFile().filter((b) => b.page === i + 1).forEach((b) => {
-      const d = document.createElement("div");
-      d.className = "bbox" + (boxes.sel === b ? " sel" : "");
-      d.style.left = b.box[0] * k + "px";
-      d.style.top = b.box[1] * k + "px";
-      d.style.width = (b.box[2] - b.box[0]) * k + "px";
-      d.style.height = (b.box[3] - b.box[1]) * k + "px";
-      d.__box = b;
-      if (boxes.sel === b) {
-        HANDLES.forEach((h) => {
-          const hd = document.createElement("div");
-          hd.className = `bhandle h-${h}`;
-          hd.dataset.h = h;
-          d.appendChild(hd);
-        });
-      }
-      el.appendChild(d);
-    });
-  });
-  $("#btnBox").classList.toggle("on", boxes.tool);
-  v.box.classList.toggle("boxtool", boxes.tool);
-}
-
-function setBoxTool(on) {
-  boxes.tool = on;
-  boxes.sel = null;
-  drawBoxes();
-}
-
-function pagePoint(pageEl, e) {
-  const r = pageEl.getBoundingClientRect(), k = pageScale();
-  return [(e.clientX - r.left) / k, (e.clientY - r.top) / k];
-}
-
-async function saveBoxes(message) {
-  if (state.cfgView !== "table") await switchView("table");   // the boxes live in the model: work from the table view
-  if (state.cfgView !== "table" || !state.model) {
-    setStatus("Black box not saved: the config is not readable in the Table view (see Config)", "err");
-    return;
-  }
-  setDirty(true);
-  const ok = await saveConfig();
-  renderTable();
-  drawBoxes();
-  if (ok) {
-    setStatus(message, "ok");
-    scheduleRegen();
-  }
-}
-
-$("#btnBox").onclick = async () => {
-  if (!state.model || $("#btnBox").disabled) return;
-  if (!boxes.tool && state.cfgView !== "table") await switchView("table");
-  setBoxTool(!boxes.tool);
-};
-
 viewers.anon.list.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || !viewers.anon.pages.length) return;
   const pageEl = e.target.closest(".page");
@@ -551,19 +632,22 @@ viewers.anon.list.addEventListener("pointerdown", (e) => {
     e.stopPropagation();                                        // no pan while a box is drawn or edited
     const [x, y] = pagePoint(pageEl, e);
     if (box) {
-      boxes.sel = box.__box;
+      const key = box.dataset.bkey;
+      const ent = boxEntries().find((q) => q.key === key);
+      if (!ent) return;
+      boxes.selKey = key;
+      boxes.preview = { key, box: [...ent.box] };
+      boxes.drag = { mode: handle ? handle.dataset.h : "move", ent, pageEl, page, x0: x, y0: y, orig: [...ent.box] };
       drawBoxes();
-      boxes.drag = { mode: handle ? handle.dataset.h : "move", box: box.__box, pageEl, page,
-                     x0: x, y0: y, orig: [...box.__box.box] };
     } else {
-      boxes.sel = null;
+      boxes.selKey = null;
       const draft = document.createElement("div");
       draft.className = "bbox draft";
       pageEl.appendChild(draft);
       boxes.drag = { mode: "create", page, pageEl, x0: x, y0: y, draft };
     }
-  } else if (boxes.sel) {
-    boxes.sel = null;                                           // a click on the paper: deselect, the pan goes on
+  } else if (boxes.selKey) {
+    boxes.selKey = null;                                        // a click on the paper: deselect, the pan goes on
     drawBoxes();
   }
 });
@@ -598,7 +682,7 @@ document.addEventListener("pointermove", (e) => {
     if (hm.includes("n")) y0 = Math.min(clamp(oy0 + dy, ph), oy1 - 2);
     if (hm.includes("s")) y1 = Math.max(clamp(oy1 + dy, ph), oy0 + 2);
   }
-  d.box.box = [x0, y0, x1, y1];
+  boxes.preview = { key: d.ent.key, box: [x0, y0, x1, y1] };
   drawBoxes();
 });
 
@@ -612,25 +696,35 @@ document.addEventListener("pointerup", async () => {
     if (!r || r[2] - r[0] < 2 || r[3] - r[1] < 2) return;
     const b = { file: currentFileName(), page: d.page, box: r.map((v) => Math.round(v * 10) / 10) };
     state.model.manual.blackouts.push(b);
-    boxes.sel = b;
-    return saveBoxes("Black box saved · click Anonymize file to apply it");
+    boxes.selKey = "m|" + (state.model.manual.blackouts.length - 1);
+    return saveBoxes("Black box saved · updating the anonymized file…");
   }
-  await saveBoxes("Black box saved · click Anonymize file to apply it");
+  const pv = boxes.preview;
+  boxes.preview = null;
+  if (!pv || sameBox(pv.box, d.orig)) return drawBoxes();          // a click: only the selection
+  const nb = pv.box.map((v) => Math.round(v * 10) / 10);
+  if (d.ent.type === "manual") {
+    state.model.manual.blackouts[d.ent.idx].box = nb;
+    boxes.selKey = d.ent.key;
+    return saveBoxes("Black box saved · updating the anonymized file…");
+  }
+  // an automatic box, moved or resized: removed, and a hand-drawn box of the same kind takes its place
+  addRemoved(d.ent);
+  state.model.manual.blackouts.push({ file: currentFileName(), page: d.ent.page, box: nb, origin: d.ent.kind });
+  boxes.selKey = "m|" + (state.model.manual.blackouts.length - 1);
+  return saveBoxes("Black box moved · updating the anonymized file…");
 });
 
 document.addEventListener("keydown", (e) => {
   const t = e.target;
   if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
-  if ((e.key === "Delete" || e.key === "Backspace") && boxes.sel && state.model) {
-    const list = state.model.manual.blackouts;
-    list.splice(list.indexOf(boxes.sel), 1);
-    boxes.sel = null;
+  if ((e.key === "Delete" || e.key === "Backspace") && boxes.selKey && state.model) {
     e.preventDefault();
-    return saveBoxes("Black box removed · click Anonymize file to apply it");
+    return deleteBox(boxes.selKey);
   }
   if (e.key === "Escape") {
     if (boxes.tool) setBoxTool(false);
-    else if (boxes.sel) { boxes.sel = null; drawBoxes(); }
+    else if (boxes.selKey) { boxes.selKey = null; drawBoxes(); }
   }
 });
 
@@ -796,19 +890,16 @@ function settingsHtml(s) {
 
 const MANUAL_OPEN_KEY = "anonymizePDF.manualOpen";
 function manualHtml(man) {
-  const repl = man.replacements || [], boxes = man.blackouts || [];
+  const repl = man.replacements || [];
   let open = true;
   try { open = localStorage.getItem(MANUAL_OPEN_KEY) !== "0"; } catch (e) { /* ignore */ }
   const rows = repl.map((r, i) => `<div class="mrow"><span class="mfind" title="${esc(r.find)}">${esc(r.find)}</span>
     <span class="arrow">→</span><input class="mrep" data-mi="${i}" value="${esc(r.replace)}" spellcheck="false">
     <button class="mdel mini" data-mdel="repl:${i}" title="Delete this value">✕</button></div>`).join("");
-  const boxRows = boxes.map((b, i) => `<div class="mrow"><span class="mfind">${esc(b.file)} · p.${b.page} · ${Math.round(b.box[2] - b.box[0])}×${Math.round(b.box[3] - b.box[1])} pt</span>
-    <button class="mdel mini" data-mdel="box:${i}" title="Delete this black box">✕</button></div>`).join("");
   return `<details class="manual"${open ? " open" : ""}><summary>Manual data <span class="muted small">kept by every scan</span></summary>
     <div class="mlist">${rows || '<div class="muted small">No manual value yet.</div>'}</div>
     <div class="addrow"><input id="addFind" placeholder="value to replace" spellcheck="false">
       <span class="arrow">→</span><input id="addRep" placeholder="replacement" spellcheck="false"><button id="addBtn" class="mini">Add</button></div>
-    ${boxRows ? `<div class="muted small mhead">Black boxes</div><div class="mlist">${boxRows}</div>` : ""}
   </details>`;
 }
 
@@ -833,7 +924,7 @@ function renderTable() {
     groups.get(e.type).push(i);
   });
   const types = [...groups.keys()].sort((a, b) => (TYPE_ORDER.indexOf(a) + 1 || 99) - (TYPE_ORDER.indexOf(b) + 1 || 99));
-  let h = settingsHtml(m.settings) + manualHtml(m.manual || { replacements: [], blackouts: [] });
+  let h = settingsHtml(m.settings) + manualHtml(m.manual || { replacements: [], blackouts: [] }) + boxPanelHtml();
   const nAct = m.entries.filter((e) => e.active).length;
   h += `<div class="cfgsum muted small">${nAct} value(s) replaced · ${m.entries.length - nAct} suggestion(s) not active
     · tick a line to replace it, untick to keep the original</div>`;
@@ -903,6 +994,9 @@ $("#cfgTable").addEventListener("input", (ev) => {
 });
 $("#cfgTable").addEventListener("click", (ev) => {
   const t = ev.target;
+  if (t.dataset && t.dataset.bdel) { ev.stopPropagation(); return deleteBox(t.dataset.bdel); }
+  const row = t.closest && t.closest(".brow");
+  if (row) { selectBox(row.dataset.bkey); return; }
   if (t.classList.contains("gchk")) { ev.stopPropagation(); return; }    // do not fold the group
   if (t.classList.contains("edel")) {
     state.model.entries.splice(+t.closest(".erow").dataset.i, 1);
