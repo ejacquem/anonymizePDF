@@ -162,6 +162,13 @@ details.grp[open] > summary::before { content: "▾"; }
 .einfo { font-size: 11px; text-align: right; }
 .edel { visibility: hidden; padding: 0 4px; font-size: 11px; }
 .erow:hover .edel { visibility: visible; }
+.manual { margin: 6px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 4px 0; }
+.manual > summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
+.mlist { display: grid; gap: 3px; padding: 4px 0; }
+.mrow { display: grid; grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) auto; gap: 4px; align-items: center; font-size: 12px; }
+.mrow .mfind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .mrep { font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); background: transparent; color: var(--text); min-width: 0; }
+.mhead { padding-top: 4px; }
 .addrow { display: grid; grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) auto auto; gap: 4px; align-items: center;
   margin: 10px 0 4px; padding-top: 8px; border-top: 1px dashed var(--line); }
 .addrow input, .addrow select { font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--line);

@@ -577,9 +577,28 @@ function settingsHtml(s) {
   </div></details>`;
 }
 
+const MANUAL_OPEN_KEY = "anonymizePDF.manualOpen";
+function manualHtml(man) {
+  const repl = man.replacements || [], boxes = man.blackouts || [];
+  let open = true;
+  try { open = localStorage.getItem(MANUAL_OPEN_KEY) !== "0"; } catch (e) { /* ignore */ }
+  const rows = repl.map((r, i) => `<div class="mrow"><span class="mfind" title="${esc(r.find)}">${esc(r.find)}</span>
+    <span class="arrow">→</span><input class="mrep" data-mi="${i}" value="${esc(r.replace)}" spellcheck="false">
+    <button class="mdel mini" data-mdel="repl:${i}" title="Delete this value">✕</button></div>`).join("");
+  const boxRows = boxes.map((b, i) => `<div class="mrow"><span class="mfind">${esc(b.file)} · p.${b.page} · ${Math.round(b.box[2] - b.box[0])}×${Math.round(b.box[3] - b.box[1])} pt</span>
+    <button class="mdel mini" data-mdel="box:${i}" title="Delete this black box">✕</button></div>`).join("");
+  return `<details class="manual"${open ? " open" : ""}><summary>Manual data <span class="muted small">kept by every scan</span></summary>
+    <div class="mlist">${rows || '<div class="muted small">No manual value yet.</div>'}</div>
+    <div class="addrow"><input id="addFind" placeholder="value to replace" spellcheck="false">
+      <span class="arrow">→</span><input id="addRep" placeholder="replacement" spellcheck="false"><button id="addBtn" class="mini">Add</button></div>
+    ${boxRows ? `<div class="muted small mhead">Black boxes</div><div class="mlist">${boxRows}</div>` : ""}
+  </details>`;
+}
+
 function renderTable() {
   const box = $("#cfgTable");
   const m = state.model;
+  if (m && !m.manual) m.manual = { replacements: [], blackouts: [] };
   if (!m) {
     const node = state.nodes[state.folder];
     box.innerHTML = !node ? "" : hasSubfolders(node) && !node.pdf_count
@@ -597,7 +616,7 @@ function renderTable() {
     groups.get(e.type).push(i);
   });
   const types = [...groups.keys()].sort((a, b) => (TYPE_ORDER.indexOf(a) + 1 || 99) - (TYPE_ORDER.indexOf(b) + 1 || 99));
-  let h = settingsHtml(m.settings);
+  let h = settingsHtml(m.settings) + manualHtml(m.manual || { replacements: [], blackouts: [] });
   const nAct = m.entries.filter((e) => e.active).length;
   h += `<div class="cfgsum muted small">${nAct} value(s) replaced · ${m.entries.length - nAct} suggestion(s) not active
     · tick a line to replace it, untick to keep the original</div>`;
@@ -622,10 +641,8 @@ function renderTable() {
     h += `</details>`;
   }
   if (!types.length && q) h += `<div class="muted small">Nothing matches “${esc(q)}”.</div>`;
-  h += `<div class="addrow"><input id="addFind" placeholder="value to replace" spellcheck="false">
-    <span class="arrow">→</span><input id="addRep" placeholder="replacement" spellcheck="false">
-    <select id="addType">${TYPE_ORDER.map((t) => `<option value="${t}"${t === "TERM" ? " selected" : ""}>${esc(TYPE_LABELS[t])}</option>`).join("")}</select>
-    <button id="addBtn" class="mini">Add</button></div>`;
+  h += `<div class="cfghint muted small">Values found by the scan are listed above. To add a value of your own, use the
+    Manual data panel: it is kept when the config is generated again.</div>`;
   if ((m.regex || []).length) h += `<div class="muted small">${m.regex.length} regex rule(s): edit them in the YAML view.</div>`;
   box.innerHTML = h;
   box.querySelectorAll(".gchk").forEach((c) => { c.indeterminate = c.dataset.some === "1"; });
@@ -639,6 +656,10 @@ $("#cfgTable").addEventListener("change", (ev) => {
   if (!m) return;
   if (t.dataset.set) {
     m.settings[t.dataset.set] = t.type === "checkbox" ? t.checked : t.value;
+    return tableChanged();
+  }
+  if (t.classList.contains("mrep")) {
+    m.manual.replacements[+t.dataset.mi].replace = t.value;
     return tableChanged();
   }
   if (t.classList.contains("echk")) {
@@ -671,11 +692,17 @@ $("#cfgTable").addEventListener("click", (ev) => {
     tableChanged();
     return renderTable();
   }
+  if (t.dataset && t.dataset.mdel) {                           // manual data: delete a value or a black box
+    const [kind, i] = t.dataset.mdel.split(":");
+    const list = kind === "repl" ? state.model.manual.replacements : state.model.manual.blackouts;
+    list.splice(+i, 1);
+    tableChanged();
+    return renderTable();
+  }
   if (t.id === "addBtn") {
     const find = $("#addFind").value.trim();
     if (!find) return;
-    state.model.entries.push({ find, replace: $("#addRep").value, type: $("#addType").value, active: true, info: "added by hand" });
-    (state.openGroups = state.openGroups || openTypes()).add($("#addType").value);
+    state.model.manual.replacements.push({ find, replace: $("#addRep").value });
     tableChanged();
     renderTable();
     $("#addFind").focus();
@@ -683,6 +710,7 @@ $("#cfgTable").addEventListener("click", (ev) => {
 });
 $("#cfgTable").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter" && (ev.target.id === "addFind" || ev.target.id === "addRep")) $("#addBtn").click();
+  if (ev.key === "Enter" && ev.target.classList.contains("mrep")) ev.target.blur();
 });
 $("#cfgTable").addEventListener("toggle", (ev) => {
   const d = ev.target;
@@ -784,7 +812,7 @@ async function runJob(kind, url, body, label) {
 
 $("#btnScan").onclick = async () => {
   if (state.batchMode) return runBatch("scan");
-  if (state.hasConfig && !confirm("This folder already has a config. Scanning again replaces it (your edits are lost). Continue?")) return;
+  if (state.hasConfig && !confirm("Scanning again replaces the automatic values: your ticks and edits on them are lost. Your manual data (values and black boxes) is kept. Continue?")) return;
   const r = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan");
   await loadTree();
   if (r && r.status === "done") {
@@ -874,7 +902,7 @@ function renderOverview() {
 async function runBatch(action) {
   const redo = $("#batchRedo") && $("#batchRedo").checked;
   if (action === "all" && !confirm("Scan the folders without config and anonymize them right away, without reviewing the new configs?")) return;
-  if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder and replaces their configs (your edits are lost). Continue?")) return;
+  if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder: the automatic values are replaced (your ticks and edits on them are lost). The manual data is kept. Continue?")) return;
   if (state.dirty && !(await saveConfig())) return;
   await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify },
     { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize" }[action]);
