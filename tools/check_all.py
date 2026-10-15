@@ -72,6 +72,11 @@ EXPECT = {
                         "35000"], {
         "carte_identite_scan.pdf": ("scan", ["photo", "photo", "qr code", "signature"], ["TD1"]),
     }),
+    "Dossier Test 7": (["DUBOIS", "PETIT", "Jean-Luc", "DURAND", "LEMAIRE", "ROUSSEAU", "4694616411"], {
+        # text written at an angle: text_truth.json (see tools/make_test_tilt.py)
+        "textes_inclines_scan.pdf": ("scan", [], []),
+        "permis_incline.jpg": ("scan", [], []),
+    }),
     "Dossier Test 6": (["DUBOIS", "DURAND", "PETIT"], {
         # faces: tools/make_test_faces.py writes faces_truth.json (every face, in PDF points)
         "visages_digital.pdf": ("mixed", ["photo", "photo", "photo"], []),
@@ -219,6 +224,40 @@ def run_folder(folder: str, work_root: Path, ner, edit=lambda c: c, files_only=N
     return cfg, rep
 
 
+def check_tilt(f: dict, truth: list, out: Path):
+    """Each tilted value of the truth file is replaced, and no dark ink of it is left outside its replacement: the
+    pixels of its box (turned text: the box of its corners) are compared with the replacement's area."""
+    items = {it["original"]: it for it in f.get("items", [])}
+    doc = engine.open_source(out)
+    pages = {}
+    for t in truth:
+        name = t["value"]
+        it = items.get(name)
+        if t.get("known_miss") and it is None:            # reported, not counted: a known limit of the OCR
+            print(f"  (known limit, not checked: '{name}': {t['known_miss']})")
+            continue
+        check(f"{f['file']}: '{name}' replaced", it is not None)
+        if it is None:
+            continue
+        p = t["page"]
+        if p not in pages:
+            pages[p] = ocr.render_page(doc[p - 1], 300).convert("L")
+        gray = np.asarray(pages[p]).astype(int)
+        k = 300 / 72
+        x0, y0, x1, y1 = [int(round(v * k)) for v in t["box"]]
+        region = gray[max(y0, 0):y1, max(x0, 0):x1]
+        dark = region < 110
+        for rb in it.get("boxes", []):
+            if rb["page"] != p:
+                continue
+            a0, b0, a1, b1 = [int(round(v * k)) for v in rb["box"]]
+            dark[max(b0 - max(y0, 0), 0):max(b1 - max(y0, 0), 0), max(a0 - max(x0, 0), 0):max(a1 - max(x0, 0), 0)] = False
+        left = int(dark.sum())
+        allowed = max(12, 0.01 * region.size)
+        check(f"{f['file']}: no ink of '{name}' left outside its replacement", left <= allowed,
+              f"{left} dark pixel(s) left, {allowed:.0f} allowed")
+
+
 def check_faces(folder: str, f: dict, truth: list):
     """Every face of the truth file is under a black box (the box covers at least 80 % of the face)."""
     for t in truth:
@@ -250,6 +289,10 @@ def full_run(folders, work_root: Path, ner):
             truth_file = ROOT / "sample_data" / folder / "faces_truth.json"
             if truth_file.exists():
                 check_faces(folder, f, json.loads(truth_file.read_text(encoding="utf-8")).get(f["file"], []))
+            text_file = ROOT / "sample_data" / folder / "text_truth.json"
+            if text_file.exists():
+                check_tilt(f, json.loads(text_file.read_text(encoding="utf-8")).get(f["file"], []),
+                           work_root / folder / f["output"])
         print(f"  ({time.time() - t0:.0f}s)")
 
 

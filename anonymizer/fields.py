@@ -139,20 +139,36 @@ _LICENCE_FIELDS = {"1": "surname", "2": "given", "5": "doc_number"}
 _LICENCE_BIRTH = re.compile(r"^3\s*[.,]\s*(?P<d>\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*(?P<p>.*)$")
 
 
+_LICENCE_NUMBER_ONLY = re.compile(r"^(\d)\s*[.,]?$")
+_LICENCE_DATE_PLACE = re.compile(r"^(?P<d>\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*(?P<p>.*)$")
+
+
 def _licence_fields(lines: list[dict], words: list[dict]) -> list[dict]:
     if not _LICENCE_WORDS.search(" ".join(w["text"] for w in words)):
         return []
     out = []
+
+    def add(num: str, value: str, ln: dict):
+        if num == "3":                                  # '03.06.1975 Liège': the date, then the place
+            m = _LICENCE_DATE_PLACE.match(value)
+            if m:
+                out.append({"kind": "birth_date", "value": m.group("d"), "line": ln})
+                if m.group("p").strip():
+                    out.append({"kind": "birth_place", "value": m.group("p").strip(), "line": ln})
+        elif num in _LICENCE_FIELDS:
+            out.append({"kind": _LICENCE_FIELDS[num], "value": value, "line": ln})
+
     for ln in lines:
-        m = _LICENCE_BIRTH.match(ln["text"])
-        if m:
-            out.append({"kind": "birth_date", "value": m.group("d"), "line": ln})
-            if m.group("p").strip():
-                out.append({"kind": "birth_place", "value": m.group("p").strip(), "line": ln})
+        text = ln["text"]
+        num_m = re.match(r"^(\d)\s*[.,]\s*(?P<v>\S.*)$", text)     # '1. PETIT' on one line
+        if num_m:
+            add(num_m.group(1), num_m.group("v").strip(), ln)
             continue
-        num_m = re.match(r"^(\d)\s*[.,]\s*(?P<v>\S.*)$", ln["text"])
-        if num_m and num_m.group(1) in _LICENCE_FIELDS:
-            out.append({"kind": _LICENCE_FIELDS[num_m.group(1)], "value": num_m.group("v").strip(), "line": ln})
+        only = _LICENCE_NUMBER_ONLY.match(text)                       # '1.' alone: OCR read the value apart
+        if only and only.group(1) in ("1", "2", "3", "5"):
+            right = _right_of(lines, ln)
+            if right:
+                add(only.group(1), right["text"], right)
     return out
 
 

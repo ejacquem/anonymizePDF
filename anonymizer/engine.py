@@ -726,12 +726,99 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list
     return records, extras
 
 
+TILT_MIN = regions.TILT          # degrees: a word slanted by less is painted as straight text
+
+
+def _refine_slanted(img, words: list[dict], angles: dict, ocr_lang: str) -> list[dict]:
+    """OCR boxes of slanted text are often off by about a line. The slanted lines with the same slant are turned
+    straight together, read again in one pass (a single short word is not read on its own), and their words get
+    the box they have in that reading (matched by text, else by nearest centre)."""
+    from PIL import Image as _Image
+
+    out = [dict(w) for w in words]
+    slanted = []
+    for ln in fields.lines_of(words):
+        idx = ln["words"]
+        if not idx:
+            continue
+        ang = angles.get(tuple(words[idx[0]]["box"]), 0.0)
+        if abs(ang) >= TILT_MIN:
+            slanted.append((ang, ln))
+    slanted.sort(key=lambda t: t[0])
+    groups, cur = [], []
+    for ang, ln in slanted:                                   # lines of one slant, within 1.5 degrees
+        if cur and ang - cur[0][0] > 1.5:
+            groups.append(cur)
+            cur = []
+        cur.append((ang, ln))
+    if cur:
+        groups.append(cur)
+    for group in groups:
+        ang = float(np.median([a for a, _ in group]))
+        lines = [ln for _, ln in group]
+        x0 = min(ln["box"][0] for ln in lines)
+        y0 = min(ln["box"][1] for ln in lines)
+        x1 = max(ln["box"][2] for ln in lines)
+        y1 = max(ln["box"][3] for ln in lines)
+        m = int(0.3 * (y1 - y0)) + 10
+        R = (max(int(x0) - m, 0), max(int(y0) - m, 0), min(int(x1) + m, img.width), min(int(y1) + m, img.height))
+        patch = img.crop(R).convert("RGB")
+        c = ((x0 + x1) / 2 - R[0], (y0 + y1) / 2 - R[1])
+        lum = np.asarray(patch.convert("L")).astype(int)
+        paper = tuple(int(v) for v in np.median(np.asarray(patch).reshape(-1, 3)[lum.reshape(-1) >= np.percentile(lum, 50)], axis=0))
+        turned = patch.rotate(ang, resample=_Image.BICUBIC, center=c, fillcolor=paper)
+        again = ocr_words(turned, ocr_lang)
+        if not again:
+            continue
+        fresh = []
+        for w2 in again:
+            corners = [render._turn((x, y), c, -ang) for x, y in
+                       ((w2["box"][0], w2["box"][1]), (w2["box"][2], w2["box"][1]),
+                        (w2["box"][2], w2["box"][3]), (w2["box"][0], w2["box"][3]))]
+            xs = [p[0] + R[0] for p in corners]
+            ys = [p[1] + R[1] for p in corners]
+            fresh.append((w2["text"], (min(xs), min(ys), max(xs), max(ys))))
+        for ln in lines:
+            for i in ln["words"]:
+                old = words[i]
+                cx, cy = (old["box"][0] + old["box"][2]) / 2, (old["box"][1] + old["box"][3]) / 2
+                same = [f for f in fresh if f[0].casefold() == old["text"].casefold()]
+                best = min(same or fresh, key=lambda f: (f[1][0] + f[1][2] - 2 * cx) ** 2 + (f[1][1] + f[1][3] - 2 * cy) ** 2)
+                b = best[1]
+                if same and abs((b[1] + b[3]) / 2 - cy) < 2 * (old["box"][3] - old["box"][1]):
+                    out[i]["box"] = tuple(round(v, 1) for v in b)
+    return out
+
+
+def _angle_at(angles: dict, box) -> float:
+    """Slant of the OCR word that overlaps `box` the most (a match is a box per line, not a word box)."""
+    best, best_area = 0.0, 0.0
+    for w_box, ang in angles.items():
+        w = (max(w_box[0], box[0]), max(w_box[1], box[1]), min(w_box[2], box[2]), min(w_box[3], box[3]))
+        area = max(w[2] - w[0], 0) * max(w[3] - w[1], 0)
+        if area > best_area:
+            best, best_area = ang, area
+    return best
+
+
+def _pt_box(boxes) -> list:
+    """Union of the pixel boxes of a match, in PDF points (the same unit as the black boxes of the report)."""
+    x0 = min(b[0] for b in boxes)
+    y0 = min(b[1] for b in boxes)
+    x1 = max(b[2] for b in boxes)
+    y1 = max(b[3] for b in boxes)
+    return [round(float(v) * 72 / 300, 1) for v in (x0, y0, x1, y1)]
+
+
 def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log):
     """One scanned page -> its anonymized image (values repainted, MRZ rebuilt, black boxes)."""
     blackbox = cfg["style"]["mode"] == "blackbox"
     t0 = time.time()
     img = render_page(page, 300)
     words = ocr_words(img, ocr_lang)
+    angles = regions.line_angles(np.asarray(img.convert("L")), words)     # slant of each word, before painting
+    words = _refine_slanted(img, words, angles, ocr_lang)                  # exact boxes of the slanted lines
+    angles = regions.line_angles(np.asarray(img.convert("L")), words)
     plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer)
     draw = ImageDraw.Draw(img)
     pad = 3
@@ -762,19 +849,28 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     for (m, boxes), (ink, limit, is_bold) in zip(plan, looks):
         m.replacement = _adjust(cfg, m)
         if _inside(boxes[0], covered):             # under a black box or in the MRZ: handled below
-            records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+            records.append({"page": pno, "original": m.value, "replacement": m.replacement,
+                            "box": _pt_box(boxes)})
             continue
+        changed = []
         for i, b in enumerate(boxes):
+            angle = _angle_at(angles, b)
+            if abs(angle) >= TILT_MIN:             # a slanted word: written and erased in its own frame
+                new = m.replacement if (not blackbox and i == 0 and m.replacement) else ""
+                changed.append(render.paint_tilted(img, b, angle, m.value, new, ink, is_bold, blackbox))
+                continue
             box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
             fill = (0, 0, 0) if blackbox else render.background_color(img, box)
             draw.rectangle(box, fill=fill)
+            changed.append(box)
             if not blackbox and i == 0 and m.replacement:
                 font, xy = render.scan_text_layout(m.value, m.replacement, b, limit, is_bold)
                 lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
                 ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
                 color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
                 draw.text(xy, m.replacement, font=font, anchor="ls", fill=color)
-        records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+        records.append({"page": pno, "original": m.value, "replacement": m.replacement,
+                        "box": _pt_box(changed)})
     if mrz:
         lines = _new_mrz(words, mrz, cfg)
         render.draw_mrz(img, draw, mrz, zone, lines)
@@ -823,13 +919,15 @@ def summarize(records: list[dict], cfg: dict) -> list[dict]:
     for r in records:
         k = norm_value(r["original"])
         e = agg.setdefault(k, {"type": cfg["types"].get(k, "TERM"), "original": finds.get(k, r["original"]),
-                               "replacements": set(), "count": 0, "pages": set()})
+                               "replacements": set(), "count": 0, "pages": set(), "boxes": []})
         e["count"] += 1
         e["pages"].add(r["page"])
         e["replacements"].add(r["replacement"])
+        if r.get("box"):                               # where the replacement is (PDF points), for the checks
+            e["boxes"].append({"page": r["page"], "box": r["box"]})
     order = {t: i for i, t in enumerate(TYPE_ORDER)}
     rows = [{"type": e["type"], "original": e["original"], "replacement": " / ".join(sorted(e["replacements"])),
-             "count": e["count"], "pages": sorted(e["pages"])} for e in agg.values()]
+             "count": e["count"], "pages": sorted(e["pages"]), "boxes": e["boxes"]} for e in agg.values()]
     return sorted(rows, key=lambda r: (order.get(r["type"], 99), -r["count"], r["original"]))
 
 

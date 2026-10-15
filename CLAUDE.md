@@ -245,6 +245,9 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   A box never covers an OCR word: it is cut on the side that keeps the most dark (signature) pixels and still holds
   the middle of the label (`_clear_of_text`, `ink_mass`). Known limit: a signature on a card whose guilloche is
   connected to it gives a wide box (Reel "Lucas Jacquemin Id Cards": 62 x 12 mm, lower part of the card).
+- **Slanted text** (`regions.text_angle`, `line_angles`): skew by projection profile (-20..20 degrees, fine step).
+  Lines of ≥ 1.5 degrees are painted turned: the patch is turned straight, erased and written there, turned back, and
+  only the changed pixels are pasted back. A line with an unreliable measure takes the common slant of the page.
 - **Removal guarantee** (verified by extracting the output objects): scans are rebuilt from one new image per page.
   Digital: `black_out_digital` redacts with `images=2, graphics=2` (text removed, covered pixels overwritten, fully
   covered images and their SMask dropped, touched drawings removed — MuPDF's "remove if covered" mode keeps
@@ -272,6 +275,10 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
 ## 13. Known limits / ideas
 
 - Scans depend on OCR quality; names are heuristic (review step). Leftover check only knows the config's values.
+- Slanted text (scans, photos): OCR boxes of slanted words can be off by about a line, and Windows OCR does not read
+  lines slanted by ~15 degrees or more (`Dossier Test 7`, `known_miss`). Words of slanted lines are read again turned
+  straight (`engine._refine_slanted`, lines of the same slant together) and painted in their own frame
+  (`render.paint_tilted`, `_ink_band`); the report boxes (PDF points) are checked by `check_all.check_tilt`.
 - Faces: frontal detector (profiles may be missed), tested on public-domain portraits (tools/test_faces) and
   generated pages (Dossier Test 6). Signatures are still ink-based: on a card photographed on a dark table or on a
   printed chip they can grow into a large box (over-redaction, never a leak).

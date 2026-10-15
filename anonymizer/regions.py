@@ -182,6 +182,64 @@ def find_codes_digital(page) -> list[tuple]:
     return [(x0 * f, y0 * f, x1 * f, y1 * f) for x0, y0, x1, y1 in find_codes(img, dpi)]
 
 
+def text_angle(gray: np.ndarray) -> float:
+    """Skew of the text in a grey crop, in degrees with PIL's rotate convention: rotating the crop by this angle makes
+    its lines horizontal. Found with the projection profile: the angle whose rows of ink are the most contrasted."""
+    gray = np.asarray(gray).astype(int)
+    if gray.size < 40:
+        return 0.0
+    paper = np.median(gray)
+    if paper < 150:                                       # a dark band (a banner, a header): no reliable measure
+        return 0.0
+    ink = gray < paper - 60
+    if ink.sum() < 30:
+        return 0.0
+    mask = Image.fromarray((ink * 255).astype(np.uint8))
+
+    def score(a: float) -> float:
+        rot = np.asarray(mask.rotate(a, resample=Image.BILINEAR)) > 127
+        return float(rot.sum(axis=1).astype(float).var())
+
+    base = score(0.0)
+    best = max(np.arange(-20, 20.5, 1.0), key=score)
+    best = float(max(np.arange(best - 1, best + 1.01, 0.25), key=score))
+    if score(best) < 1.3 * base:                          # no clear direction: the text is straight
+        return 0.0
+    return best
+
+
+TILT = 1.5        # degrees: from this slant a word is painted turned (see engine.TILT_MIN)
+
+
+def line_angles(gray: np.ndarray, words: list[dict]) -> dict:
+    """{word box: skew angle} for each OCR word, measured once per OCR line. A short line whose own measure is
+    unreliable takes the slant of the other slanted lines of the page when they agree (one card, one skew)."""
+    lines = []
+    for ln in lines_of(words):
+        x0, y0, x1, y1 = (int(v) for v in ln["box"])
+        if x1 - x0 < 20 or y1 - y0 < 8:
+            lines.append((ln, None))
+            continue
+        lines.append((ln, text_angle(gray[max(y0 - 2, 0):y1 + 2, max(x0 - 2, 0):x1 + 2])))
+    # the lines with several words are the reliable ones: they decide the common slant
+    slanted = [a for ln, a in lines if a is not None and abs(a) >= TILT and len(ln["words"]) >= 2]
+    common = None
+    if len(slanted) >= 2:
+        med = float(np.median(slanted))
+        inliers = [a for a in slanted if abs(a - med) <= 2.0]
+        if len(inliers) >= 2:
+            common = float(np.median(inliers))
+    out = {}
+    for ln, ang in lines:
+        if ang is None:
+            continue
+        if common is not None and abs(ang) < TILT and len(ln["words"]) <= 2:   # a short line: the page's slant
+            ang = common
+        for i in ln["words"]:
+            out[tuple(words[i]["box"])] = ang
+    return out
+
+
 def _clear_of_text(box, words: list[dict], mass, anchor_x: float):
     """The box, shrunk so that it never covers a word of the page: each overlapping word is removed by cutting the
     box on one side. The side kept is the one with the most signature (`mass(box)`: ink, or drawing area), and it

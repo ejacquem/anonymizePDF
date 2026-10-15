@@ -426,6 +426,91 @@ def _mrz_font(char_w: float):
     return ImageFont.truetype(path, max(int(round(100 * char_w / adv)), 6))
 
 
+def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: bool, blackbox: bool):
+    """A word written at an angle: turned straight in a patch of the page, erased and rewritten there (`new`, or
+    nothing), then turned back. Only the pixels of the erased area are pasted back, the rest of the page is kept.
+    Returns the area changed on the page (x0, y0, x1, y1), in pixels."""
+    from PIL import ImageDraw
+
+    x0, y0, x1, y1 = (int(round(v)) for v in box)
+    m = int(0.3 * max(x1 - x0, y1 - y0)) + 10
+    mx = int(0.8 * (x1 - x0)) + m                             # room on the sides for a longer replacement
+    R = (max(x0 - mx, 0), max(y0 - m, 0), min(x1 + mx, img.width), min(y1 + m, img.height))
+    patch = img.crop(R).convert("RGB")
+    cx, cy = (x0 + x1) / 2 - R[0], (y0 + y1) / 2 - R[1]
+    lum = np.asarray(patch.convert("L")).astype(int)
+    pix = np.asarray(patch).reshape(-1, 3)
+    paper = tuple(int(v) for v in np.median(pix[lum.reshape(-1) >= np.percentile(lum, 50)], axis=0))
+    turned = patch.rotate(angle, resample=Image.BICUBIC, center=(cx, cy), fillcolor=paper)
+    # the word's box, turned with the same angle: its corners give the box of the word in the turned patch
+    corners = [_turn((x - R[0], y - R[1]), (cx, cy), angle)
+               for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+    bx0, by0 = max(int(min(c[0] for c in corners)) - 2, 0), max(int(min(c[1] for c in corners)) - 2, 0)
+    bx1, by1 = min(int(max(c[0] for c in corners)) + 3, turned.width), min(int(max(c[1] for c in corners)) + 3, turned.height)
+    gray = np.asarray(turned.convert("L")).astype(int)
+    tight = _ink_band(gray, (bx0, by0, bx1, by1))
+    if tight:                                                 # the ink of the word, in the turned patch
+        bx0, by0, bx1, by1 = tight
+    t = (bx0, by0, bx1, by1)
+    d = ImageDraw.Draw(turned)
+    changed = t                                              # the area that is repainted (erased, then written)
+    if blackbox:
+        d.rectangle(t, fill=(0, 0, 0))
+    else:
+        d.rectangle(t, fill=paper)
+        if new:
+            # never wider than the original value: a longer replacement is written smaller, not over the next field
+            font, xy = scan_text_layout(original, new, t, t[2], bold)
+            d.text(xy, new, font=font, anchor="ls", fill=ink)
+            l, tp, r, bt = font.getbbox(new, anchor="ls")
+            changed = (min(t[0], xy[0] + l), min(t[1], xy[1] + tp), max(t[2], xy[0] + r), max(t[3], xy[1] + bt))
+    mask = Image.new("L", turned.size, 0)
+    ImageDraw.Draw(mask).rectangle((changed[0] - 1, changed[1] - 1, changed[2] + 1, changed[3] + 1), fill=255)
+    back = turned.rotate(-angle, resample=Image.BICUBIC, center=(cx, cy), fillcolor=paper)
+    mask_back = mask.rotate(-angle, resample=Image.NEAREST, center=(cx, cy), fillcolor=0)
+    img.paste(back, (R[0], R[1]), mask=mask_back)
+    bb = mask_back.getbbox() or (0, 0, 0, 0)
+    return (bb[0] + R[0], bb[1] + R[1], bb[2] + R[0], bb[3] + R[1])
+
+
+def _ink_band(gray: np.ndarray, box, reach: float = 1.2):
+    """The ink of a word in a turned patch, from its (approximate) box: OCR boxes of slanted words can be off by
+    about a line. The band of ink rows nearest to the box (within `reach` box heights), then the ink columns of
+    that band. None when there is no ink."""
+    x0, y0, x1, y1 = box
+    h = max(y1 - y0, 4)
+    w0, w1 = max(int(x0 + 1), 0), min(int(x1 - 1), gray.shape[1])
+    v0, v1 = max(int(y0 - reach * h), 0), min(int(y1 + reach * h), gray.shape[0])
+    win = gray[v0:v1, w0:w1]
+    if win.size == 0:
+        return None
+    ink = win < np.median(win) - 60
+    frac = ink.mean(axis=1)
+    rows = frac > 0.02
+    bands, start = [], None
+    for i, on in enumerate(list(rows) + [False]):
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            bands.append((start, i - 1))
+            start = None
+    if not bands:
+        return None
+    centre = (y0 + y1) / 2 - v0
+    r0, r1 = min(bands, key=lambda b: abs((b[0] + b[1]) / 2 - centre))
+    cols = np.nonzero(ink[r0:r1 + 1].any(axis=0))[0]
+    if not len(cols):
+        return None
+    return (w0 + cols.min() - 1, v0 + r0 - 1, w0 + cols.max() + 2, v0 + r1 + 2)
+
+
+def _turn(p, c, angle: float):
+    """A point turned around c by `angle` degrees, counter-clockwise on screen (PIL's rotate convention)."""
+    a = np.radians(angle)
+    dx, dy = p[0] - c[0], p[1] - c[1]
+    return (c[0] + dx * np.cos(a) + dy * np.sin(a), c[1] - dx * np.sin(a) + dy * np.cos(a))
+
+
 def _erase_ink(img, zone, h: float):
     """Remove the dark text inside `zone` only: each dark pixel takes the local paper colour (the brightest pixels
     around it, which follows the card's shading). Nothing else of the card is painted over."""
