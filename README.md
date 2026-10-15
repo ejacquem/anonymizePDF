@@ -1,7 +1,12 @@
 # anonymizePDF
 
-Local tool to anonymize PDFs **folder by folder** (one folder = one client = one shared config).
-Everything runs on your machine. Nothing is uploaded anywhere.
+Local tool to anonymize PDFs **folder by folder** (one folder = one client = one shared config), with a small web app.
+Everything runs on your machine: the server listens on `127.0.0.1` only, nothing is uploaded anywhere.
+
+Personal data is **replaced by plausible fake values** of the same length and format (names, addresses, IBANs,
+phone numbers, national numbers, ...), so the documents stay readable. What cannot be faked (identity photos,
+signatures, QR codes) is covered with a black box that **really removes** the data from the file.
+Works on digital PDFs (real text layer) and on scans (OCR). Documents are mostly French, also Belgian / Dutch.
 
 ```
 app.py                   web app (Flask, 127.0.0.1 only)
@@ -9,24 +14,26 @@ anonymizer/
   engine.py              scan folder -> draft config -> anonymize -> verify -> report
   pii.py                 detectors (IBAN, phone, e-mail, addresses, names...), matching and text/box helpers
   ocr.py                 OCR of scanned pages: Tesseract or Windows built-in OCR
-  fake.py                fake replacement values (same length, same format)
-  render.py              drawing replacement text on digital pages and scanned images
+  fake.py                fake replacement values (same length, same format, consistent)
   secret.py              secret key for the fake values (created once per PC, outside the repo)
-  fields.py              identity documents: values under a label (Nom / Surname ...), MRZ
-  regions.py             photos and signatures to black out
+  render.py              writing replacement text on digital pages and scans, black boxes on digital pages
+  fields.py              identity documents: values under a label (Nom / Surname ...), machine readable zone (MRZ)
+  regions.py             photos, signatures and QR codes to black out
 static/                  frontend (index.html, app.js, style.css)
-docs/                    config.example.yaml, PROJECT_CONTEXT.md
-sample_data/             fake PDFs to try it on (Dossier Test 0: simple FR statement, Dossier Test 1: harder BE one,
-                         Dossier Test 3: French passport scan, Dossier Test 4: French ID card front + back, SPECIMEN)
-tools/                   make_test_statement.py / make_test_passport.py / make_test_idcard.py: regenerate Test 1 / 3 / 4
+docs/                    config.example.yaml
+sample_data/             FAKE test documents (see "Test documents")
+tools/                   generators of the test documents
+CLAUDE.md                detailed technical description (for maintenance / Claude Code)
 ```
 
 ## Install
 
+Use **Python 3.12 or 3.13** (newer versions may have no prebuilt wheels for spaCy and try to compile).
+
 ```bash
-python -m venv .venv
-.venv\Scripts\activate            # Windows   (macOS/Linux: source .venv/bin/activate)
-pip install -r requirements.txt
+py -3.12 -m venv .venv
+.venv\Scripts\activate            # Git Bash: source .venv/Scripts/activate   macOS/Linux: source .venv/bin/activate
+python -m pip install -r requirements.txt
 python -m spacy download fr_core_news_md      # names model; use nl_core_news_md for Dutch, you can install both
 ```
 
@@ -37,8 +44,17 @@ python -m pip install https://github.com/explosion/spacy-models/releases/downloa
 ```
 For Dutch, replace `fr_core_news_md` with `nl_core_news_md` (both times) in the URL.
 
-Scanned PDFs need an OCR engine. Two are supported; the app uses Tesseract if it is installed, else Windows OCR
-(force one with `--ocr-engine tesseract|windows`). The header of the app shows which one is active.
+**PC without internet access to PyPI** (e.g. the production PC): download the packages on another PC with the same
+Python version, copy the `wheels` folder, then install from it:
+```bash
+python -m pip download -r requirements.txt -d wheels
+python -m pip install --no-index --find-links wheels -r requirements.txt
+```
+
+### OCR (scanned PDFs only)
+
+Two engines are supported. The app uses Tesseract if it is installed, else Windows OCR (force one with
+`--ocr-engine tesseract|windows`). The header of the app shows which one is active.
 
 **Windows OCR – no admin rights needed** (recommended on a locked-down PC). It is built into Windows 10/11; the
 `winrt-*` packages in `requirements.txt` are all it needs. It reads the OCR languages installed with Windows. Check
@@ -49,11 +65,13 @@ $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsR
 If `fr-FR` (or `nl-NL`) is missing, it has to be added in Windows language settings (usually needs admin / IT).
 
 **Tesseract – needs an installation** (admin rights on Windows), with the language packs you use (fra, nld, eng):
-* Windows: `winget install UB-Mannheim.TesseractOCR` (or the UB-Mannheim installer, tick the extra languages).
-  Note: `pip install tesseract` / `pytesseract` do **not** install the program itself. It is found automatically in
-  `C:\Program Files\Tesseract-OCR`; otherwise set the env var `TESSERACT_CMD` to the full path of `tesseract.exe`.
-  If languages are missing, set `TESSDATA_PREFIX` to the `tessdata` folder.
+* Windows: `winget install -e --id UB-Mannheim.TesseractOCR --interactive` and tick French / Dutch under *Additional
+  language data*. Note: `pip install tesseract` / `pytesseract` do **not** install the program itself. It is found in
+  `C:\Program Files\Tesseract-OCR` or `%LOCALAPPDATA%\Programs\Tesseract-OCR`; otherwise set `TESSERACT_CMD` to the
+  full path of `tesseract.exe`. If languages are missing, set `TESSDATA_PREFIX` to the `tessdata` folder.
 * macOS: `brew install tesseract tesseract-lang` · Linux: `apt install tesseract-ocr tesseract-ocr-fra tesseract-ocr-nld`
+
+Tesseract reads difficult scans a bit better (isolated letters, stamps); Windows OCR is enough for clean scans.
 
 ## Run
 
@@ -61,7 +79,9 @@ If `fr-FR` (or `nl-NL`) is missing, it has to be added in Windows language setti
 python app.py --root "C:\path\to\folder\that\contains\the\client\folders"
 # try it:   python app.py --root sample_data
 ```
-Open http://127.0.0.1:5000. Options: `--port 5000`, `--ocr-lang nld+fra+eng`, `--spacy-model nl_core_news_md` (repeatable).
+Open http://127.0.0.1:5000. Options: `--port 5000`, `--ocr-lang fra+eng` (e.g. `nld+fra+eng`),
+`--ocr-engine auto|tesseract|windows`, `--spacy-model nl_core_news_md` (repeatable).
+At start the app prints the OCR engine in use and the location of the secret key.
 
 Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder gets its own config.
 
@@ -72,66 +92,123 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
    `anon_config.yaml` is written in that folder with a **suggested replacement for each value**.
 3. Review the **Config** tab, edit, **Save** (Ctrl+S).
 4. **2 · Anonymize folder** – the same config is applied to every PDF of the folder. Each `name.pdf` produces
-   `name_anonymized.pdf` next to it (originals are never touched). Digital PDFs: the text is really removed.
-   Scans: OCR, paint over, rebuild as images.
-5. Compare **Original** and **Anonymized** side by side (zoom with −/+ or Ctrl+wheel, both scroll together; untick
-   *Sync* to get the browser's own PDF viewer back, where text can be selected). Drag the bars between the panes to resize them. The **Recap** tab lists, per file, every replaced value
-   (type, original → replacement, count, pages), the time taken, and any original value still found in the output.
-   The **Log** tab shows the run.
+   `name_anonymized.pdf` next to it (originals are never touched).
+   * Digital PDFs: the original text is really removed (redaction), the fake text is written in its place in the
+     same font, size and colour; annotations, metadata and hidden data are removed.
+   * Scans: OCR, the values are painted over with the paper colour and rewritten (same size, baseline, colour,
+     bold if the original was bold), the page is rebuilt as a new image.
+   * Photos, signatures and QR codes are covered with black boxes (see below).
+5. Compare **Original** and **Anonymized** side by side:
+   * *Sync* ticked (default): both PDFs zoom together (−/+, *Fit*, Ctrl+wheel) and scroll together; **click and
+     drag** to move around the page. Untick *Sync* to get the browser's own PDF viewer back (text can be selected).
+   * Drag the bars between the panes to resize them (double-click a bar to reset).
+6. The **Recap** tab lists, per file, every replaced value (type, original → replacement, count, pages), the black
+   boxes (■ photos, QR codes, signatures), the MRZ, the time taken, and any original value still found in the
+   output ("leftovers"). The **Log** tab shows the run (OCR engine, fonts used, bold, black boxes...).
+
+## What is detected
+
+* **Names** – after a title (M., Mme, Dr...), `Prénom NOM`, `NOM Prénom`, the spaCy model, and values under a
+  label on identity documents. Uncertain names are suggested but commented out.
+* **Bank** – IBAN (checksum), BIC, French RIB / account numbers (also after "N° de compte", "Numéro client"), bank /
+  branch codes ("Code banque / guichet"), masked card numbers (`6703 **** **** 4471`, `Carte x4412`), Belgian
+  structured payment references, SEPA creditor identifiers.
+* **Contact** – e-mail, phone (FR / BE / international), street addresses, postcode + town.
+* **Identifiers** – Belgian national number and VAT number, passport / ID card numbers, insurance policy and
+  contract numbers (after "police", "contrat", "dossier"...).
+* **Dates** – off by default, except dates of birth (next to "né le", "naissance", "Date de naissance", "geboren"...).
+  Other dates are listed commented out. Dates with `/ . -` or spaces (`14 05 1992`) are recognised.
+* **Identity documents** (passport, ID card): values written under a label (`Nom / Surname`, `Prénoms`, `Date de
+  naissance`, `Lieu de naissance`, `N° du document`, `Adresse`...) are found from their position on the page;
+  the `Sexe` field keeps the gender of the fake names.
+
+## How the suggestions work
+
+* **Consistent**: the same value gets the same fake everywhere: in every file of the folder, in every folder on
+  this PC, and at every later scan (as long as the secret key is the same, see Privacy). Names are replaced part by
+  part, so `Marchand` alone and inside `Thomas Marchand` match; accents and case do not matter (`elodie` in an e-mail
+  = `Élodie`); an initial follows its first name (`É. Vermeulen` → `S. Hendrickx`); a name slightly misread by OCR
+  (`Vermeotlen`) gets the same replacement as the correct one.
+* **Same shape**: same length where possible, first names keep their **gender**, case is kept (`MARCHAND` →
+  `BEAUMONT`, `Vermeulen` → `Hendrickx`); IBANs keep the country and get a valid checksum; phone numbers keep their
+  grouping; e-mails keep common domains; streets / towns come from lists (a French postcode gets a French town);
+  masked card numbers keep their `****`; a Belgian national number gets the fake birth date of the same person;
+  a number found inside a longer one (branch code inside an account number) reuses the matching digits.
+* **Not reversible**: the fakes are derived with a secret key, so the code alone cannot be used to work back from
+  a fake name to the real one (see Privacy).
+
+## Black boxes
+
+What cannot be replaced by fake text is covered with a black box, **and removed from the file**: on scans the page is
+rebuilt as a new image; on digital PDFs the text, the image pixels and the vector drawings under the box are deleted
+(not just hidden: removing the box in a PDF editor shows nothing). Configurable under `blackout:`:
+
+* `photos` – identity photos and the faded "ghost" copy. With `photos_only_on_id_documents: true` (default) only on
+  pages that look like an identity document (MRZ, Nom / Prénoms / Date de naissance labels, "passeport"...).
+* `signatures` – handwriting next to a label such as "Signature", "Signature du titulaire", "Date et signature",
+  "Handtekening" (a label, not a sentence containing the word). The whole signature is followed, even long strokes.
+* `qr_codes` – QR codes and other 2D barcodes (Data Matrix, 2D-Doc), on scans and digital PDFs.
+
+## Machine readable zone (MRZ)
+
+Passports and ID cards repeat the name, number and date of birth in the MRZ (`P<FRA...<<...`), which OCR reads very
+badly. It is therefore never read back but **rebuilt** in the same format as the original (passport 2×44, ID card
+3×30, 2×36 documents, old French ID card) from the fake values, with valid check digits, so it matches the rest of
+the page. What cannot be read on the page is filled with values of the right shape. `mrz: keep` leaves it untouched
+(it then shows the real data).
 
 ## The config (`anon_config.yaml`)
 
 ```yaml
+ocr_lang: "fra+eng"          # OCR languages for scans
+case_sensitive: false
+match_case: true             # keep UPPER / lower / Title case of the original
+style:
+  mode: replace              # replace = fake text | blackbox = black box over every replaced value
+  digital_fill: none         # digital PDFs: none = keep the page background | white = white rectangle behind
+blackout:
+  photos: true
+  photos_only_on_id_documents: true
+  signatures: true
+  qr_codes: true
+mrz: regenerate              # regenerate | keep
+
 replacements:
   - {find: "Thomas Marchand", replace: "Alexis Beaumont", type: PERSON}   # 20x in 3 file(s)
   - {find: "06 12 34 56 78",  replace: "06 26 43 15 49",  type: PHONE}
   # - {find: "30/09/2024", replace: "22/03/2025", type: DATE}             # commented = NOT replaced
+
+regex:                       # optional, your own patterns
+  - {pattern: '\bREF-\d{6}\b', replace: "REF-000000"}
 ```
 * A line that starts with `#` is ignored. To replace something suggested but off by default, remove the `#`.
-* To add something the detectors missed, add a line. `find` is matched ignoring case and extra spaces.
-* **Dates are off by default**, except dates that look like a birth date (next to "né le", "naissance", "geboren"…).
-* Detected organisations / places / uncertain names are listed commented out.
-* Optional `regex:` rules for your own patterns. `style.mode: blackbox` paints black boxes instead of text.
-* Identity documents (passport, ID card): values written under a label (`Nom / Surname`, `Prénoms`, `Date de
-  naissance`, `Lieu de naissance`, `N° du document`, `Adresse`) are found from their position; `Sexe` keeps the gender.
-* `blackout:` what cannot be replaced by fake text is covered with a black box (all on by default):
-  * `photos`: identity photos and the faded "ghost" copy; with `photos_only_on_id_documents: true` (default) only
-    on pages that look like an identity document (MRZ, Nom / Prénoms / Date de naissance labels, "passeport"...);
-  * `signatures`: handwriting next to a "Signature" / "Handtekening" label (a label, not a sentence);
-  * `qr_codes`: QR codes and other 2D barcodes (scans and digital PDFs).
-* `mrz: regenerate` (default) rebuilds the machine readable zone in the same format as the original (passport
-  2 x 44, ID card 3 x 30, 2 x 36, old French ID card) from the fake values, so the names and numbers match the rest of
-  the page; what cannot be read is filled with values of the right shape. `keep` leaves it (it then shows real data).
-* `style.digital_fill: none` (default) writes the new text on the page background; `white` puts a white rectangle
-  behind it (digital PDFs only; scans are always painted over with the paper colour).
-* `match_case: true` keeps UPPER / lower case of the original (`MARCHAND` → `BEAUMONT`).
-
-## How the suggestions work
-
-Deterministic (same input → same suggestion, in every file and every later scan), same length where possible,
-same format: phone numbers keep their grouping (first two digits kept), IBANs keep the country and get a valid
-checksum, e-mails keep the common domains (gmail…) and change the rest, street/city names are swapped for
-names of similar length, birth dates shift by a few days and years. Names are replaced token by token, so
-`Marchand` alone gets the same replacement as inside `Thomas Marchand`.
+* To add something the detectors missed, add a line. `find` is matched ignoring case and extra spaces; on scans,
+  common OCR confusions are tolerated too (0/O, 1/l/I, 5/S, missing accents).
+* Edit `replace` freely; delete or comment out a line to keep that value.
+* Full commented example: `docs/config.example.yaml`.
 
 ## Limits (be aware)
 
-* **A scan is only as good as its OCR.** Handwriting, stamps, signatures and blurry text are not found.
-  Always look at the anonymized scans.
-* Name detection is a heuristic (titles like `M.`, `Prénom NOM`, a first-name list, the spaCy model). That is why
-  uncertain names are commented out for you to decide. Check the config before running.
-* The "leftover" check only searches for the exact original values from the config. It cannot know about
-  personal data that was never detected.
+* **A scan is only as good as its OCR.** Handwriting, stamps and blurry text are not read, so they are not replaced
+  (signatures are blacked out only when they have a label next to them). **Always look at the anonymized files.**
+* Name detection is a heuristic. That is why uncertain names are commented out for you to decide: check the config.
+* The "leftover" check only searches for the original values of the config. It cannot know about personal data
+  that was never detected.
+* Photo, QR code and MRZ detection are image heuristics, tested on generated documents: check them on your own
+  documents. A logo shaped like a portrait could be blacked out (`photos_only_on_id_documents` limits this).
+* MRZ: exact only for the fields that could be read on the page; Windows OCR often misses isolated letters (the
+  `F` of "Sexe"), the sex is then `<`. An MRZ inside the text layer of a digital PDF is not handled.
 * A PDF is treated as *digital* or *scan* as a whole (a mixed document gets a warning).
-* Digital PDFs: the replacement keeps the size, colour and baseline of the original, and its font when possible
-  (the font embedded in the PDF if it has the needed letters, else the same font installed on this PC, else the
-  closest standard font). The Log says which was used. Scans use Arial (bold when the original
-  text is detected as bold), sized and coloured like the original.
+* Digital PDFs: the fake text uses the original font when the PDF or the PC has it, else the closest standard font
+  (the Log says which). Scans use Arial / Arial Bold. Bold is not detected on identity documents (almost all their
+  text is bold). Fake names are chosen by number of letters, so a slightly wider name may be drawn a little smaller.
+* On digital PDFs, an image only partly under a black box stays in the file, with the covered pixels overwritten.
 
 ## Privacy
 
-`anon_config.yaml` and `anon_report.json` contain the **real** values. `.gitignore` excludes them, the
-`*_anonymized.pdf` files and all other PDFs (except `sample_data/`). Keep your real PDFs outside the repository.
+* `anon_config.yaml` and `anon_report.json` contain the **real** values (original → fake). `.gitignore` excludes
+  them, the `*_anonymized.pdf` files and all PDFs outside `sample_data/`. Keep your real PDFs outside the repository.
+* Do not send real documents to an AI assistant; the fake test documents are enough for development.
 
 **Secret key.** Fake values are derived from the original with HMAC-SHA256 and a secret 256-bit key, so having
 the code is not enough to work back from "Beaumont" to the real name by trying a list of names. The key is created
@@ -142,3 +219,17 @@ at start.
 * Back it up: with the same key, the same person gets the same fake name in every folder, now and later.
   Losing it only changes future suggestions; existing `anon_config.yaml` files still work.
 * Copy it to another PC (e.g. the production PC) if fake names must match across machines.
+
+## Test documents
+
+`sample_data/` only contains **fake** documents (invented people, drawn portraits, "SPECIMEN" marks):
+
+| Folder | Content |
+|---|---|
+| `Dossier Test 0` | simple French bank statement (digital + clean scan) |
+| `Dossier Test 1` | Belgian bank statement, harder: several fonts, coloured boxes, two holders, signature, stamp (digital + tilted, yellowed scan) |
+| `Dossier Test 3` | French passport, A4 scan: photo + ghost image, signature, MRZ |
+| `Dossier Test 4` | French ID card front + back on one scan: photo + ghost, signature, address, QR code, 3-line MRZ |
+
+They are generated by `tools/make_test_statement.py`, `tools/make_test_passport.py` and `tools/make_test_idcard.py`
+(Windows fonts needed), e.g. `python tools/make_test_idcard.py "sample_data/Dossier Test 4"`.
