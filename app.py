@@ -145,9 +145,15 @@ def pdfinfo():
         return bad("forbidden", 403)
     except FileNotFoundError:
         return bad("not found", 404)
-    with fitz.open(p) as doc:
+    with doc_of(p) as doc:
         pages = [{"w": round(pg.rect.width, 2), "h": round(pg.rect.height, 2)} for pg in doc]
     return jsonify({"pages": pages})
+
+
+def doc_of(p: Path):
+    """The page geometry the anonymizer uses. An image is one page of its pixel size at 300 dpi (as in
+    engine.open_source), so that the boxes drawn on it are the boxes applied to it."""
+    return eng.open_source(p) if p.suffix.lower() in eng.IMAGE_SUFFIXES else fitz.open(p)
 
 
 MAX_PAGE_PIXELS = 24_000_000
@@ -166,7 +172,7 @@ def page_png():
         return bad("not found", 404)
     except ValueError:
         return bad("bad page or scale")
-    with fitz.open(p) as doc:
+    with doc_of(p) as doc:
         if not 1 <= n <= doc.page_count:
             return bad("page out of range", 404)
         page = doc[n - 1]

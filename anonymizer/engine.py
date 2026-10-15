@@ -1046,6 +1046,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         entry["seconds"] = round(time.time() - t0, 1)
         log(f"   done in {entry['seconds']}s")
         files.append(entry)
+    done = files                                        # the files of this run (the report may keep others)
     if only is not None:                                # one file: keep the report of the other files
         kept = []
         rep_path = folder / REPORT_NAME
@@ -1059,6 +1060,6 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
     report = {"folder": rel, "generated": dt.datetime.now().isoformat(timespec="seconds"),
               "total_seconds": round(time.time() - t_all, 1), "ocr_verify": ocr_verify, "files": files}
     (folder / REPORT_NAME).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    total = sum(f["replaced"] for f in files)
-    log(f"Finished: {total} replacement(s) in {len(files)} file(s), {report['total_seconds']}s")
+    total = sum(f["replaced"] for f in done)
+    log(f"Finished: {total} replacement(s) in {len(done)} file(s), {report['total_seconds']}s")
     return report
