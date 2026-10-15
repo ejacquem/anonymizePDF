@@ -134,19 +134,25 @@ def back(p) -> Image.Image:
     return img
 
 
-def make_scan(out: Path):
+def make_scan(out: Path, dpi: int = 200, blur: float = 0.7, noise: float = 3.5, quality: int = 78,
+              fade: float = 1.0, turn: float = 0.0):
+    """The A4 sheet as a scan. The defaults are the clean scan; `dpi`, `blur`, `noise`, `quality` (JPEG), `fade`
+    (contrast) and `turn` (degrees) make the poor copy of Dossier Test 9 (hard to read for the OCR, still legible)."""
     A4W, A4H = int(210 * MM), int(297 * MM)
     sheet = Image.new("RGB", (A4W, A4H), (255, 255, 255))
     for img, (x, y), angle in ((front(PERSON), (30, 30), 0.6), (back(PERSON), (30, 110), -0.4)):
         img = img.rotate(angle, resample=Image.BICUBIC, expand=True, fillcolor=(255, 255, 255))
         sheet.paste(img, (int(x * MM), int(y * MM)))
+    if turn:
+        sheet = sheet.rotate(turn, resample=Image.BICUBIC, expand=False, fillcolor=(255, 255, 255))
     a = np.asarray(sheet).astype(np.float32) * (np.array([251, 249, 243]) / 255.0)
     a = 15 + a * (1 - 15 / 255)
-    a = a * np.linspace(1.0, 0.965, a.shape[0])[:, None, None] + np.random.default_rng(17).normal(0, 3.5, a.shape)
-    img = Image.fromarray(a.clip(0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.7))
-    img = img.resize((int(A4W * 200 / 300), int(A4H * 200 / 300)), Image.LANCZOS)   # scanned at 200 dpi
+    a = 255 - (255 - a) * fade                                                    # faded ink
+    a = a * np.linspace(1.0, 0.965, a.shape[0])[:, None, None] + np.random.default_rng(17).normal(0, noise, a.shape)
+    img = Image.fromarray(a.clip(0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(blur))
+    img = img.resize((int(A4W * dpi / 300), int(A4H * dpi / 300)), Image.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=78)
+    img.save(buf, format="JPEG", quality=quality)
     doc = fitz.open()
     pg = doc.new_page(width=595.28, height=841.89)
     pg.insert_image(pg.rect, stream=buf.getvalue())
@@ -160,3 +166,8 @@ if __name__ == "__main__":
     make_scan(out)
     print("written:", out)
     print("MRZ:\n  " + "\n  ".join(td1(PERSON)))
+    # the poor copy (150 dpi, blurred, noisy, faded, JPEG 38, turned 1.2 degrees): Dossier Test 9
+    poor = Path("sample_data/Dossier Test 9")
+    poor.mkdir(parents=True, exist_ok=True)
+    make_scan(poor / "carte_identite_faible_qualite.pdf", dpi=150, blur=1.1, noise=7.0, quality=38, fade=0.8, turn=1.2)
+    print("written:", poor / "carte_identite_faible_qualite.pdf")

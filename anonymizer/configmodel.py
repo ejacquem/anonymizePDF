@@ -20,7 +20,7 @@ SETTINGS_DEFAULT = {
     "ocr_lang": "fra+eng", "case_sensitive": False, "match_case": True, "mode": "replace", "digital_fill": "none",
     "photos": True, "photos_only_on_id_documents": False, "signatures": True, "qr_codes": True, "mrz": "regenerate",
 }
-TYPE_ORDER = ["PERSON", "IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "CARD_NUMBER", "BE_NATIONAL_NUMBER", "BE_VAT",
+TYPE_ORDER = ["PERSON", "IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "CARD_NUMBER", "BE_NATIONAL_NUMBER", "BE_VAT", "VAT_NUMBER",
               "BE_STRUCTURED_COMM", "SEPA_CREDITOR_ID", "STREET_ADDRESS", "POSTAL_CITY", "BIRTH_PLACE", "ACCOUNT_NUMBER",
               "BANK_CODE", "DOC_NUMBER", "CONTRACT_REF", "DATE", "TERM", "ORG", "LOCATION"]
 _ENTRY = re.compile(r"^\s*(?P<c>#\s*)?-\s*(?P<map>\{.*\})(?:\s*#\s?(?P<info>.*))?\s*$")

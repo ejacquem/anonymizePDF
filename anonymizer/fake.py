@@ -170,6 +170,7 @@ class Faker:
         self._key = key
         self._variant = 0          # bumped by suggest() on a collision, to get another deterministic value
         self.used: set[str] = set()
+        self.reserved_digits: set[str] = set()     # groups of 4+ digits of the original values (see suggest)
         # name parts already replaced: (kind, key) -> replacement. Keeps 'Élodie' / 'elodie' / 'É.' and
         # an OCR misreading like 'Vermeotlen' consistent with what 'Vermeulen' became.
         self.names: dict[tuple[str, str], str] = {}
@@ -258,6 +259,7 @@ class Faker:
             for w in re.split(r"[\s,;.\-]+", v):
                 if len(w) >= 2:
                     self.reserved.add(_pkey(w))
+            self.reserved_digits.update(re.findall(r"\d{4,}", v))
 
     def name_token(self, token: str, kind: str, avoid: set[str] | None = None, gender: str | None = None) -> str:
         """kind = 'first' | 'last'. Deterministic per token (and gender), so 'Marchand' alone and inside
@@ -582,7 +584,8 @@ class Faker:
             for variant in range(6):
                 self._variant = variant      # collision: next attempt uses another deterministic variant
                 new = self._suggest_once(typ, value)
-                if _pkey(new) != _pkey(value) and _norm(new) not in self.used:
+                if (_pkey(new) != _pkey(value) and _norm(new) not in self.used
+                        and not any(g in re.sub(r"\D", "", new) for g in self.reserved_digits)):   # no original digits
                     break
         finally:
             self._variant = 0
@@ -614,7 +617,7 @@ class Faker:
             return self.be_national_number(value)
         if typ == "BE_STRUCTURED_COMM":
             return self.numeric_id(value)
-        if typ == "BE_VAT":
+        if typ in ("BE_VAT", "VAT_NUMBER"):              # 'CHE-123.456.789': country letters and separators kept
             return self.numeric_id(value, keep_country=True)
         if typ == "DATE":
             return self.date(value)

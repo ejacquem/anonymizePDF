@@ -18,6 +18,7 @@ digits, but nothing from the original that was not replaced.
 """
 from __future__ import annotations
 
+import difflib
 import random
 import re
 import unicodedata
@@ -46,9 +47,55 @@ MULTILINE = {"address"}                  # kinds whose value can take several li
 _LABEL_ONLY = [(k, re.compile(rf"^{rx}{_SEP}$", re.I)) for k, rx in LABELS]
 _LABEL_INLINE = [(k, re.compile(rf"^{rx}\s*:\s*(?P<v>\S.*)$", re.I)) for k, rx in LABELS]
 ID_KINDS = {"surname", "given", "birth_date", "birth_place", "doc_number", "sex", "expiry"}
-_ID_WORDS = re.compile(r"(?i)\b(passeport|passport|carte\s+nationale\s+d.identit|identity\s+card|"
+_ID_WORDS = re.compile(r"(?i)\b(passeport|passport|carte\s+nationale(?:\s+d.identit\S*)?|identity\s+card|"
                        r"identiteitskaart|personalausweis|titre\s+de\s+s[ée]jour|residence\s+permit|"
                        r"permis\s+de\s+conduire|driving\s+licen[cs]e|rijbewijs)")
+
+
+# words of an identity document that are not personal data: its boilerplate, its labels, the countries
+_ID_BOILERPLATE = {
+    "republique", "francaise", "carte", "nationale", "identite", "identity", "card", "specimen", "nom", "surname",
+    "prenoms", "prenom", "given", "names", "name", "sexe", "sex", "nationalite", "nationality", "naissance", "naiss",
+    "birth", "lieu", "place", "document", "expir", "expiry", "expiration", "delivrance", "issue", "adresse",
+    "address", "taille", "height", "signature", "passeport", "passport", "fra", "france", "belgique", "belgie",
+    "nederland", "des", "les", "and", "the", "of", "rue", "avenue", "boulevard", "chemin", "allee", "bis", "ter",
+    "date", "code", "type", "country", "pays", "colour", "couleur", "authority", "autorite", "observations", "none",
+    "holder", "holders", "personal", "number", "numero", "no", "nr", "height", "nationality", "birthplace", "valid",
+    "valable", "until", "born", "geboren", "nummer", "nationaliteit", "geslacht", "lengte", "plaats", "afgifte",
+    "vervaldatum", "land", "uitgegeven", "prefecture", "given", "titulaire", "wijze", "nom", "prenom", "sexe",
+    "mention", "mentions", "observation", "photo", "personne", "person", "eyes", "yeux", "yeux", "hair", "cheveux",
+}
+
+
+def _ascii_key(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", text.casefold()) if not unicodedata.combining(c))
+
+
+def is_boilerplate(text: str) -> bool:
+    """A word of the identity document's printed text, also when the OCR garbled it ('Sumame' for 'Surname',
+    'Sianature' for 'Signature'): a close match of a long enough word."""
+    key = _ascii_key(text)
+    if key in _ID_BOILERPLATE:
+        return True
+    return len(key) >= 5 and bool(difflib.get_close_matches(key, _ID_BOILERPLATE, n=1, cutoff=0.75))
+
+
+def identity_shape(words: list[dict]) -> list[tuple[str, str]]:
+    """Identity values of an identity document found by their shape, for a poor copy whose labels are not read:
+    the document number (9 characters, letters and digits: 'X4RTBPFW4') and the capitalised words that are not
+    boilerplate (surname, given names, place of birth: 'MARTINEAU', 'Julie', 'RENNES'). Used on identity documents
+    only (see is_id_document); a value found this way is active without a label."""
+    if len(find_labeled(words)) >= 3:       # the labels are read: their values are found under them (find_labeled)
+        return []
+    out = []
+    for w in words:
+        t = w["text"].strip(" ,.;:'’\"()")
+        if re.fullmatch(r"(?=.*\d)(?=.*[A-Z])[A-Z0-9]{9}", t):
+            out.append(("DOC_NUMBER", t))
+        elif (re.fullmatch(r"[A-ZÀ-Þ][A-ZÀ-Þ'’\-]{2,}|[A-ZÀ-Þ][a-zà-ÿ'’\-]{2,}", t)     # CAPS or Capitalised only
+              and not is_boilerplate(t)):                                                  # ('OilDENT' is OCR noise)
+            out.append(("PERSON", t))
+    return out
 
 
 def lines_of(words: list[dict]) -> list[dict]:
@@ -321,6 +368,16 @@ def build_td3(f: dict):
 _CHEVRONS = re.compile(r"[<«‹]")
 
 
+def ink_threshold(gray) -> int:
+    """Ink level of this page: halfway between the paper and the darkest ink. A faded or blurred copy has grey ink,
+    which the fixed 140 misses (the MRZ lines of a poor copy lost characters: 16 of 22 read)."""
+    import numpy as np
+
+    paper = float(np.percentile(gray, 60))
+    darkest = float(np.percentile(gray, 0.5))
+    return int(min(170, max(130, paper - 0.5 * (paper - darkest))))
+
+
 def _bands(dark_rows, start, stop, min_h):
     """Ink bands (text lines) in a row profile between start and stop."""
     out, y = [], start
@@ -342,6 +399,7 @@ def find_mrz(words: list[dict], gray) -> dict | None:
     import numpy as np
 
     best = None
+    thr = ink_threshold(gray)
     for ln in lines_of(words):
         compact = re.sub(r"\s", "", ln["text"])
         chevrons = len(_CHEVRONS.findall(compact))
@@ -366,7 +424,7 @@ def find_mrz(words: list[dict], gray) -> dict | None:
     else:
         cx0, cx1 = max(x0 - 3 * h, 0), min(x1 + 30 * h, W)
     # horizontal range to look at: from a little left of the OCR line to far right (MRZ lines are long)
-    dark = (gray[:, cx0:cx1] < 140).mean(axis=1) > 0.02
+    dark = (gray[:, cx0:cx1] < thr).mean(axis=1) > 0.02
     # other MRZ lines above / below: a band of the same height, within 2.5 line heights, that also looks
     # like MRZ (many evenly spaced characters); a band is followed to its end even past the search window
     lines = [(y0, y1)]
@@ -393,14 +451,14 @@ def find_mrz(words: list[dict], gray) -> dict | None:
                 while y_start > 0 and dark[y_start - 1]:
                     y_start -= 1
                 band = (y_start, end)
-            if abs((band[1] - band[0]) - h) > 0.35 * h or not _mrz_like(gray, band, cx0, cx1):
+            if abs((band[1] - band[0]) - h) > 0.35 * h or not _mrz_like(gray, band, cx0, cx1, thr):
                 break
             lines.append(band)
             edge = band[1] if direction == 1 else band[0]
     lines.sort()
     # horizontal extent of the ink in the first band, and the number of characters (ink column runs)
     by0, by1 = lines[0]
-    cols = (gray[by0:by1, cx0:cx1] < 140).any(axis=0)
+    cols = (gray[by0:by1, cx0:cx1] < thr).any(axis=0)
     xs = np.nonzero(cols)[0]
     start = xs[xs >= (x0 - cx0) - 2 * h].min() if len(xs[xs >= (x0 - cx0) - 2 * h]) else 0
     end, gap = start, 0
@@ -457,9 +515,10 @@ def _regular_run(cols):
     return best_run + 1, int(starts[best_end - best_run]), int(starts[best_end] + pitch), pitch
 
 
-def _mrz_like(gray, band, x0, x1) -> bool:
-    cols = (gray[band[0]:band[1], x0:x1] < 140).any(axis=0)
-    return _regular_run(cols)[0] >= 18
+def _mrz_like(gray, band, x0, x1, thr: int = 140) -> bool:
+    # 14 evenly spaced characters: a faded first line keeps fewer (the band must also match the lines it joins)
+    cols = (gray[band[0]:band[1], x0:x1] < thr).any(axis=0)
+    return _regular_run(cols)[0] >= 14
 
 
 def _mrz_by_image(words: list[dict], gray):
@@ -468,7 +527,7 @@ def _mrz_by_image(words: list[dict], gray):
     import numpy as np
 
     H, W = gray.shape
-    ink = gray < 140
+    ink = gray < ink_threshold(gray)
     for w in words:                                       # what OCR did read is not the MRZ
         x0, y0, x1, y1 = (int(v) for v in w["box"])
         ink[max(y0 - 3, 0):y1 + 3, max(x0 - 3, 0):x1 + 3] = False
@@ -486,7 +545,7 @@ def _mrz_by_image(words: list[dict], gray):
             last = group[-1]
             h = last["y"][1] - last["y"][0]
             if (c["y"][0] - last["y"][1] < 2.5 * h and abs((c["y"][1] - c["y"][0]) - h) < 0.4 * h
-                    and abs(c["x"][0] - last["x"][0]) < 2 * last["pitch"]
+                    and abs(c["x"][0] - last["x"][0]) < 3 * last["pitch"]     # a faded line starts later
                     and abs(c["pitch"] - last["pitch"]) < 0.15 * last["pitch"]):
                 group.append(c)
         if len(group) >= 2:

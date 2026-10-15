@@ -9,6 +9,7 @@ Engine used by the web app (and usable from Python directly).
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import io
 import json
 import re
@@ -24,8 +25,8 @@ from PIL import ImageDraw
 from . import configmodel, faces, fields, ocr, regions, render
 from .fake import Faker, match_case
 from .ocr import ocr_words, render_page
-from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz,
-                  invisible_areas, plan_page, term_regex, visible_words, words_to_text, norm_value)
+from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, detect_structured, digital_words,
+                  fitz, invisible_areas, plan_page, term_regex, visible_words, words_to_text, norm_value)
 
 CONFIG_NAME = "anon_config.yaml"
 REPORT_NAME = "anon_report.json"
@@ -36,7 +37,7 @@ SUFFIX = "_anonymized"
 # ---------------------------------------------------------------------------
 
 ACTIVE_TYPES = ["IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "BE_NATIONAL_NUMBER", "BE_VAT",
-                "BE_STRUCTURED_COMM", "STREET_ADDRESS", "POSTAL_CITY", "ACCOUNT_NUMBER", "BANK_CODE",
+                "BE_STRUCTURED_COMM", "VAT_NUMBER", "STREET_ADDRESS", "POSTAL_CITY", "ACCOUNT_NUMBER", "BANK_CODE",
                 "CARD_NUMBER", "SEPA_CREDITOR_ID", "CONTRACT_REF", "DOC_NUMBER", "BIRTH_PLACE"]
 # their digit groups are also replaced alone (>= 5 digits; >= 4 for the visible ends of a masked card number,
 # which OCR may read without the stars: "6703 **** 4471" or "Carte 6703")
@@ -48,6 +49,7 @@ banque agence compte relevé releve total solde carte date libellé libelle dét
 votre vos titulaire numéro numero téléphone telephone période periode synthèse synthese informations ancien nouveau
 virement prélèvement prelevement retrait chèque cheque paiement facture contrat client clients conseiller conseillère
 conseillere service services monsieur madame mademoiselle bank account statement balance dear mister miss
+code swift bic iban tva btw vat
 rekening saldo datum klant overschrijving factuur mevrouw heer
 signature handtekening unterschrift nom surname prénom prénoms prenom prenoms given names name sexe sex
 nationalité nationalite nationality naissance birth lieu place document expiry expiration délivrance delivrance
@@ -124,6 +126,8 @@ def _add_labeled(found: dict, words: list[dict], ocr_page: bool, file: str, pno:
                 and f["value"].strip()[:1].upper() in "MF"), None)
     for f in labeled:
         value = " ".join(f["value"].split()).strip(" :")
+        if f["kind"] in ("surname", "given") and fields.is_boilerplate(value):
+            continue                                  # the label itself, read as a value ('Sumame' for 'Surname')
         if f["kind"] == "address":
             # same types as the address detectors, so both find the same entry (and the same fake)
             typ = "POSTAL_CITY" if re.match(r"(?:[A-Z]{1,2}-)?\d{4,5}\s+\S", value) else "STREET_ADDRESS"
@@ -264,6 +268,7 @@ def pii_cfg(cfg: dict) -> dict:
 def _detect_words(found: dict, words: list[dict], ocr_page: bool, ner, file: str, pno: int):
     """Detections of one set of words (a page's text layer, its OCR, or the OCR of its images) into `found`."""
     text, _ = words_to_text(words)
+    id_page = fields.is_id_document(words)
     if ocr_page:
         text = ocr.fix_digits(text)           # '04 72 OO 11 22' -> '04 72 00 11 22' (same length)
     for m in detect_all(text, ner):
@@ -286,7 +291,17 @@ def _detect_words(found: dict, words: list[dict], ocr_page: bool, ner, file: str
             e["title"] = t.group(1) if t else ""
         if m.type == "DATE":
             ctx = text[max(0, m.start - 35):m.end + 8]
-            e["birth"] = e["birth"] or bool(_BIRTH_RX.search(ctx))
+            e["birth"] = e["birth"] or id_page or bool(_BIRTH_RX.search(ctx))   # every date of an ID is personal
+    if id_page:
+        # a poor copy: the labels are not read, the values are found by their shape (see fields.identity_shape)
+        for typ, value in fields.identity_shape(words):
+            key = (typ, norm_value(value))
+            e = found.setdefault(key, {"type": typ, "value": value, "count": 0, "files": set(), "pages": set(),
+                                       "birth": False, "ner": False, "honorific": False, "title": ""})
+            e["count"] += 1
+            e["files"].add(file)
+            e["pages"].add(pno)
+            e["labeled"] = True
     _add_labeled(found, words, ocr_page, file, pno)
 
 
@@ -932,6 +947,65 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     return img
 
 
+def _ocr_fold(text: str) -> str:
+    """Letters and digits as an OCR reads them: 0 / 1 / 5 / 8 / 2 come back as O / I / S / B / Z, so a fake number
+    read back with those errors is folded to the same text."""
+    return re.sub(r"[^A-Z0-9]", "", text.upper()).translate(str.maketrans("OILSBZ", "011582"))
+
+
+# the identity fields of an ID document (label kind -> type) that the second check reads back
+_LEAK_LABELS = {"surname": "PERSON", "given": "PERSON", "doc_number": "DOC_NUMBER", "birth_place": "BIRTH_PLACE",
+                "birth_date": "DATE"}
+# the types the second check reports when they are still in the output (not one of the replacements)
+LEAK_TYPES = {"IBAN", "EMAIL", "PHONE", "CREDIT_CARD", "CARD_NUMBER", "BE_NATIONAL_NUMBER", "BE_VAT", "VAT_NUMBER",
+              "SEPA_CREDITOR_ID", "ACCOUNT_NUMBER", "CONTRACT_REF", "BANK_CODE", "STREET_ADDRESS", "POSTAL_CITY"}
+
+
+def leak_suspects(path: Path, cfg: dict, ocr_lang: str, use_ocr: bool) -> list[dict]:
+    """Second check of an anonymized file. The detectors are run again on what the file still says (its text layer,
+    and its OCR when `use_ocr`), and every value they find that is not one of the replacements is reported. This
+    finds what the first pass did not know: verify_output only searches the values it detected. The file itself is
+    not changed. On identity documents the dates, and the values found by their shape, are checked too."""
+    replacements = {norm_value(v) for v in cfg["terms"].values() if v}
+    replacements_folded = [(r, _ocr_fold(r)) for r in replacements]
+    # the fake values as written (longest first): taken out of the text before the detectors run, so that a fake
+    # street and the fake town written on the same line are not read as one address
+    fakes = sorted({" ".join(v.split()) for v in cfg["terms"].values() if v and len(v.strip()) >= 3},
+                   key=len, reverse=True)
+    doc = fitz.open(path)
+    out: list[dict] = []
+    for pno, page in enumerate(doc, start=1):
+        if use_ocr and ocr.available():
+            words = ocr_words(render_page(page, 300), ocr_lang)
+        else:
+            words = digital_words(page)
+        text, _ = words_to_text(words)
+        for fake in fakes:
+            text = re.sub(re.escape(fake), " ", text, flags=re.IGNORECASE)
+        id_page = fields.is_id_document(words)
+        found = [(m.type, m.value) for m in detect_structured(text)
+                 if m.type in LEAK_TYPES or (m.type == "DATE" and id_page)
+                 or (m.type == "PERSON" and m.rank == PERSON_RANKS[0])]
+        if id_page:
+            found += fields.identity_shape(words)
+            # the values under their labels: a surname or a number left there is a leak too
+            found += [(_LEAK_LABELS[f["kind"]], f["value"]) for f in fields.find_labeled(words)
+                      if f["kind"] in _LEAK_LABELS
+                      and not (f["kind"] in ("surname", "given") and fields.is_boilerplate(f["value"]))]
+        seen: set[str] = set()
+        for typ, value in found:
+            value = " ".join(value.split())
+            key = norm_value(value)
+            # a replacement read back by the OCR with a few errors ('Irnier' for a fake name) is a replacement too
+            if len(key) < 3 or key in seen or any(key in r or difflib.SequenceMatcher(None, _ocr_fold(key), rf).ratio() >= 0.8
+                                                  for r, rf in replacements_folded):
+                continue
+            seen.add(key)
+            out.append({"page": pno, "type": typ, "value": value})
+    doc.close()
+    return out
+
+
 def verify_output(path: Path, cfg: dict, ocr_lang: str, use_ocr: bool) -> list[dict]:
     """Search the anonymized file for any original value that survived."""
     rxs = [(f, term_regex(f, cfg["case_sensitive"])) for f in cfg["terms"] if len(f) >= 3]
@@ -1102,6 +1176,12 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 entry["leftovers"] = verify_output(out, cfg, ocr_lang, use_ocr=True)
             if entry["leftovers"]:
                 log(f"   WARNING: {len(entry['leftovers'])} original value(s) still found in the output")
+            entry["suspects"] = leak_suspects(out, cfg, ocr_lang, use_ocr=(mode != "digital" or ocr_verify))
+            if entry["suspects"]:
+                shown = ", ".join(f"{s['type']} '{s['value']}' p.{s['page']}" for s in entry["suspects"][:8])
+                entry["warnings"].append(f"{len(entry['suspects'])} value(s) still readable in the output, not replaced: "
+                                         f"{shown}")
+                log(f"   WARNING: {len(entry['suspects'])} value(s) still readable in the output: {shown}")
         except Exception as e:  # noqa: BLE001
             entry["error"] = str(e)
             log(f"   ERROR: {e}")

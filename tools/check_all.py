@@ -41,13 +41,25 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from anonymizer import configmodel, engine, fields, ocr, secret  # noqa: E402
+from anonymizer import configmodel, engine, fields, ocr, pii, secret  # noqa: E402
 from anonymizer.fake import FEMALE_NAMES, LAST_NAMES, MALE_NAMES, Faker, _pkey  # noqa: E402
 from anonymizer.pii import digital_words, fitz, load_ner, words_to_text  # noqa: E402
 
 STATEMENT_0 = ["Thomas", "MARCHAND", "Isabelle", "ROUX", "Julien", "Sophie", "DUBOIS", "17/09/1988", "0048213976",
                "06 12 34 56 78", "04 72 00 11 22", "thomas.marchand", "FR76 3000 2058 7100", "BEXMFRPP", "05871",
                "00001234567", "30002", "14 rue des Lilas", "45 cours Lafayette", "69003", "x4412"]
+
+# values of the poor ID card copy (Dossier Test 9): the labels are not read, the values are found by their shape
+SENSITIVE_9 = ["MARTINEAU", "Julie", "Anne", "X4RTBPFW4", "03 11 1987", "11 06 2033", "12 06 2023", "RENNES",
+               "TILLEULS", "35000"]
+# values of the invoice (Dossier Test 8)
+SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 3000 6000 0112 3456 7890 189",
+               "BNPAFRPP", "GEBABEBB", "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
+               "CHE-123.456.789", "Route de Florissant 14", "CH-1206", "86'123'456'789'012"]
+# values that must stay readable in a digital output (no over-redaction): folder -> {file: [values]}
+KEEP = {
+    "Dossier Test 8": {"facture_suisse_fr.pdf": ["MONSIEUR", "Banque Exemple", "Lumen Services SA"]},
+}
 
 # folder -> (sensitive values, {file: (mode, black box kinds, MRZ formats)})
 EXPECT = {
@@ -83,6 +95,17 @@ EXPECT = {
         "visages_scan.pdf": ("scan", ["photo"] * 6, []),
         "photo_table.jpg": ("scan", ["photo"], []),
         "sans_visage.pdf": ("digital", [], []),
+    }),
+    # a poor copy of an ID card (150 dpi, faded, blurred, turned 1.2 degrees; still legible). Known misses on this copy:
+    # the ghost portrait and the signature (their labels are not read either): not expected here
+    "Dossier Test 9": (SENSITIVE_9, {
+        "carte_identite_faible_qualite.pdf": ("scan", ["photo", "qr code"], ["TD1"]),
+    }),
+    # cases reported on real files: 'MONSIEUR' is no BIC, capitalised cities after a postcode, Swiss VAT numbers,
+    # apostrophe-grouped references; the same invoice as a digital PDF and as a scan
+    "Dossier Test 8": (SENSITIVE_8, {
+        "facture_suisse_fr.pdf": ("digital", [], []),
+        "facture_suisse_fr_scan.pdf": ("scan", [], []),
     }),
     "Dossier Test 5": (STATEMENT_0, {
         "contrat_image_collee.pdf": ("mixed", [], []),
@@ -146,6 +169,8 @@ def check_output(src: Path, out: Path, f: dict, secrets: list[str], cfg_text: st
         leaks = [s for s in secrets if found_in(s, text)]
         check(f"{name}: nothing {where}", not leaks, str(leaks))
     check(f"{name}: report leftovers empty", not f["leftovers"], str(f["leftovers"]))
+    # second check: the detectors run again on the output; what they still find (not a replacement) is reported
+    check(f"{name}: second check finds nothing readable", not f.get("suspects"), str(f.get("suspects", []))[:300])
     # black boxes
     got = sorted(b["kind"] for b in f.get("blackouts", []))
     check(f"{name}: black boxes {sorted(kinds) or 'none'}", got == sorted(kinds), f"got {got}")
@@ -286,6 +311,12 @@ def full_run(folders, work_root: Path, ner):
                 print(f"  (no expectation for {f['file']}, leak checks only)")
                 exp = (f["mode"], [b["kind"] for b in f.get("blackouts", [])], [m.get("format") for m in f.get("mrz", [])])
             check_output(work_root / folder / f["file"], work_root / folder / f["output"], f, secrets, cfg, exp)
+            keep = KEEP.get(folder, {}).get(f["file"], [])
+            if keep:                                       # digital output: the text layer is read
+                out_doc = engine.open_source(work_root / folder / f["output"])
+                readable = " ".join(words_to_text(digital_words(pg))[0] for pg in out_doc)
+                for value in keep:
+                    check(f"{f['file']}: '{value}' kept, not over-redacted", found_in(value, readable))
             truth_file = ROOT / "sample_data" / folder / "faces_truth.json"
             if truth_file.exists():
                 check_faces(folder, f, json.loads(truth_file.read_text(encoding="utf-8")).get(f["file"], []))
@@ -338,6 +369,36 @@ def option_tests(work_root: Path, ner):
         x0, y0, x1, y1 = [int(round(v * 300 / 72)) for v in b["box"]]
         black = float((pages[p][y0:y1, x0:x1] < 20).mean())
         check(f"visages_scan.pdf: removed photo p{p} is not blacked out", black < 0.5, f"{black:.0%} black in its box")
+
+
+def detector_tests():
+    """The detectors on the strings the real files showed (fast, no OCR, no file)."""
+    print("\n== detectors")
+
+    def found(text):
+        return [(m.type, m.value) for m in pii.detect_structured(text)]
+
+    check("'MONSIEUR' is no BIC", not any(t == "BIC" for t, _ in found("MONSIEUR")))
+    check("'MONSIEUR JEAN DUPONT' gives no BIC", not any(t == "BIC" for t, _ in found("MONSIEUR JEAN DUPONT")))
+    check("BIC after its label", ("BIC", "GEBABEBB") in found("BIC : GEBABEBB"))
+    check("BIC just after an IBAN", ("BIC", "BNPAFRPP") in found("IBAN FR76 3000 6000 0112 3456 7890 189  BIC BNPAFRPP"))
+    check("postcode and capitalised city", ("POSTAL_CITY", "75017 PARIS") in found("Rue des Lilas 12, 75017 PARIS"))
+    check("postcode and city with its country prefix", any(t == "POSTAL_CITY" and v.startswith("CH-1206")
+                                                          for t, v in found("Route de Florissant, CH-1206 Genève")))
+    check("Swiss VAT number (CHE-123.456.789 TVA)", ("VAT_NUMBER", "CHE-123.456.789") in found("CHE-123.456.789 TVA"))
+    check("masked Swiss VAT number", any(t == "VAT_NUMBER" for t, _ in found("CHE-***.***.*** TVA")))
+    check("VAT number after its label", any(t == "VAT_NUMBER" for t, _ in found("N° TVA BE 0403.199.700")))
+    check("apostrophe-grouped reference", ("ACCOUNT_NUMBER", "86'123'456'789'012") in found("Réf 86'123'456'789'012"))
+    check("masked apostrophe-grouped reference", any(t == "ACCOUNT_NUMBER" for t, _ in found("86'***'***'***'***")))
+    check("an amount with apostrophes is no reference", not any(t == "ACCOUNT_NUMBER" for t, _ in found("Total 1'240.00 CHF")))
+    check("'Code SWIFT' is not accepted as a name", not engine.accept_person("Code SWIFT", False, False))
+    # words as OCR gives them: one line each, with a box (fields.lines_of needs both)
+    texts = ["MARTINEAU", "Julie,", "SPECIMEN", "RÉPUBLIQUE", "X4RTBPFW4", "RENNES", "FRA", "1,64"]
+    shape = fields.identity_shape([{"text": t, "box": (10, 30 * i, 10 + 8 * len(t), 30 * i + 20), "line": ("t", i),
+                                    "conf": 100.0} for i, t in enumerate(texts)])
+    check("identity by shape: surname, given name and document number", ("PERSON", "MARTINEAU") in shape
+          and ("PERSON", "Julie") in shape and ("DOC_NUMBER", "X4RTBPFW4") in shape)
+    check("identity by shape: no boilerplate", not any(v in ("SPECIMEN", "RÉPUBLIQUE", "FRA") for _, v in shape))
 
 
 def key_and_fake_tests(tmp: Path):
@@ -395,6 +456,7 @@ def main():
     ner = load_ner(quiet=True)
     t0 = time.time()
     try:
+        detector_tests()
         key_and_fake_tests(tmp)
         for k in range(1 if args.quick else args.keys):
             print(f"\n######## random key {k + 1}")

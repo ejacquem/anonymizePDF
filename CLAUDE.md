@@ -61,10 +61,15 @@ sample_data/Dossier Test 5/   mixed PDFs built from Test 0: searchable scan (ima
                               statement with a scanned page 3, contract with a pasted image of bank details (pixels only)
 sample_data/Dossier Test 6/   faces: digital page (2 portraits), scan (3 portraits + ID card + a sideways page),
                               photo of a card on a table (rotated), a page without any face; faces_truth.json
+sample_data/Dossier Test 8/   invoice (digital + scan): 'MONSIEUR' heading (no BIC), '75017 PARIS', 'CH-1206 Genève',
+                              'CHE-123.456.789 TVA', 'N° TVA BE ...', a reference '86'123'456'789'012', BIC after an IBAN
+sample_data/Dossier Test 9/   ID card, poor copy (150 dpi, faded, blurred, noisy, JPEG 38, turned 1.2 degrees): labels
+                              not read, values found by shape; TD1 MRZ; known misses: ghost portrait, signature
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
                        make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
-                       Wikimedia Commons + reference face boxes faces.json); check_all.py (test suite, section 12)
+                       Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 8);
+                       make_test_idcard.py also writes the poor copy (Dossier Test 9); check_all.py (section 12)
 ```
 (There is no "Dossier Test 2".) The original numbered CLI scripts were removed long ago.
 
@@ -154,6 +159,13 @@ API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api
      tolerant regex whenever the file is not purely digital, or when "OCR check" is ticked). If a scanned file has
      leftovers, `run_anonymize` runs a second pass on its output: text only (photos / codes / signatures are off in
      that pass, so a box the user removed is not blacked out again, and the report keeps the first pass's boxes).
+   - Second check (`leak_suspects`): the detectors run again on what the output still says (text layer, or its OCR),
+     with the fake values taken out of the text first (a fake street and the fake town on one line are not an
+     address). Every value found that is not a replacement is listed in the report (`suspects`) and as a warning
+     in the Recap. It catches what the config never knew (verify_output only searches the detected values). Types:
+     `LEAK_TYPES`, dates and identity values on ID pages, honorific names. A value close to a replacement (ratio ≥ 0.8
+     after OCR digit folding, `_ocr_fold`) is a replacement read back by the OCR, not a leak. Test: `check_all`
+     reports the second check of every output (`suspects`).
    - Report `anon_report.json` per file: mode, pages, replaced, seconds, items, leftovers, warnings,
      `blackouts: [{page, kind, box (PDF points)}]`, `mrz: [{page, action, format, lines}]`. Each item (one per
      original value) has `boxes: [{page, box (PDF points)}]` = where the value was: scan, digital and pixel-pass
@@ -187,9 +199,13 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 
 ## 7. Detection (`pii.py`, `fields.py`)
 
-- Types: IBAN (mod-97), BIC, EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), CARD_NUMBER (masked `6703 **** **** 4471`,
-  `Carte x4412`), BE_NATIONAL_NUMBER, BE_VAT, BE_STRUCTURED_COMM, SEPA_CREDITOR_ID (checksum, or after a label),
-  STREET_ADDRESS, POSTAL_CITY, ACCOUNT_NUMBER (after "N° de compte" / "Numéro client", French RIB, long digit runs),
+- Types: IBAN (mod-97), BIC (after its label, or just after an IBAN: a bare word such as 'MONSIEUR' is no BIC),
+  EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), CARD_NUMBER (masked `6703 **** **** 4471`,
+  `Carte x4412`), BE_NATIONAL_NUMBER, BE_VAT, VAT_NUMBER (Swiss `CHE-123.456.789`, masks kept, or after a TVA / BTW /
+  VAT / MWST label, 8+ digits), BE_STRUCTURED_COMM, SEPA_CREDITOR_ID (checksum, or after a label),
+  STREET_ADDRESS, POSTAL_CITY (postcode + city in Title case or CAPITALS, prefixes B-, F-, CH-, L-, NL-, D-, I-, A-),
+  ACCOUNT_NUMBER (after "N° de compte" / "Numéro client", French RIB, long digit runs, apostrophe-grouped digits
+  `86'123'456'789'012` with masks, at least 3 groups so amounts `1'240.00` are not caught),
   BANK_CODE ("Code banque / guichet", "Clé RIB"), CONTRACT_REF ("police", "contrat", "dossier"), DOC_NUMBER,
   BIRTH_PLACE, DATE (`/ . -` or spaces `14 05 1992`), PERSON, NER ORG / LOCATION (always commented out).
 - Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid. A real
@@ -200,6 +216,13 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - PERSON: after a title, `Prénom NOM`, `NOM Prénom`, spaCy PERSON; active only if after a title, contains a known
   first name, spaCy Title Case, or found under a label. `_STOP` words (including label words such as signature, nom,
   nationalité, adresse) are never names.
+- Identity by shape (`fields.identity_shape`, identity documents only, see `is_id_document`): when the labels are not
+  read (poor copy), the 9-character document number (letters and digits) and the words that are CAPS or Capitalised and
+  not boilerplate (`_ID_BOILERPLATE`, fuzzy: `is_boilerplate`, so 'Sumame' is 'Surname') are PERSON / DOC_NUMBER,
+  active without a label. Only used when fewer than 3 labelled fields are read (otherwise the labels are read, and
+  the shape finds the label words: 'Date', 'Code', 'Country' replaced as names). Labelled values that are a label
+  word ('Sumame' read as the surname) are dropped in `_add_labeled`. Every date of an identity
+  document is a birth / identity date (replaced). Also used by the second check.
 - Identity fields (`fields.find_labeled`): label lines (FR/EN/NL; OCR reads `/` as `I`, `°` as `'`) and the value
   line right below (left-aligned, within ~2 line heights) or after `:`. Kinds: surname, given, birth_date,
   birth_place, doc_number, sex, expiry, issue, country, address (several tight lines). `is_id_document`: MRZ found,
@@ -219,7 +242,8 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   e-mail keeps common domains; streets from lists (article + noun replaced together, people-like names for long
   ones), towns matching the postcode's country; dates shift (same fake whatever the separator); BE national number
   uses the fake birth date of the same person + valid check digits; SEPA creditor id valid; doc numbers keep their
-  letter / digit pattern; masks (`****`, `x`) kept.
+  letter / digit pattern; masks (`****`, `x`) kept. A fake never contains a group of 4+ digits of an original value
+  (`Faker.reserved_digits`, filled by `reserve`): a fake card or account number holding '4471' would look like a leak.
 - `match_case` (engine) applies UPPER / lower / Title case of the matched text.
 
 ## 9. OCR (`ocr.py`)
@@ -250,8 +274,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 ## 11. Identity documents: MRZ, photos, QR codes, signatures
 
 - **MRZ** is never read back and never blacked out: always rebuilt in the same format (`mrz: keep` to leave it).
-  `find_mrz`: a line with ≥ 4 chevrons from OCR, else `_mrz_by_image` (2–3 unread bands, same height / start / pitch,
-  ≥ 19 evenly spaced characters). Other lines above / below must look like MRZ too (`_mrz_like`). Format: 3 lines →
+  `find_mrz`: a line with ≥ 4 chevrons from OCR, else `_mrz_by_image` (2–3 unread bands, same height, start within 3
+  characters, same pitch, ≥ 19 evenly spaced characters). The ink level is per page (`ink_threshold`: halfway between
+  paper and darkest ink, 130–170: a faded copy has grey ink; the fixed 140 lost characters). Other lines above / below
+  must look like MRZ too (`_mrz_like`, ≥ 14 evenly spaced characters). Format: 3 lines →
   TD1 (3×30); `P` or > 40 chars → TD3 (2×44); `IDFRA` → FR_ID (old French card 2×36); else TD2 (2×36).
   `_new_mrz`: page fields after replacement (`_fake_text`), doc code / country from the OCR'd first line, names fall
   back on the config's PERSON replacements, missing values random of the right shape; check digits always valid.
@@ -299,13 +325,24 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   A new test document needs an entry there.
 - Secret key and fake values: key creation / reuse / corrupt file, determinism, gender, initials, e-mails, OCR
   misreadings, never the original without accents, a wrong key does not single out the true name.
-- Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements.
+- Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements,
+  a removed photo stays removed on the second pass of a scan.
+- Detectors (`detector_tests`, no OCR): the strings the real files showed ('MONSIEUR' is no BIC, capitalised cities,
+  Swiss VAT, apostrophe references and amounts, 'Code SWIFT' not a name, identity by shape).
+- `KEEP`: values that must stay readable in a digital output (no over-redaction), e.g. 'MONSIEUR'.
+- Every output has an empty second check (`suspects`): on the original files of the poor copy the same check lists
+  the values it sees (a useful sanity check when the test documents change).
 - Several keys matter: some bugs only appear with some keys (`Inès` → `Ines`, `Thomas` → `Julien`).
 - UI changes: check in the Browser pane (it may be hidden: rAF and scroll events then do not fire).
 
 ## 13. Known limits / ideas
 
-- Scans depend on OCR quality; names are heuristic (review step). Leftover check only knows the config's values.
+- Scans depend on OCR quality; names are heuristic (review step). Leftover check only knows the config's values; the
+  second check (`leak_suspects`) is the net for the rest, and it only reports (warning), it does not replace.
+- Poor ID copies: the signature (its label is not read) and a ghost portrait are missed (Dossier Test 9). Masked
+  postcodes as they appear after manual masking ('7***7 Paris') are not read; the digits must be on the page.
+- Identity by shape can over-redact: a Capitalised word on an identity document is replaced as a name (even a town
+  of birth or an OCR fragment such as 'CARO'). Privacy first, and the review step shows it.
 - Slanted text (scans, photos): OCR boxes of slanted words can be off by about a line, and Windows OCR does not read
   lines slanted by ~15 degrees or more (`Dossier Test 7`, `known_miss`). Words of slanted lines are read again turned
   straight (`engine._refine_slanted`, lines of the same slant together) and painted in their own frame

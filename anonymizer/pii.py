@@ -128,7 +128,29 @@ _HONORIFIC = (r"(?:M\.|Mme\.?|Mlle\.?|Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Monsieur|Madame|M
               r"Ma\u00eetre|Heer|Mevrouw|Mevr\.?|Dhr\.?)")
 _UP = r"[A-Z\u00c0-\u00dd]"
 
-_CITY_STOPLIST = {"euro", "eur", "euros", "keer", "maal", "fois", "times"}
+_CITY_STOPLIST = {"euro", "eur", "euros", "keer", "maal", "fois", "times",
+                   "bic", "iban", "swift", "tva", "btw", "vat", "tel", "gsm", "fax", "rib",
+                   "mme", "mlle", "mr", "mrs", "dr", "me", "m"}
+
+
+_BIC_LABEL = re.compile(r"(?i:\bbic|swift)\b")
+_IBAN_BEFORE = re.compile(r"[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,}")
+
+
+def _v_bic(m):
+    """A BIC is a label's value ('BIC : GEBABEBB', 'Code SWIFT ...') or follows an IBAN on the same line. A bare
+    8-letter word that starts with a country code ('MONSIEUR': MONS + IE + UR) is no BIC."""
+    before = m.string[max(0, m.start() - 40):m.start()]        # the label may be on the line above (two columns)
+    if _BIC_LABEL.search(before) or _IBAN_BEFORE.search(before[-45:]):
+        return m.start(), m.end()
+    return None
+
+
+def _v_vat_group(m):
+    """VAT number after its label ('TVA : BE0403199700', 'N° TVA CHE-...'): at least 8 digits."""
+    if len(re.sub(r"\D", "", m.group(1))) < 8:
+        return None
+    return m.start(1), m.end(1)
 
 
 def _v_postal(m):
@@ -167,7 +189,10 @@ DETECTORS = [
     ("EMAIL", re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"), None),
     ("BE_VAT", re.compile(r"\bBE[ .]?0?\d{3}[ .]?\d{3}[ .]?\d{3}\b"), None),
     ("BE_STRUCTURED_COMM", re.compile(r"(?:\+{3})?\d{3}/\d{4}/\d{5}(?:\+{3})?"), None),
-    ("BIC", re.compile(r"\b[A-Z]{4}(?:BE|FR|NL|DE|LU|GB|IT|ES|CH|AT|US|IE|PT)[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b"), None),
+    ("VAT_NUMBER", re.compile(r"(?<!\w)CHE[ \-]?[\d*]{3}[.\s]?[\d*]{3}[.\s]?[\d*]{3}(?![\d*])"), None),
+    ("VAT_NUMBER", re.compile(r"(?i:n[°o]?\s*(?:de\s+)?tva|tva|btw|vat|mwst|iva)(?:\s+n[°o]\.?)?\s*[:\-]?\s*"
+                              r"((?:[A-Z]{2,3}[ .\-]?)?[\d*][\d*.\- ]{5,15}[\d*])(?![\w])"), _v_vat_group),
+    ("BIC", re.compile(r"\b[A-Z]{4}(?:BE|FR|NL|DE|LU|GB|IT|ES|CH|AT|US|IE|PT)[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b"), _v_bic),
     ("DATE", re.compile(r"(?<!\d)(?:0?[1-9]|[12]\d|3[01])[./\-](?:0?[1-9]|1[0-2])[./\-](?:19|20)\d{2}(?!\d)"), None),
     ("DATE", re.compile(r"(?<!\d)(?:19|20)\d{2}-\d{2}-\d{2}(?!\d)"), None),
     # identity documents: '14 05 1992' (not inside a longer run of numbers such as a phone number)
@@ -181,7 +206,9 @@ DETECTORS = [
     ("STREET_ADDRESS", re.compile(rf"(?<![\w/])\d{{1,4}}(?:[ ]?(?i:bis|ter))?,?[ ]+(?i:{_FR_STREET})[ ]+(?:(?i:de la|du|des|de l'|de|d')[ ]?)?[\wÀ-ÿ'’\-]+(?:[ ]{_NOT_UNIT}{_CAP}{_WORD}+)*"), None),
     ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET})[ ]+(?:(?i:de la|du|des|de l'|de|d')[ ]?)?{_CAP}{_WORD}+(?:[ ]{_NOT_UNIT}{_CAP}{_WORD}+)*,?[ ]+{_NR}"), None),
     # Belgian-style postcode + city: "9000 Gent", "B-1000 Bruxelles"
-    ("POSTAL_CITY", re.compile(rf"(?<![\w/.\-])(?:B-|BE-|F-)?[1-9]\d{{3,4}}[ ]+{_CAP}[a-zà-ÿ'’]+(?:-{_CAP}?[a-zà-ÿ'’]+)*(?:[ ](?:sur|sous|en|lez|lès)[ ]{_CAP}[a-zà-ÿ'’\-]+)?"), _v_postal),
+    ("POSTAL_CITY", re.compile(rf"(?<![\w/.\-])(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?[1-9]\d{{3,4}}[ ]+"
+                               rf"(?:{_CAP}[A-ZÀ-Þ'’\-]{{2,}}|{_CAP}[a-zà-ÿ'’]+)(?:-{_CAP}?[a-zà-ÿ'’]+)*"
+                               rf"(?:[ ](?:sur|sous|en|lez|lès)[ ]{_CAP}[a-zà-ÿ'’\-]+)?"), _v_postal),
     # value right after a label: "Code banque / guichet 30002 / 05871", "N° de compte : 123 ..." (label can be
     # on the line before the value, as in two-column layouts)
     ("BANK_CODE", re.compile(r"(?i:code\s+banque(?:\s*/\s*(?:code\s+)?guichet)?|code\s+guichet|banque\s*/\s*guichet|"
@@ -198,6 +225,7 @@ DETECTORS = [
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])(?:\d{5}[ ]?)?\d{5}[ ]?[0-9A-Z]{11}[ ]?\d{2}(?![\w,])"), _v_account),
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{3}-\d{7}-\d{2}(?!\w)"), _v_account),
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,])\d{9,16}(?!\w)"), _v_account),  # generic guess: long digit runs
+    ("ACCOUNT_NUMBER", re.compile(r"(?<![\w'’.,])\d{2}(?:['’](?:\d{3}|\*{3})){3,}(?![\w'’]|[.,]\d)"), None),
     # Person names (heuristics; the config review step is where you confirm them)
     ("PERSON", re.compile(rf"(?<!\w){_HONORIFIC}[ ]+({_CAP}{_WORD}+(?:[ ]{_CAP}{_WORD}+){{0,2}})"), _v_group1),
     ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_CAP}[a-z\u00e0-\u00ff'\u2019\-]+(?:[ ]{_CAP}[a-z\u00e0-\u00ff'\u2019\-]+)?[ ]+{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+)(?!\w)"), _v_group1),  # Prenom NOM
