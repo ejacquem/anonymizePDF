@@ -7,7 +7,7 @@ wheels/
 secret.key
 *.pdf
 !sample_data/**/*.pdf
-*_anonymized.pdf
+*_anonymized.*
 
 __pycache__/
 .venv/
