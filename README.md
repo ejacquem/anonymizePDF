@@ -26,7 +26,19 @@ tools/                   generators of the test documents
 CLAUDE.md                detailed technical description (for maintenance / Claude Code)
 ```
 
-## Install
+## Quick start on Windows (no admin rights)
+
+Double-click **`start.bat`**. The first time it creates the Python environment (Python 3.12 or 3.13 must be
+installed; the python.org installer works without admin rights) and asks for the folder that contains the client
+folders; it then starts the app and opens it in the browser. Keep the window open while you work.
+* The folder is remembered in `start_root.txt`. To use another one, drag it onto `start.bat`, or delete that file.
+* **PC without internet access**: on a PC that has it (same Python version), run **`prepare_offline.bat`**: it fills
+  a `wheels` folder with everything needed (packages and the French names model). Copy the whole project folder,
+  `wheels` included, to the other PC: `start.bat` installs from it, offline.
+* Port 5000 already taken: `set ANON_PORT=5001` before running `start.bat`.
+* Copy your secret key too if the fake names must be the same on both PCs (see Privacy).
+
+## Install (manual)
 
 Use **Python 3.12 or 3.13** (newer versions may have no prebuilt wheels for spaCy and try to compile).
 
