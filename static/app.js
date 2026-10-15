@@ -432,6 +432,14 @@ async function loadConfig() {
     state.hasConfig = c.exists;
     ta.value = c.text;
     ta.disabled = !c.exists;
+    state.model = null;
+    if (c.exists) {
+      try { state.model = (await post("/api/config/model/parse", { text: c.text })).model; }
+      catch (e) { state.cfgView = "yaml"; }           // hand-written YAML the table cannot show: stay in YAML
+    }
+    state.openGroups = null;
+    renderTable();
+    showConfigView();
     setDirty(false);
     $("#configMsg").className = "muted small";
     $("#configMsg").textContent = c.exists ? "Edit the replacements, then Save (Ctrl+S) and Anonymize." : "";
@@ -451,7 +459,13 @@ function setDirty(d) {
 async function saveConfig() {
   const msg = $("#configMsg");
   try {
-    await put("/api/config", { folder: state.folder, text: $("#configText").value });
+    if (state.cfgView === "table" && state.model) {
+      const r = await put("/api/config/model", { folder: state.folder, model: state.model });
+      $("#configText").value = r.text;
+    } else {
+      await put("/api/config", { folder: state.folder, text: $("#configText").value });
+      if (state.hasConfig) state.model = (await post("/api/config/model/parse", { text: $("#configText").value })).model;
+    }
     setDirty(false);
     msg.className = "muted small";
     msg.textContent = "Saved " + new Date().toLocaleTimeString();
@@ -465,10 +479,200 @@ async function saveConfig() {
 }
 
 $("#configText").addEventListener("input", () => setDirty(true));
-$("#configText").addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); if (!$("#btnSave").disabled) saveConfig(); }
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "s" && !$("#tab-config").hidden) {
+    e.preventDefault();
+    if (!$("#btnSave").disabled) saveConfig();
+  }
 });
 $("#btnSave").onclick = saveConfig;
+
+// ---------- review table (edits a model of anon_config.yaml; the YAML file stays the storage) ----------
+const TYPE_LABELS = {
+  PERSON: "Names", IBAN: "IBAN", BIC: "BIC", EMAIL: "E-mails", PHONE: "Phones", CREDIT_CARD: "Card numbers",
+  CARD_NUMBER: "Masked card numbers", BE_NATIONAL_NUMBER: "National numbers", BE_VAT: "VAT numbers",
+  BE_STRUCTURED_COMM: "Payment references", SEPA_CREDITOR_ID: "Creditor IDs", STREET_ADDRESS: "Streets",
+  POSTAL_CITY: "Postcodes / towns", BIRTH_PLACE: "Places of birth", ACCOUNT_NUMBER: "Account numbers",
+  BANK_CODE: "Bank codes", DOC_NUMBER: "Document numbers", CONTRACT_REF: "Contract / policy numbers", DATE: "Dates",
+  TERM: "Added by hand", ORG: "Organisations (guesses)", LOCATION: "Places (guesses)",
+};
+const TYPE_ORDER = Object.keys(TYPE_LABELS);
+const VIEW_KEY = "anonymizePDF.configView";
+const SETTINGS_OPEN_KEY = "anonymizePDF.settingsOpen";
+state.cfgView = (() => { try { return localStorage.getItem(VIEW_KEY) || "table"; } catch (e) { return "table"; } })();
+state.model = null;
+state.openGroups = null;          // types whose group is unfolded (null = default: groups with active entries)
+
+function infoShort(info) {
+  const m = /(\d+)x in/.exec(info || "");
+  if (m) return m[1] + "×";
+  if (/part of/.test(info || "")) return "part";
+  return "";
+}
+
+function settingsHtml(s) {
+  const sel = (key, opts) => `<select data-set="${key}">` +
+    opts.map(([v, l]) => `<option value="${v}"${s[key] === v ? " selected" : ""}>${l}</option>`).join("") + `</select>`;
+  const chk = (key, label, title) => `<label class="chk" title="${esc(title)}"><input type="checkbox" data-set="${key}"${s[key] ? " checked" : ""}> ${label}</label>`;
+  let open = false;
+  try { open = localStorage.getItem(SETTINGS_OPEN_KEY) === "1"; } catch (e) { /* ignore */ }
+  return `<details class="settings"${open ? " open" : ""}><summary>Settings</summary><div class="setgrid">
+    <span>Replace with</span>${sel("mode", [["replace", "fake text"], ["blackbox", "a black box (every value)"]])}
+    <span>Digital PDFs</span>${sel("digital_fill", [["none", "keep the page background"], ["white", "white box behind the text"]])}
+    <span>Case</span><span>${chk("match_case", "keep UPPER / lower case", "MARCHAND -> BEAUMONT, Vermeulen -> Hendrickx")}
+      ${chk("case_sensitive", "case-sensitive search", "Off: 'marchand' also matches 'MARCHAND'")}</span>
+    <span>Black boxes</span><span>${chk("photos", "photos", "Identity photos and the faded ghost copy")}
+      ${chk("photos_only_on_id_documents", "only on ID documents", "Photos only on pages that look like a passport / ID card")}
+      ${chk("signatures", "signatures", "Handwriting next to a 'Signature' label")}
+      ${chk("qr_codes", "QR codes", "QR codes and other 2D barcodes")}</span>
+    <span>MRZ</span>${sel("mrz", [["regenerate", "rebuild from the fake values"], ["keep", "keep as is (real data!)"]])}
+    <span>OCR languages</span><input data-set="ocr_lang" value="${esc(s.ocr_lang || "")}" title="Tesseract codes, e.g. fra+eng or nld+fra+eng" class="short">
+  </div></details>`;
+}
+
+function renderTable() {
+  const box = $("#cfgTable");
+  const m = state.model;
+  if (!m) { box.innerHTML = ""; return; }
+  const q = ($("#cfgSearch").value || "").trim().toLowerCase();
+  const groups = new Map();
+  m.entries.forEach((e, i) => {
+    if (q && !e.find.toLowerCase().includes(q) && !(e.replace || "").toLowerCase().includes(q)) return;
+    if (!groups.has(e.type)) groups.set(e.type, []);
+    groups.get(e.type).push(i);
+  });
+  const types = [...groups.keys()].sort((a, b) => (TYPE_ORDER.indexOf(a) + 1 || 99) - (TYPE_ORDER.indexOf(b) + 1 || 99));
+  let h = settingsHtml(m.settings);
+  const nAct = m.entries.filter((e) => e.active).length;
+  h += `<div class="cfgsum muted small">${nAct} value(s) replaced · ${m.entries.length - nAct} suggestion(s) not active
+    · tick a line to replace it, untick to keep the original</div>`;
+  for (const t of types) {
+    const idx = groups.get(t).sort((a, b) => (m.entries[b].active - m.entries[a].active) || a - b);
+    const act = idx.filter((i) => m.entries[i].active).length;
+    const open = q ? true : state.openGroups ? state.openGroups.has(t) : act > 0;
+    h += `<details class="grp" data-type="${esc(t)}"${open ? " open" : ""}><summary>
+      <input type="checkbox" class="gchk" data-type="${esc(t)}"${act === idx.length ? " checked" : ""} data-some="${act > 0 && act < idx.length ? 1 : 0}"
+        title="Tick / untick the whole group">
+      <b>${esc(TYPE_LABELS[t] || t)}</b> <span class="muted">${act}/${idx.length}</span></summary>`;
+    for (const i of idx) {
+      const e = m.entries[i];
+      h += `<div class="erow${e.active ? "" : " off"}" data-i="${i}">
+        <input type="checkbox" class="echk"${e.active ? " checked" : ""} title="${e.active ? "Replaced" : "Not replaced"}">
+        <span class="efind" title="${esc(e.info || "")}">${esc(e.find)}</span>
+        <span class="arrow">→</span>
+        <input class="erep" value="${esc(e.replace)}" spellcheck="false" title="Replacement (edit freely)">
+        <span class="einfo muted" title="${esc(e.info || "")}">${esc(infoShort(e.info))}</span>
+        <button class="edel mini" title="Delete this line">✕</button></div>`;
+    }
+    h += `</details>`;
+  }
+  if (!types.length && q) h += `<div class="muted small">Nothing matches “${esc(q)}”.</div>`;
+  h += `<div class="addrow"><input id="addFind" placeholder="value to replace" spellcheck="false">
+    <span class="arrow">→</span><input id="addRep" placeholder="replacement" spellcheck="false">
+    <select id="addType">${TYPE_ORDER.map((t) => `<option value="${t}"${t === "TERM" ? " selected" : ""}>${esc(TYPE_LABELS[t])}</option>`).join("")}</select>
+    <button id="addBtn" class="mini">Add</button></div>`;
+  if ((m.regex || []).length) h += `<div class="muted small">${m.regex.length} regex rule(s): edit them in the YAML view.</div>`;
+  box.innerHTML = h;
+  box.querySelectorAll(".gchk").forEach((c) => { c.indeterminate = c.dataset.some === "1"; });
+}
+
+function tableChanged() { setDirty(true); }
+
+// one set of listeners on the container (rows are re-rendered)
+$("#cfgTable").addEventListener("change", (ev) => {
+  const t = ev.target, m = state.model;
+  if (!m) return;
+  if (t.dataset.set) {
+    m.settings[t.dataset.set] = t.type === "checkbox" ? t.checked : t.value;
+    return tableChanged();
+  }
+  if (t.classList.contains("echk")) {
+    const i = +t.closest(".erow").dataset.i;
+    m.entries[i].active = t.checked;
+    tableChanged();
+    return renderTable();
+  }
+  if (t.classList.contains("gchk")) {
+    const q = ($("#cfgSearch").value || "").trim().toLowerCase();
+    m.entries.forEach((e) => {
+      if (e.type === t.dataset.type && (!q || e.find.toLowerCase().includes(q) || (e.replace || "").toLowerCase().includes(q))) e.active = t.checked;
+    });
+    tableChanged();
+    return renderTable();
+  }
+});
+$("#cfgTable").addEventListener("input", (ev) => {
+  const t = ev.target;
+  if (t.classList.contains("erep")) {
+    state.model.entries[+t.closest(".erow").dataset.i].replace = t.value;
+    tableChanged();
+  }
+});
+$("#cfgTable").addEventListener("click", (ev) => {
+  const t = ev.target;
+  if (t.classList.contains("gchk")) { ev.stopPropagation(); return; }    // do not fold the group
+  if (t.classList.contains("edel")) {
+    state.model.entries.splice(+t.closest(".erow").dataset.i, 1);
+    tableChanged();
+    return renderTable();
+  }
+  if (t.id === "addBtn") {
+    const find = $("#addFind").value.trim();
+    if (!find) return;
+    state.model.entries.push({ find, replace: $("#addRep").value, type: $("#addType").value, active: true, info: "added by hand" });
+    (state.openGroups = state.openGroups || openTypes()).add($("#addType").value);
+    tableChanged();
+    renderTable();
+    $("#addFind").focus();
+  }
+});
+$("#cfgTable").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && (ev.target.id === "addFind" || ev.target.id === "addRep")) $("#addBtn").click();
+});
+$("#cfgTable").addEventListener("toggle", (ev) => {
+  const d = ev.target;
+  if (d.classList && d.classList.contains("settings")) {
+    try { localStorage.setItem(SETTINGS_OPEN_KEY, d.open ? "1" : "0"); } catch (e) { /* ignore */ }
+  } else if (d.classList && d.classList.contains("grp") && !($("#cfgSearch").value || "").trim()) {
+    state.openGroups = state.openGroups || openTypes();
+    if (d.open) state.openGroups.add(d.dataset.type); else state.openGroups.delete(d.dataset.type);
+  }
+}, true);
+$("#cfgSearch").addEventListener("input", renderTable);
+
+function openTypes() {
+  return new Set([...document.querySelectorAll("#cfgTable details.grp[open]")].map((d) => d.dataset.type));
+}
+
+// ---- Table / YAML switch ----
+function showConfigView() {
+  const table = state.cfgView === "table";
+  document.querySelectorAll(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.view === state.cfgView));
+  $("#cfgTable").hidden = !table;
+  $("#cfgSearch").hidden = !table;
+  $("#configText").hidden = table;
+}
+
+async function switchView(view) {
+  if (view === state.cfgView) return;
+  const msg = $("#configMsg");
+  try {
+    if (view === "table" && state.hasConfig) {
+      state.model = (await post("/api/config/model/parse", { text: $("#configText").value })).model;
+      renderTable();
+    } else if (view === "yaml" && state.model && state.dirty) {
+      $("#configText").value = (await post("/api/config/model/render", { folder: state.folder, model: state.model })).text;
+    }
+  } catch (e) {
+    msg.className = "err small";
+    msg.textContent = "Cannot switch: " + e.message;
+    return;
+  }
+  state.cfgView = view;
+  try { localStorage.setItem(VIEW_KEY, view); } catch (e) { /* ignore */ }
+  showConfigView();
+}
+document.querySelectorAll(".seg button").forEach((b) => { b.onclick = () => switchView(b.dataset.view); });
 
 function updateToolbar() {
   const node = state.folder !== null ? state.nodes[state.folder] : null;

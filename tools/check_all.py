@@ -40,7 +40,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from anonymizer import engine, fields, ocr, secret  # noqa: E402
+from anonymizer import configmodel, engine, fields, ocr, secret  # noqa: E402
 from anonymizer.fake import FEMALE_NAMES, LAST_NAMES, MALE_NAMES, Faker, _pkey  # noqa: E402
 from anonymizer.pii import digital_words, fitz, load_ner, words_to_text  # noqa: E402
 
@@ -217,6 +217,10 @@ def full_run(folders, work_root: Path, ner):
         print(f"\n== {folder}")
         t0 = time.time()
         cfg, rep = run_folder(folder, work_root, ner)
+        a, b = engine.parse_config(cfg), engine.parse_config(configmodel.to_yaml(configmodel.to_model(cfg)))
+        check(f"{folder}: review table round trip keeps the applied config",
+              all(a[k] == b[k] for k in ("terms", "types", "regex", "style", "blackout", "mrz", "match_case",
+                                         "case_sensitive", "ocr_lang")))
         for f in rep["files"]:
             exp = files.get(f["file"])
             if exp is None:

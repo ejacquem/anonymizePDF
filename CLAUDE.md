@@ -45,6 +45,7 @@ anonymizer/
                        scans: scan_text_layout, BoldMeter, ink_color, background_color, draw_mrz
   fields.py            identity documents: lines_of, find_labeled, is_id_document; MRZ: find_mrz, build_mrz, mrz_zone
   regions.py           find_photos, find_codes, find_signatures (+ *_digital variants), trim_to_text, is_signature_label
+  configmodel.py       anon_config.yaml <-> review-table model (settings, entries incl. the commented suggestions)
 static/                index.html, app.js, style.css (vanilla JS)
 docs/config.example.yaml
 sample_data/Dossier Test 0/   FR bank statement, Helvetica (digital + clean scan)
@@ -76,6 +77,10 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Toolbar: **1 · Scan & draft config**, **Save config** (Ctrl+S), **2 · Anonymize folder**, "OCR check for digital PDFs".
 - Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format.
 - Header: OCR engine in use and spaCy models.
+- Config tab: *Table* view (default, remembered) edits a model of the YAML (`anonymizer/configmodel.py`: `to_model`
+  reads active entries AND the commented suggestions line by line, `to_yaml` writes the scan layout back); *YAML*
+  view = the raw file. API: `GET /api/config/model`, `POST /api/config/model/parse|render`, `PUT /api/config/model`.
+  The YAML stays the storage: a round trip must keep the applied config identical (checked by check_all).
 - Review flag: 'Mark as reviewed' in the Anonymized pane head; `anon_review.json` per folder = {original name: {at,
   sha256 of the output}}; a flag counts only while the output's hash matches (regenerated or edited -> not reviewed);
   `run_anonymize` also clears the flag of each file it regenerates. Tree badges `✓` (file) and `✓ r/n` (folder).

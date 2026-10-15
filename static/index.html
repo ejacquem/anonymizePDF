@@ -72,6 +72,13 @@
       <button class="tab" data-tab="log">Log</button>
     </div>
     <div id="tab-config" class="tabbody">
+      <div class="cfgbar">
+        <div class="seg" title="Table: tick / edit the values. YAML: the config file itself.">
+          <button data-view="table">Table</button><button data-view="yaml">YAML</button>
+        </div>
+        <input id="cfgSearch" type="search" placeholder="Search a value…" spellcheck="false">
+      </div>
+      <div id="cfgTable" class="cfgtable"></div>
       <textarea id="configText" spellcheck="false" disabled
         placeholder="No config for this folder yet.&#10;Click “1 · Scan &amp; draft config” to detect personal data and get suggested replacements."></textarea>
       <div id="configMsg" class="muted small"></div>

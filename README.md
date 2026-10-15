@@ -102,7 +102,10 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 1. Click a client folder (or a file in it) in the tree: it becomes the **working folder**.
 2. **1 · Scan & draft config** – every PDF of the folder is read (OCR for scans), personal data is detected, and
    `anon_config.yaml` is written in that folder with a **suggested replacement for each value**.
-3. Review the **Config** tab, edit, **Save** (Ctrl+S).
+3. Review the **Config** tab, edit, **Save** (Ctrl+S). The *Table* view lists every value by type (names, IBAN,
+   phones...): tick a line to replace it, untick to keep the original, click a replacement to edit it, ✕ (on hover)
+   deletes a line, the last line adds a value; *Settings* (folded at the top) holds the options; the search field
+   filters. The *YAML* view shows the file itself (both views edit the same file).
 4. **2 · Anonymize folder** – the same config is applied to every PDF of the folder. Each `name.pdf` produces
    `name_anonymized.pdf` next to it (originals are never touched). **Each page is processed in its own mode:**
    * Digital pages (real visible text): the original text is really removed (redaction), the fake text is written

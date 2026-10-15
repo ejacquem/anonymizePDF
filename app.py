@@ -21,7 +21,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from anonymizer import engine as eng
-from anonymizer import ocr, secret
+from anonymizer import configmodel, ocr, secret
 from anonymizer.pii import fitz, load_ner
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -203,6 +203,56 @@ def put_config():
         return bad(f"Config not saved: {e}")
     (folder / eng.CONFIG_NAME).write_text(text, encoding="utf-8")
     return jsonify({"ok": True})
+
+
+# review table: the YAML file stays the storage; the table edits a model of it (anonymizer.configmodel)
+
+@app.get("/api/config/model")
+def get_config_model():
+    try:
+        f = folder_arg(request.args) / eng.CONFIG_NAME
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    if not f.exists():
+        return jsonify({"exists": False, "model": None})
+    try:
+        return jsonify({"exists": True, "model": configmodel.to_model(f.read_text(encoding="utf-8"))})
+    except ValueError as e:
+        return bad(f"The YAML cannot be shown as a table: {e}")
+
+
+@app.post("/api/config/model/parse")
+def parse_config_model():
+    data = request.get_json(force=True)
+    try:
+        return jsonify({"model": configmodel.to_model(data.get("text", ""))})
+    except ValueError as e:
+        return bad(str(e))
+
+
+@app.post("/api/config/model/render")
+def render_config_model():
+    data = request.get_json(force=True)
+    try:
+        folder = folder_arg(data)
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    return jsonify({"text": configmodel.to_yaml(data.get("model") or {}, rel_of(folder) or ".")})
+
+
+@app.put("/api/config/model")
+def put_config_model():
+    data = request.get_json(force=True)
+    try:
+        folder = folder_arg(data)
+        text = configmodel.to_yaml(data.get("model") or {}, rel_of(folder) or ".")
+        eng.parse_config(text)  # validate before saving
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    except Exception as e:  # noqa: BLE001
+        return bad(f"Config not saved: {e}")
+    (folder / eng.CONFIG_NAME).write_text(text, encoding="utf-8")
+    return jsonify({"ok": True, "text": text})
 
 
 @app.get("/api/report")
