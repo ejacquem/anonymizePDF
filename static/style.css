@@ -89,19 +89,19 @@ main:not(.native) .viewer .pages { cursor: grab; user-select: none; }
 
 /* tree */
 #tree { font-size: 13px; }
-.row { display: flex; align-items: center; gap: 4px; padding: 2px 6px; cursor: pointer; white-space: nowrap; }
+.row { display: flex; align-items: center; gap: 4px; padding: 2px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; }
 .row:hover { background: var(--sel); }
 .row.selected { background: var(--sel); font-weight: 600; }
-.row .name { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 4.5em; }
+.row .name { flex: 0 0 auto; padding-right: 3px; }
 .row .ico { flex: none; }
 /* badges give way first when the tree is narrow, the name stays readable */
-.row .badges { display: flex; gap: 3px; overflow: hidden; flex: 0 1000 auto; min-width: 0; }
+.row .badges { display: flex; gap: 3px; overflow: hidden; flex: 0 100 auto; min-width: 0; }
 .row .badge { flex: none; }
 .row .caret { width: 8px; flex: none; color: var(--muted); font-size: 10px; transform: scale(1.8); }
 .row.anon .name { color: var(--ok); }
 .badge { font-size: 10px; padding: 0 4px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
 .badge.cfg { color: var(--accent); border-color: var(--accent); }
-.badge.done { color: var(--ok); border-color: var(--ok); }
+.badge.done { color: var(--ok); border-color: var(--ok); font-weight: 700; padding: 0 5px; }
 .badge.rev { color: var(--muted); }
 .badge.rev.all { color: var(--ok); border-color: var(--ok); }
 .row .rev-mark { color: var(--ok); font-weight: 700; }

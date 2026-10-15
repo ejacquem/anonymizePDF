@@ -65,7 +65,7 @@ function renderNode(node, parent, depth) {
     let badges = "";
     if (node.pdf_count) badges += `<span class="badge">${node.pdf_count} pdf</span>`;
     if (node.has_config) badges += `<span class="badge cfg">cfg</span>`;
-    if (node.has_report) badges += `<span class="badge done">done</span>`;
+    if (node.has_report) badges += `<span class="badge done" title="anonymized">✓</span>`;
     if (node.anon_count) {
       const all = node.reviewed_count === node.anon_count;
       badges += `<span class="badge rev${all ? " all" : ""}" title="manually reviewed / anonymized files">✓ ${node.reviewed_count}/${node.anon_count}</span>`;
@@ -84,7 +84,6 @@ function renderNode(node, parent, depth) {
     row.className = "row" + (node.anonymized ? " anon" : "") + (state.file === node.path ? " selected" : "");
     row.style.paddingLeft = 6 + depth * 10 + 12 + "px";
     row.innerHTML = `<span>${node.anonymized ? "🔒" : "📄"}</span><span class="name" title="${esc(node.name)}">${esc(node.name)}</span>` +
-      (!node.anonymized && node.anon ? `<span class="badge done">anon</span>` : "") +
       (node.reviewed ? `<span class="rev-mark" title="anonymized file reviewed by hand">✓</span>` : "");
     row.onclick = () => openFile(node.path);
     parent.appendChild(row);
