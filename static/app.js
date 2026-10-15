@@ -287,17 +287,30 @@ function syncScroll(fromWhich) {
   setScroll(other(fromWhich), sx > 0 ? (src.scrollLeft / sx) * dx : 0, t.offsetTop + frac * t.offsetHeight);
 }
 
+// Mouse wheel or trackpad? A wheel notch is one whole step (deltaMode 0, deltaY ±100 or a multiple, no deltaX);
+// a two-finger trackpad scroll sends small or fractional steps and often a horizontal part. The last clear
+// signal wins, so the answer stays right when the user switches between the mouse and the trackpad.
+let lastInput = "mouse";
+function inputKind(e) {
+  if (e.deltaMode !== 0) lastInput = "mouse";
+  else if (e.deltaX !== 0 || !Number.isInteger(e.deltaY) || Math.abs(e.deltaY) < 50) lastInput = "pad";
+  else if (Math.abs(e.deltaY) % 50 === 0) lastInput = "mouse";
+  return lastInput;
+}
+
 for (const which of VIEWERS) {
   const box = viewers[which].box;
   box.addEventListener("scroll", () => { if (!isProgrammatic(which)) syncScroll(which); });
   box.addEventListener("wheel", (e) => {
     if (nativeMode() || !viewers[which].pages.length) return;   // the browser's own PDF viewer scrolls as usual
+    const pinch = e.ctrlKey || e.metaKey;                       // a trackpad pinch arrives as a wheel with Ctrl
+    if (!pinch && !e.shiftKey && inputKind(e) === "pad") return; // two fingers: scroll the pages, no zoom
     e.preventDefault();
-    if (e.shiftKey && !e.ctrlKey && !e.metaKey) {               // Shift + wheel: scroll through the pages
+    if (e.shiftKey && !pinch) {                                 // Shift + wheel: scroll through the pages
       box.scrollTop += e.deltaY;
       return;
     }
-    const r = box.getBoundingClientRect();                      // wheel (or Ctrl + wheel): zoom around the pointer
+    const r = box.getBoundingClientRect();                      // wheel or pinch: zoom around the pointer
     stepZoom(e.deltaY < 0 ? 1 : -1, { which, x: e.clientX - r.left, y: e.clientY - r.top });
   }, { passive: false });
 

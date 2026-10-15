@@ -77,7 +77,7 @@ Env: `ANON_SECRET_FILE` (key path), `ANON_OCR_ENGINE`, `TESSERACT_CMD`, `TESSDAT
 Directory tree | Original | Anonymized | right panel with tabs **Config / Recap / Log**.
 - The 3 bars between panes are draggable (pointer events, double-click resets), widths in localStorage.
 - Viewer: pages are rendered server-side to PNG (`/api/page`, PyMuPDF), shown in a scrollable column, lazily loaded
-  (IntersectionObserver). Zoom shared by both panes (−/+, Fit, wheel; Shift+wheel scrolls), scroll synced page by page,
+  (IntersectionObserver). Zoom shared by both panes (−/+, Fit; mouse wheel zooms, trackpad pinch (Ctrl) zooms, two-finger scroll and Shift+wheel scroll; input kind from `inputKind`), scroll synced page by page,
   click + drag pans both panes. Sync state uses "programmatic scroll" tracking (`setScroll` / `isProgrammatic`),
   not a requestAnimationFrame lock (rAF does not run in hidden tabs; scroll events are not dispatched either).
 - "Sync" unticked = the browser's own PDF viewer in an iframe (`/api/pdf`, selectable text); kept in localStorage.
