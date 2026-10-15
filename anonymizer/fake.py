@@ -173,6 +173,9 @@ class Faker:
         # name parts already replaced: (kind, key) -> replacement. Keeps 'Élodie' / 'elodie' / 'É.' and
         # an OCR misreading like 'Vermeotlen' consistent with what 'Vermeulen' became.
         self.names: dict[tuple[str, str], str] = {}
+        # name parts that exist in the documents being anonymized: never used as a fake (otherwise 'Thomas' could
+        # become 'Julien', the real first name of someone else in the same document)
+        self.reserved: set[str] = set()
         self.first_of_last: dict[str, list[str]] = {}       # last-name key -> first-name keys seen with it
 
     # ---------- primitives ----------
@@ -249,6 +252,13 @@ class Faker:
             return "f"
         return None
 
+    def reserve(self, values) -> None:
+        """Words of the original values (names, places...) that must never come out as a fake."""
+        for v in values:
+            for w in re.split(r"[\s,;.\-]+", v):
+                if len(w) >= 2:
+                    self.reserved.add(_pkey(w))
+
     def name_token(self, token: str, kind: str, avoid: set[str] | None = None, gender: str | None = None) -> str:
         """kind = 'first' | 'last'. Deterministic per token (and gender), so 'Marchand' alone and inside
         'Thomas Marchand' get the same replacement. First names keep their gender when it is known.
@@ -275,7 +285,9 @@ class Faker:
             pool = LAST_NAMES
         pool = [x for x in pool if "-" not in x]
         rng = self.rng("name-" + kind, key)
-        avoid = {_norm(token)} | (avoid or set())
+        # not the original, not a real name of these documents, not a fake already given to another name
+        taken = {_pkey(v) for (k, _), v in self.names.items() if k == kind}
+        avoid = {_norm(token)} | (avoid or set()) | self.reserved | taken
         new = self._pick(pool, len(token), rng, avoid) or self.scramble(token, rng)
         if key:
             self.names[(kind, key)] = new

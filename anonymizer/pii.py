@@ -413,6 +413,29 @@ def apply_config(text: str, cfg: dict, ner, numberer: Numberer) -> list[Match]:
 # --------------------------------------------------------------------------
 
 
+def invisible_areas(page) -> list[tuple]:
+    """Boxes of INVISIBLE text (render mode 3, or fully transparent): typically the OCR layer a scanner puts under
+    the image of a 'searchable' scan. That text is not what the reader sees."""
+    try:
+        trace = page.get_texttrace()
+    except Exception:  # noqa: BLE001
+        return []
+    return [tuple(s["bbox"]) for s in trace if s.get("type") == 3 or s.get("opacity", 1) == 0]
+
+
+def visible_words(page) -> list[dict]:
+    """Text-layer words that are actually drawn (not the invisible OCR layer of a searchable scan)."""
+    words = digital_words(page)
+    hidden = invisible_areas(page)
+    if not hidden:
+        return words
+
+    def inside(b):
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        return any(h[0] <= cx <= h[2] and h[1] <= cy <= h[3] for h in hidden)
+    return [w for w in words if not inside(w["box"])]
+
+
 def digital_words(page) -> list[dict]:
     """Words from the PDF text layer. Boxes are in PDF points."""
     return [

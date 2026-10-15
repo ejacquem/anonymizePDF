@@ -24,8 +24,8 @@ from PIL import ImageDraw
 from . import fields, ocr, regions, render
 from .fake import Faker, match_case
 from .ocr import ocr_words, render_page
-from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz, plan_page,
-                  term_regex, words_to_text, norm_value)
+from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz,
+                  invisible_areas, plan_page, term_regex, visible_words, words_to_text, norm_value)
 
 CONFIG_NAME = "anon_config.yaml"
 REPORT_NAME = "anon_report.json"
@@ -61,12 +61,6 @@ _TITLE_BEFORE = re.compile(rf"({_HONORIFIC})\s*$")
 
 def list_pdfs(folder: Path) -> list[Path]:
     return sorted((p for p in folder.glob("*.pdf") if not p.stem.endswith(SUFFIX)), key=lambda p: p.name.lower())
-
-
-def pdf_mode(doc) -> tuple[str, int]:
-    """'digital' if most pages have a text layer, else 'scan'. Returns (mode, pages_with_text)."""
-    with_text = sum(1 for p in doc if len(digital_words(p)) >= 3)
-    return ("digital" if with_text >= max(1, len(doc) / 2) else "scan"), with_text
 
 
 def _first_names() -> set[str]:
@@ -199,6 +193,35 @@ def pii_cfg(cfg: dict) -> dict:
 # 1. scan a folder -> draft config
 # ---------------------------------------------------------------------------
 
+def _detect_words(found: dict, words: list[dict], ocr_page: bool, ner, file: str, pno: int):
+    """Detections of one set of words (a page's text layer, its OCR, or the OCR of its images) into `found`."""
+    text, _ = words_to_text(words)
+    if ocr_page:
+        text = ocr.fix_digits(text)           # '04 72 OO 11 22' -> '04 72 00 11 22' (same length)
+    for m in detect_all(text, ner):
+        value = " ".join(m.value.split())
+        if m.type == "PERSON":
+            value = _HONORIFIC_START.sub("", value.split(" - ")[0]).strip(" ,.;:")
+        if len(value) < 3:
+            continue
+        key = (m.type, norm_value(value))
+        e = found.setdefault(key, {"type": m.type, "value": value, "count": 0, "files": set(),
+                                   "pages": set(), "birth": False, "ner": False, "honorific": False,
+                                   "title": ""})
+        e["count"] += 1
+        e["files"].add(file)
+        e["pages"].add(pno)
+        e["ner"] = e["ner"] or m.rank >= 100
+        e["honorific"] = e["honorific"] or (m.type == "PERSON" and m.rank == PERSON_RANKS[0])
+        if m.type == "PERSON" and not e["title"]:
+            t = _TITLE_BEFORE.search(text[max(0, m.start - 16):m.start])
+            e["title"] = t.group(1) if t else ""
+        if m.type == "DATE":
+            ctx = text[max(0, m.start - 35):m.end + 8]
+            e["birth"] = e["birth"] or bool(_BIRTH_RX.search(ctx))
+    _add_labeled(found, words, ocr_page, file, pno)
+
+
 def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None) -> dict:
     t0 = time.time()
     pdfs = list_pdfs(folder)
@@ -210,44 +233,29 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     found: dict = {}
     for fi, pdf in enumerate(pdfs, start=1):
         doc = fitz.open(pdf)
-        mode, _ = pdf_mode(doc)
-        log(f"[{fi}/{len(pdfs)}] {pdf.name}: {len(doc)} page(s), {mode}")
-        for pno, page in enumerate(doc, start=1):
-            words = digital_words(page)
-            ocr_page = len(words) < 3
-            if ocr_page:
+        layouts = [page_layout(p) for p in doc]
+        modes = sorted({page_mode_name(l) for l in layouts})
+        log(f"[{fi}/{len(pdfs)}] {pdf.name}: {len(doc)} page(s), {', '.join(modes)}")
+        for pno, (page, lay) in enumerate(zip(doc, layouts), start=1):
+            if lay["kind"] == "scan":
                 if not can_ocr:
-                    log(f"   page {pno}: no text layer and no OCR engine available -> skipped")
+                    log(f"   page {pno}: no visible text and no OCR engine available -> skipped")
                     continue
                 words = ocr_words(render_page(page, 300), default_ocr_lang)
                 log(f"   page {pno}: OCR ({len(words)} words)")
-            text, _ = words_to_text(words)
-            if ocr_page:
-                text = ocr.fix_digits(text)           # '04 72 OO 11 22' -> '04 72 00 11 22' (same length)
-            for m in detect_all(text, ner):
-                value = " ".join(m.value.split())
-                if m.type == "PERSON":
-                    value = _HONORIFIC_START.sub("", value.split(" - ")[0]).strip(" ,.;:")
-                if len(value) < 3:
-                    continue
-                key = (m.type, norm_value(value))
-                e = found.setdefault(key, {"type": m.type, "value": value, "count": 0, "files": set(),
-                                           "pages": set(), "birth": False, "ner": False, "honorific": False,
-                                           "title": ""})
-                e["count"] += 1
-                e["files"].add(pdf.name)
-                e["pages"].add(pno)
-                e["ner"] = e["ner"] or m.rank >= 100
-                e["honorific"] = e["honorific"] or (m.type == "PERSON" and m.rank == PERSON_RANKS[0])
-                if m.type == "PERSON" and not e["title"]:
-                    t = _TITLE_BEFORE.search(text[max(0, m.start - 16):m.start])
-                    e["title"] = t.group(1) if t else ""
-                if m.type == "DATE":
-                    ctx = text[max(0, m.start - 35):m.end + 8]
-                    e["birth"] = e["birth"] or bool(_BIRTH_RX.search(ctx))
-            _add_labeled(found, words, ocr_page, pdf.name, pno)
+                _detect_words(found, words, True, ner, pdf.name, pno)
+                if lay["words"]:                       # a scanner's invisible OCR layer: read it too
+                    _detect_words(found, lay["words"], False, ner, pdf.name, pno)
+                continue
+            _detect_words(found, lay["words"], False, ner, pdf.name, pno)
+            if lay["pixels"] and can_ocr:                # text that only exists as pixels (images)
+                _, pw = _pixel_words(page, lay["visible"], default_ocr_lang)
+                if pw:
+                    log(f"   page {pno}: OCR of the images ({len(pw)} words)")
+                    _detect_words(found, pw, True, ner, pdf.name, pno)
 
     faker = Faker(secret_key)        # None: this computer's secret key (anonymizer.secret)
+    faker.reserve(e["value"] for e in found.values())
     active: list[dict] = []
     off: list[dict] = []
     tokens_added: set[str] = set()
@@ -455,19 +463,67 @@ def _adjust(cfg: dict, m) -> str:
     return match_case(m.value, m.replacement or "") if cfg["match_case"] else (m.replacement or "")
 
 
-def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list, dict]:
+PIXEL_MIN_AREA = 0.02        # a digital page whose images cover >= 2 % of it also gets an OCR pass on its pixels
+
+
+def page_layout(page) -> dict:
+    """How a page has to be processed, decided per page:
+    - 'scan': fewer than 3 VISIBLE words. A searchable scan (image + invisible OCR text) is a scan: its text layer
+      is invisible, the data the reader sees is in the pixels.
+    - 'digital': real visible text. If images cover a noticeable part of the page ('pixels'), the pixels are also
+      read by OCR (pasted screenshots, scanned annex inserted in a digital page, ...)."""
+    words = digital_words(page)
+    hidden = invisible_areas(page)
+    visible = [w for w in words if not _inside(w["box"], hidden)] if hidden else words
+    area = page.rect.width * page.rect.height or 1
+    img_area = 0.0
+    for info in page.get_image_info():
+        r = fitz.Rect(info["bbox"]) & page.rect
+        img_area += r.width * r.height if r.is_valid else 0
+    kind = "digital" if len(visible) >= 3 else "scan"
+    return {"kind": kind, "words": words, "visible": visible, "hidden": hidden,
+            "pixels": kind == "digital" and img_area / area >= PIXEL_MIN_AREA}
+
+
+def page_mode_name(lay: dict) -> str:
+    return "scan" if lay["kind"] == "scan" else "digital+images" if lay["pixels"] else "digital"
+
+
+def _pixel_words(page, visible: list[dict], ocr_lang: str, dpi: int = 300):
+    """OCR of the rendered page minus what the VISIBLE text layer already covers: the text that only exists as
+    pixels (images, scanned parts). Returns (image, words with boxes in image pixels)."""
+    img = render_page(page, dpi)
+    k = 72 / dpi
+    boxes = [(b[0] - 1.5, b[1] - 1.5, b[2] + 1.5, b[3] + 1.5) for b in (w["box"] for w in visible)]
+    keep = []
+    for w in ocr_words(img, ocr_lang):
+        x0, y0, x1, y1 = w["box"]
+        if not _inside((x0 * k, y0 * k, x1 * k, y1 * k), boxes):
+            keep.append(w)
+    return img, keep
+
+
+def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[dict]) -> tuple[list, dict]:
+    """Any document with at least one digital page. Each page is processed in its own mode."""
     doc = fitz.open(pdf)
     pc = pii_cfg(cfg)
     blackbox = cfg["style"]["mode"] == "blackbox"
     # False = no rectangle: the original text is removed and the page background stays visible
     fill = (0, 0, 0) if blackbox else (1, 1, 1) if cfg["style"]["digital_fill"] == "white" else False
     fonts = render.FontBook(doc)
-    numberer, records, empty = Numberer(), [], []
+    numberer, records = Numberer(), []
     extras: dict = {"blackouts": [], "mrz": []}
-    for pno, page in enumerate(doc, start=1):
-        words = digital_words(page)
-        if len(words) < 3:
-            empty.append(pno)
+    for i, lay in enumerate(layouts):
+        pno, page = i + 1, doc[i]
+        if lay["kind"] == "scan":
+            # rebuilt as an image, like a scanned file: nothing of the original page (image, invisible text) is kept
+            img = _scan_page(page, pno, len(doc), cfg, pc, ocr_lang, numberer, records, extras, log)
+            rect = page.rect
+            doc.delete_page(i)
+            newp = doc.new_page(pno=i, width=rect.width, height=rect.height)
+            newp.insert_image(newp.rect, stream=_jpeg(img))
+            continue
+        words = lay["words"]
         bo = cfg["blackout"]
         want_photos = bo["photos"] and (not bo["photos_only_on_id_documents"] or fields.is_id_document(words))
         black = [("photo", r) for r in (regions.find_photos_digital(page) if want_photos else [])]
@@ -476,7 +532,9 @@ def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list, dict]:
                   (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
         plan = plan_page(words, pc, [], numberer)
         if plan:
-            _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno)
+            _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, lay["hidden"])
+        if lay["pixels"]:
+            _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, [r for _, r in black], log)
         if black:
             render.black_out_digital(page, [r for _, r in black])
             extras["blackouts"] += [{"page": pno, "kind": k, "box": [round(v, 1) for v in r]} for k, r in black]
@@ -484,24 +542,87 @@ def _digital(pdf: Path, out: Path, cfg: dict, log) -> tuple[list, list, dict]:
         log("   fonts: " + ", ".join(f"{n} {k}" for k, n in sorted(fonts.used.items()))
             + "  (embedded = same font as the PDF, system = same font from this PC, standard = closest PDF font)")
     _finish_digital(doc, out)
-    return records, empty, extras
+    return records, extras
 
 
-def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno):
-    """Text replacements of one digital page (fonts read before the text is removed)."""
+def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, hidden=()):
+    """Text replacements of one digital page (fonts read before the text is removed). Matches in INVISIBLE text
+    (a scanner's OCR layer) are removed without writing a fake on top: the pixel pass handles what is visible."""
     spans = render.page_spans(page)            # read fonts before the text is removed
     styles = [render.style_at(spans, boxes[0]) for _, boxes in plan]
     limits = [render.free_right(words, boxes[0], page.rect.width) for _, boxes in plan]
     for m, boxes in plan:
         m.replacement = _adjust(cfg, m)
         for b in boxes:
-            page.add_redact_annot(fitz.Rect(b), fill=fill)
+            page.add_redact_annot(fitz.Rect(b), fill=fill if not _inside(b, hidden) else False)
         records.append({"page": pno, "original": m.value, "replacement": m.replacement})
     render.apply_redactions(page)
     if not blackbox:
         for (m, boxes), style, limit in zip(plan, styles, limits):
-            if m.replacement:
+            if m.replacement and not _inside(boxes[0], hidden):
                 render.insert_replacement(page, boxes[0], m.replacement, style, fonts, limit)
+
+
+def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, log):
+    """Digital page with images: replace what only exists as pixels (OCR minus the visible text layer). The image
+    pixels under each value are overwritten (redaction) and the fake is written on top as real text."""
+    dpi = 300
+    k = 72 / dpi
+    img, words = _pixel_words(page, visible_words(page), ocr_lang, dpi)
+    if not words:
+        return
+    blackbox = cfg["style"]["mode"] == "blackbox"
+    gray = np.asarray(img.convert("L"))
+    mrz = fields.find_mrz(words, gray) if cfg["mrz"] != "keep" else None
+    zone = fields.mrz_zone(mrz) if mrz else None
+    black_px = [tuple(v / k for v in r) for r in black]
+    plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer)
+    todo = []
+    for m, boxes in plan:
+        m.replacement = _adjust(cfg, m)
+        records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+        if _inside(boxes[0], black_px + ([zone] if zone else [])):
+            continue                                   # covered by a black box / rebuilt with the MRZ
+        ink = render.ink_color(img, boxes[0])
+        for b in boxes:
+            bg = (0, 0, 0) if blackbox else render.background_color(img, (b[0] - 3, b[1] - 3, b[2] + 3, b[3] + 3))
+            page.add_redact_annot(fitz.Rect(b[0] * k - 1, b[1] * k - 1, b[2] * k + 1, b[3] * k + 1),
+                                  fill=tuple(c / 255 for c in bg))
+        todo.append((m, boxes[0], ink))
+    if zone:
+        page.add_redact_annot(fitz.Rect(*(v * k for v in zone)),
+                              fill=tuple(c / 255 for c in render.background_color(img, zone)))
+    if not todo and not zone:
+        return
+    page.apply_redactions(images=2, graphics=1, text=0)    # image pixels under the values are overwritten
+    for m, b, ink in todo:
+        if blackbox or not m.replacement:
+            continue
+        size_px = render._em_size(m.value, b)
+        descent = max(render.load_font(max(int(size_px), 6)).getbbox(m.value, anchor="ls")[3], 0)
+        size = size_px * k
+        avail = max((b[2] - b[0]) * k * 1.2, 1)
+        width = fitz.get_text_length(m.replacement, fontname="helv", fontsize=size)
+        if width > avail:
+            size *= avail / width
+        page.insert_text((b[0] * k, (b[3] - descent) * k), m.replacement, fontsize=size, fontname="helv",
+                         color=tuple(c / 255 for c in ink))
+    if zone:
+        lines = _new_mrz(words, mrz, cfg)
+        size = mrz["char_w"] * k / 0.6                    # Courier advance = 0.6 em
+        h = mrz["height"]
+        pitch = (mrz["lines"][1][3] - mrz["lines"][0][3]) if len(mrz["lines"]) > 1 else 1.8 * h
+        for j, line in enumerate(lines):
+            page.insert_text((mrz["x"] * k, (mrz["lines"][0][3] + j * pitch) * k), line, fontsize=size,
+                             fontname="cour", color=(0.08, 0.08, 0.08))
+        extras["mrz"].append({"page": pno, "action": "regenerated", "format": mrz["format"], "lines": lines})
+    log(f"   page {pno}: {len(todo)} value(s) replaced in images (OCR)" + (", MRZ regenerated" if zone else ""))
+
+
+def _jpeg(img) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
 
 
 def _finish_digital(doc, out: Path):
@@ -509,6 +630,10 @@ def _finish_digital(doc, out: Path):
         for annot in list(page.annots() or []):
             page.delete_annot(annot)
     doc.set_metadata({})
+    try:
+        doc.set_toc([])                                   # bookmarks can contain names
+    except Exception:  # noqa: BLE001
+        pass
     for fn, kw in ((doc.del_xml_metadata, {}),
                    (doc.scrub, dict(metadata=True, xml_metadata=True, attached_files=True, embedded_files=True,
                                     thumbnails=True, remove_links=True, reset_fields=True, reset_responses=True))):
@@ -521,75 +646,81 @@ def _finish_digital(doc, out: Path):
 
 
 def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list, dict]:
+    """A document made only of scanned pages: a brand new PDF with one new image per page."""
     src, dst = fitz.open(pdf), fitz.open()
     pc = pii_cfg(cfg)
-    blackbox = cfg["style"]["mode"] == "blackbox"
     numberer, records = Numberer(), []
     extras: dict = {"blackouts": [], "mrz": []}
     for pno, page in enumerate(src, start=1):
-        t0 = time.time()
-        img = render_page(page, 300)
-        words = ocr_words(img, ocr_lang)
-        plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer)
-        draw = ImageDraw.Draw(img)
-        pad = 3
-        # areas handled as a whole (found before anything is painted): MRZ, photos, signatures
-        bo = cfg["blackout"]
-        mrz = fields.find_mrz(words, np.asarray(img.convert("L")))
-        zone = fields.mrz_zone(mrz) if mrz else None
-        id_page = fields.is_id_document(words, bool(mrz))
-        want_photos = bo["photos"] and (id_page or not bo["photos_only_on_id_documents"])
-        photos = [regions.trim_to_text(b, words) for b in regions.find_photos(img, 300)] if want_photos else []
-        codes = regions.find_codes(img, 300) if bo["qr_codes"] else []
-        # photos / codes / MRZ are not signature ink (a photo often sits right above the signature label);
-        # photos are searched for this even when they are not blacked out on this page
-        not_ink = ([zone] if zone else []) + codes + (photos or regions.find_photos(img, 300))
-        signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
-        if cfg["mrz"] == "keep":
-            mrz = zone = None
-        covered = photos + codes + signs + ([zone] if zone else [])
-        # measure everything before painting (ink colour, free space on the right)
-        bold = render.BoldMeter(img, words)
-        looks = [(render.ink_color(img, boxes[0]), render.free_right(words, boxes[0], img.width),
-                  bold.is_bold(boxes[0], m.value)) for m, boxes in plan]
-        n_bold = sum(1 for look in looks if look[2])
-        for (m, boxes), (ink, limit, is_bold) in zip(plan, looks):
-            m.replacement = _adjust(cfg, m)
-            if _inside(boxes[0], covered):             # under a black box or in the MRZ: handled below
-                records.append({"page": pno, "original": m.value, "replacement": m.replacement})
-                continue
-            for i, b in enumerate(boxes):
-                box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
-                fill = (0, 0, 0) if blackbox else render.background_color(img, box)
-                draw.rectangle(box, fill=fill)
-                if not blackbox and i == 0 and m.replacement:
-                    font, xy = render.scan_text_layout(m.value, m.replacement, b, limit, is_bold)
-                    lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
-                    ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
-                    color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
-                    draw.text(xy, m.replacement, font=font, anchor="ls", fill=color)
-            records.append({"page": pno, "original": m.value, "replacement": m.replacement})
-        if mrz:
-            lines = _new_mrz(words, mrz, cfg)
-            render.draw_mrz(img, draw, mrz, zone, lines)
-            extras["mrz"].append({"page": pno, "action": "regenerated", "format": mrz["format"], "lines": lines})
-            log(f"   page {pno}: machine readable zone (MRZ, {mrz['format']}) regenerated")
-        for kind, boxes_ in (("photo", photos), ("qr code", codes), ("signature", signs)):
-            for b in boxes_:
-                draw.rectangle(b, fill=(0, 0, 0))
-                extras["blackouts"].append({"page": pno, "kind": kind,   # box in PDF points, like digital
-                                            "box": [round(v * 72 / 300, 1) for v in b]})
-        if photos or codes or signs:
-            log(f"   page {pno}: blacked out {len(photos)} photo(s), {len(codes)} QR code(s), {len(signs)} signature(s)")
-        log(f"   page {pno}/{len(src)}: OCR {len(words)} words, {len(plan)} replacement(s)"
-            f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
+        img = _scan_page(page, pno, len(src), cfg, pc, ocr_lang, numberer, records, extras, log)
         newp = dst.new_page(width=page.rect.width, height=page.rect.height)
-        newp.insert_image(newp.rect, stream=buf.getvalue())
+        newp.insert_image(newp.rect, stream=_jpeg(img))
     dst.set_metadata({})
     dst.save(out, garbage=4, deflate=True)
     return records, extras
+
+
+def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log):
+    """One scanned page -> its anonymized image (values repainted, MRZ rebuilt, black boxes)."""
+    blackbox = cfg["style"]["mode"] == "blackbox"
+    t0 = time.time()
+    img = render_page(page, 300)
+    words = ocr_words(img, ocr_lang)
+    plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer)
+    draw = ImageDraw.Draw(img)
+    pad = 3
+    # areas handled as a whole (found before anything is painted): MRZ, photos, signatures
+    bo = cfg["blackout"]
+    mrz = fields.find_mrz(words, np.asarray(img.convert("L")))
+    zone = fields.mrz_zone(mrz) if mrz else None
+    id_page = fields.is_id_document(words, bool(mrz))
+    want_photos = bo["photos"] and (id_page or not bo["photos_only_on_id_documents"])
+    found_photos = regions.find_photos(img, 300)
+    photos = [regions.trim_to_text(b, words) for b in found_photos] if want_photos else []
+    codes = regions.find_codes(img, 300) if bo["qr_codes"] else []
+    # photos / codes / MRZ are not signature ink (a photo often sits right above the signature label);
+    # photos count for this even when they are not blacked out on this page
+    not_ink = ([zone] if zone else []) + codes + found_photos
+    signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
+    if cfg["mrz"] == "keep":
+        mrz = zone = None
+    covered = photos + codes + signs + ([zone] if zone else [])
+    # measure everything before painting (ink colour, free space on the right)
+    bold = render.BoldMeter(img, words)
+    looks = [(render.ink_color(img, boxes[0]), render.free_right(words, boxes[0], img.width),
+              bold.is_bold(boxes[0], m.value)) for m, boxes in plan]
+    n_bold = sum(1 for look in looks if look[2])
+    for (m, boxes), (ink, limit, is_bold) in zip(plan, looks):
+        m.replacement = _adjust(cfg, m)
+        if _inside(boxes[0], covered):             # under a black box or in the MRZ: handled below
+            records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+            continue
+        for i, b in enumerate(boxes):
+            box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
+            fill = (0, 0, 0) if blackbox else render.background_color(img, box)
+            draw.rectangle(box, fill=fill)
+            if not blackbox and i == 0 and m.replacement:
+                font, xy = render.scan_text_layout(m.value, m.replacement, b, limit, is_bold)
+                lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
+                ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
+                color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
+                draw.text(xy, m.replacement, font=font, anchor="ls", fill=color)
+        records.append({"page": pno, "original": m.value, "replacement": m.replacement})
+    if mrz:
+        lines = _new_mrz(words, mrz, cfg)
+        render.draw_mrz(img, draw, mrz, zone, lines)
+        extras["mrz"].append({"page": pno, "action": "regenerated", "format": mrz["format"], "lines": lines})
+        log(f"   page {pno}: machine readable zone (MRZ, {mrz['format']}) regenerated")
+    for kind, boxes_ in (("photo", photos), ("qr code", codes), ("signature", signs)):
+        for b in boxes_:
+            draw.rectangle(b, fill=(0, 0, 0))
+            extras["blackouts"].append({"page": pno, "kind": kind,   # box in PDF points, like digital
+                                        "box": [round(v * 72 / 300, 1) for v in b]})
+    if photos or codes or signs:
+        log(f"   page {pno}: blacked out {len(photos)} photo(s), {len(codes)} QR code(s), {len(signs)} signature(s)")
+    log(f"   page {pno}/{n_pages} (scan): OCR {len(words)} words, {len(plan)} replacement(s)"
+        f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
+    return img
 
 
 def verify_output(path: Path, cfg: dict, ocr_lang: str, use_ocr: bool) -> list[dict]:
@@ -651,30 +782,30 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                  "leftovers": [], "warnings": [], "error": None, "seconds": 0}
         try:
             doc = fitz.open(pdf)
-            mode, with_text = pdf_mode(doc)
-            entry.update(mode=mode, pages=len(doc))
+            layouts = [page_layout(p) for p in doc]
             doc.close()
-            if 0 < with_text < entry["pages"]:
-                entry["warnings"].append(f"mixed document: only {with_text}/{entry['pages']} pages have text; "
-                                         f"processed as '{mode}'")
-            log(f"[{i}/{len(pdfs)}] {pdf.name}: {entry['pages']} page(s), {mode} mode")
-            if mode == "digital":
-                records, empty, extras = _digital(pdf, out, cfg, log)
-                if empty:
-                    entry["warnings"].append(f"pages without text layer (not processed): {empty[:10]}")
-            else:
+            kinds = {l["kind"] for l in layouts}
+            mode = "scan" if kinds == {"scan"} else "digital" if not any(l["pixels"] for l in layouts) \
+                and kinds == {"digital"} else "mixed"
+            entry.update(mode=mode, pages=len(layouts), page_modes=[page_mode_name(l) for l in layouts])
+            log(f"[{i}/{len(pdfs)}] {pdf.name}: {entry['pages']} page(s), {mode}"
+                + (f" ({', '.join(entry['page_modes'])})" if mode == "mixed" else ""))
+            if mode != "digital":
                 if not ocr.available():
-                    raise RuntimeError("scanned PDF but no OCR engine is available (Tesseract or Windows OCR)")
+                    raise RuntimeError("scanned pages / images but no OCR engine is available (Tesseract or Windows OCR)")
                 log(f"   OCR engine: {ocr.describe(ocr_lang)}")
+            if mode == "scan":
                 records, extras = _scan_pdf(pdf, out, cfg, ocr_lang, log)
+            else:
+                records, extras = _digital(pdf, out, cfg, ocr_lang, log, layouts)
             entry["items"] = summarize(records, cfg)
             entry["blackouts"] = extras["blackouts"]
             entry["mrz"] = extras["mrz"]
-            if extras["blackouts"] and mode == "digital":
+            if extras["blackouts"] and mode != "scan":
                 log(f"   blacked out: " + ", ".join(f"{b['kind']} p.{b['page']}" for b in extras["blackouts"]))
             entry["replaced"] = len(records)
             log(f"   {len(records)} replacement(s), verifying...")
-            entry["leftovers"] = verify_output(out, cfg, ocr_lang, use_ocr=(mode == "scan" or ocr_verify))
+            entry["leftovers"] = verify_output(out, cfg, ocr_lang, use_ocr=(mode != "digital" or ocr_verify))
             if entry["leftovers"]:
                 log(f"   WARNING: {len(entry['leftovers'])} original value(s) still found in the output")
         except Exception as e:  # noqa: BLE001

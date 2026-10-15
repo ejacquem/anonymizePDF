@@ -16,7 +16,6 @@ Digital PDFs:
 from __future__ import annotations
 
 import re
-from collections import deque
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -37,32 +36,70 @@ def is_signature_label(text: str) -> bool:
     return bool(hits) and (hits[0] < 2 or len(words) <= 4)
 
 
-def _components(mask: np.ndarray) -> list[tuple[int, int, int, int, int]]:
-    """Connected components (8-neighbour) of a small boolean mask -> [(x0, y0, x1, y1, pixel_count)]."""
-    h, w = mask.shape
-    seen = np.zeros_like(mask, dtype=bool)
-    out = []
-    ys, xs = np.nonzero(mask)
-    for sy, sx in zip(ys, xs):
-        if seen[sy, sx]:
-            continue
-        q = deque([(sy, sx)])
-        seen[sy, sx] = True
-        x0 = x1 = sx
-        y0 = y1 = sy
-        n = 0
-        while q:
-            y, x = q.popleft()
-            n += 1
-            x0, x1, y0, y1 = min(x0, x), max(x1, x), min(y0, y), max(y1, y)
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not seen[ny, nx]:
-                        seen[ny, nx] = True
-                        q.append((ny, nx))
-        out.append((x0, y0, x1 + 1, y1 + 1, n))
+def _max_filter(a: np.ndarray, size: int) -> np.ndarray:
+    """Maximum over a size x size square, computed separably (rows then columns): same result as Pillow's
+    MaxFilter(size), much faster for big windows."""
+    r = size // 2
+    out = a
+    for axis in (0, 1):
+        pad = [(0, 0), (0, 0)]
+        pad[axis] = (r, r)
+        padded = np.pad(out, pad, mode="edge")
+        n = out.shape[axis]
+        out = np.max(np.stack([np.take(padded, range(i, i + n), axis=axis) for i in range(size)]), axis=0)
     return out
+
+
+def _components(mask: np.ndarray) -> list[tuple[int, int, int, int, int]]:
+    """Connected components (8-neighbour) of a boolean mask -> [(x0, y0, x1, y1, pixel_count)].
+    Works on runs of pixels per row (union-find), not pixel by pixel: fast enough for a whole page."""
+    h, w = mask.shape
+    parent: list[int] = []
+    rows, starts, ends = [], [], []
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    prev: list[int] = []
+    for y in range(h):
+        row = mask[y]
+        if not row.any():
+            prev = []
+            continue
+        d = np.diff(np.concatenate(([0], row.astype(np.int8), [0])))
+        cur = []
+        j = 0
+        for s0, e0 in zip(np.nonzero(d == 1)[0].tolist(), np.nonzero(d == -1)[0].tolist()):
+            idx = len(parent)
+            parent.append(idx)
+            rows.append(y)
+            starts.append(s0)
+            ends.append(e0)
+            cur.append(idx)
+            # runs of the previous row touching [s0, e0) with 8-connectivity: start <= e0 and end >= s0
+            while j < len(prev) and ends[prev[j]] < s0:
+                j += 1
+            k = j
+            while k < len(prev) and starts[prev[k]] <= e0:
+                ra, rb = find(idx), find(prev[k])
+                if ra != rb:
+                    parent[ra] = rb
+                k += 1
+        prev = cur
+    boxes: dict = {}
+    for i in range(len(parent)):
+        r = find(i)
+        y, s0, e0 = rows[i], starts[i], ends[i]
+        bx = boxes.get(r)
+        if bx is None:
+            boxes[r] = [s0, y, e0, y + 1, e0 - s0]
+        else:
+            bx[0], bx[1], bx[2], bx[3] = min(bx[0], s0), min(bx[1], y), max(bx[2], e0), max(bx[3], y + 1)
+            bx[4] += e0 - s0
+    return [tuple(v) for v in boxes.values()]
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +118,7 @@ def find_photos(img: Image.Image, dpi: int) -> list[tuple]:
     # reference: each document is compared with its own background, so a whole ID card on a white scanner bed
     # does not look 'darker than the paper'
     bright = lum >= np.percentile(lum, 99) - 6
-    ref = Image.fromarray(np.where(bright, 0, lum).astype(np.uint8))
-    paper = np.asarray(ref.filter(ImageFilter.MaxFilter(31))).astype(np.int16)
+    paper = _max_filter(np.where(bright, 0, lum), 31)
     diff = paper - lum
     dark = Image.fromarray((((diff > 16) & ~bright) * 255).astype(np.uint8))
     # erase thin strokes (text, guilloche lines, big letters) with an opening of ~2.5 mm
