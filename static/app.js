@@ -81,7 +81,7 @@ function renderNode(node, parent, depth) {
     if (open) node.children.forEach((c) => renderNode(c, parent, depth + 1));
   } else {
     const row = document.createElement("div");
-    row.className = "row" + (node.anonymized ? " anon" : "") + (state.file === node.path ? " selected" : "");
+    row.className = "row" + (node.anonymized ? " anon" : "") + (pairSelected(node) ? " selected" : "");
     row.style.paddingLeft = 6 + depth * 10 + 12 + "px";
     row.innerHTML = `<span>${node.anonymized ? "🔒" : "📄"}</span><span class="name" title="${esc(node.name)}">${esc(node.name)}</span>` +
       (node.reviewed ? `<span class="rev-mark" title="anonymized file reviewed by hand">✓</span>` : "");
@@ -410,6 +410,12 @@ async function openFile(path) {
 }
 
 // ---------- up / down arrows: the previous / next original file of the folder (wraps around) ----------
+// the original and its anonymized output are both shown as selected, whichever of the two was clicked
+function pairSelected(node) {
+  const cur = currentOriginalNode();
+  return !!cur && (node.path === cur.path || (!!cur.anon && node.path === cur.anon));
+}
+
 function originalFiles() {
   const node = state.folder !== null ? state.nodes[state.folder] : null;
   return node ? (node.children || []).filter((c) => c.type === "file" && !c.anonymized).map((c) => c.path) : [];
@@ -423,7 +429,8 @@ document.addEventListener("keydown", (e) => {
   const files = originalFiles();
   if (!files.length || state.running) return;
   e.preventDefault();
-  const i = files.indexOf(state.file);
+  const cur = currentOriginalNode();
+  const i = cur ? files.indexOf(cur.path) : -1;
   const next = e.key === "ArrowDown" ? (i + 1) % files.length : (i <= 0 ? files.length - 1 : i - 1);
   openFile(files[next]);
 });
@@ -499,7 +506,7 @@ async function saveBoxes(message) {
 }
 
 $("#btnBox").onclick = async () => {
-  if (!state.model) return;
+  if (!state.model || $("#btnBox").disabled) return;
   if (!boxes.tool && state.cfgView !== "table") await switchView("table");
   setBoxTool(!boxes.tool);
 };
@@ -607,10 +614,9 @@ function currentOriginalNode() {
 
 function updateReviewButton() {
   const btn = $("#btnReviewed"), node = currentOriginalNode();
-  btn.hidden = !(node && node.anon);
-  if (btn.hidden) return;
-  btn.classList.toggle("on", !!node.reviewed);
-  btn.textContent = node.reviewed ? "✓ Reviewed" : "Mark as reviewed";
+  btn.disabled = !(node && node.anon);                       // shown greyed out when there is nothing to flag
+  btn.classList.toggle("on", !!(node && node.reviewed));
+  btn.textContent = node && node.reviewed ? "✓ Reviewed" : "Mark as reviewed";
 }
 
 $("#btnReviewed").onclick = async () => {
@@ -955,11 +961,10 @@ function updateToolbar() {
   $("#btnScan").disabled = state.running || (!n && !batch);
   $("#btnSave").disabled = state.running || !state.hasConfig || !state.dirty;
   $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
-  const cur = state.file ? state.nodes[state.file] : null;
-  $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur || cur.anonymized;
+  const cur = currentOriginalNode();                          // either file of the pair works
+  $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur;
   $("#btnRunFile").classList.toggle("save-needed", !!state.boxesStale);
-  const orig = currentOriginalNode();
-  $("#btnBox").hidden = !(orig && orig.anon && state.hasConfig);
+  $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig);
 }
 
 // ---------- jobs ----------
@@ -1021,8 +1026,8 @@ $("#btnRun").onclick = async () => {
 };
 
 $("#btnRunFile").onclick = async () => {
-  const cur = state.file ? state.nodes[state.file] : null;
-  if (!cur || cur.anonymized) return;
+  const cur = currentOriginalNode();
+  if (!cur) return;
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("anonymize", "/api/anonymize",
     { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify }, "Anonymize file");
