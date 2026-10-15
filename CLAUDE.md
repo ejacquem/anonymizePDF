@@ -80,7 +80,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   (IntersectionObserver). Zoom shared by both panes (−/+, Fit; mouse wheel zooms, trackpad pinch (Ctrl) zooms, two-finger scroll and Shift+wheel scroll; input kind from `inputKind`), scroll synced page by page,
   click + drag pans both panes. Sync state uses "programmatic scroll" tracking (`setScroll` / `isProgrammatic`),
   not a requestAnimationFrame lock (rAF does not run in hidden tabs; scroll events are not dispatched either).
-- "Sync" unticked = the browser's own PDF viewer in an iframe (`/api/pdf`, selectable text); kept in localStorage.
+- "Viewer / PDF" switch (Original pane head): PDF = the browser's own PDF viewer in an iframe (`/api/pdf`, selectable
+  text); Viewer = the page images, synced. Kept in localStorage (`anonymizePDF.sync`). The header has two lines: name,
+  then the tools (zoom, switch, Black box, Mark as reviewed).
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Anonymize file** (the selected original only; the
   report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).

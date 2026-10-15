@@ -64,6 +64,11 @@ body.resizing { cursor: col-resize; user-select: none; }
   align-items: center; white-space: nowrap; overflow: hidden; }
 .pane-head .muted { font-weight: 400; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pane-head .mini { margin-left: auto; }
+.pane-head.tools { flex-direction: column; align-items: stretch; gap: 4px; white-space: normal; padding: 5px 8px; }
+.phead-title { display: flex; gap: 8px; align-items: baseline; overflow: hidden; white-space: nowrap; }
+.pane-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-weight: 400; }
+.pane-tools .mini { margin-left: 0; }
+#btnBox.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
 .pane-body { flex: 1; min-height: 0; overflow: auto; }
 .viewer { position: relative; overflow: auto; background: var(--viewer-bg); }
 .pages { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px; width: max-content;
@@ -92,7 +97,7 @@ main:not(.native) .viewer .pages { cursor: grab; user-select: none; }
 .page .pno { position: absolute; right: 6px; bottom: 4px; font-size: 11px; color: #888; }
 .page.failed::after { content: "page could not be rendered"; position: absolute; inset: 0; display: flex;
   align-items: center; justify-content: center; color: #c0392b; font-size: 12px; }
-.zoom { margin-left: auto; display: flex; align-items: center; gap: 4px; font-weight: 400; flex: none; }
+.zoom { display: flex; align-items: center; gap: 4px; font-weight: 400; flex: none; }
 .zoom-label { min-width: 52px; font-size: 12px; }
 .viewer .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--muted); text-align: center; padding: 20px; }
@@ -139,9 +144,9 @@ table.ov tr.click:hover { background: var(--sel); }
   font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre; overflow: auto; outline: none; }
 /* review table */
 .cfgbar { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex: none; }
-.seg button { border: 0; border-radius: 0; padding: 3px 10px; font-size: 12px; }
-.seg button.on { background: var(--accent); color: var(--accent-text); }
+.seg, .viewmode { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex: none; }
+.seg button, .viewmode button { border: 0; border-radius: 0; padding: 3px 10px; font-size: 12px; }
+.seg button.on, .viewmode button.on { background: var(--accent); color: var(--accent-text); }
 #cfgSearch { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--line);
   border-radius: 6px; background: var(--panel); color: var(--text); }
 .cfgtable { flex: 1; overflow: auto; padding: 6px 8px; font-size: 12.5px; }
@@ -149,9 +154,9 @@ table.ov tr.click:hover { background: var(--sel); }
 .cfgsum { margin: 6px 2px 8px; }
 details.settings { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; margin-bottom: 6px; }
 details.settings > summary { cursor: pointer; font-weight: 600; font-size: 12px; color: var(--muted); }
-.setgrid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 10px; align-items: center; padding: 8px 0 4px; }
+.setgrid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 10px; align-items: center; padding: 8px 0 4px; min-width: 0; }
 .setgrid > span:nth-child(odd) { color: var(--muted); font-size: 12px; }
-.setgrid select, .setgrid input.short { justify-self: start; width: 260px; font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--line);
+.setgrid select, .setgrid input.short { justify-self: start; width: 100%; min-width: 0; max-width: 260px; font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--line);
   border-radius: 4px; background: var(--panel); color: var(--text); max-width: 100%; }
 .setgrid .chk { display: inline-flex; margin-right: 10px; color: var(--text); }
 details.grp { border-top: 1px solid var(--line); }

@@ -277,7 +277,7 @@ $("#zoomFit").onclick = () => { zoom.fit = true; applyFit(); };
 
 // ----- scroll sync -----
 function syncScroll(fromWhich) {
-  if (!$("#syncScroll").checked) return;
+  if (nativeMode()) return;
   const sv = viewers[fromWhich], dv = viewers[other(fromWhich)];
   if (!sv.pages.length || !dv.pages.length) return;
   // map by page: same page, same relative position inside it (works even if page sizes differ)
@@ -346,7 +346,7 @@ for (const which of VIEWERS) {
 // ----- unsynced = the browser's own PDF viewer (text can be selected) -----
 const SYNC_KEY = "anonymizePDF.sync";
 
-function nativeMode() { return !$("#syncScroll").checked; }
+function nativeMode() { return !!document.querySelector('.viewmode button[data-mode="pdf"].on'); }
 
 function updateFrame(which) {
   const v = viewers[which], f = $(`#${which}Frame`);
@@ -371,11 +371,16 @@ function applyViewMode() {
   }
 }
 
-try { if (localStorage.getItem(SYNC_KEY) === "0") $("#syncScroll").checked = false; } catch (e) { /* no storage */ }
-$("#syncScroll").addEventListener("change", () => {
-  try { localStorage.setItem(SYNC_KEY, nativeMode() ? "0" : "1"); } catch (e) { /* no storage */ }
+// the Viewer / PDF switch of the Original pane (the Anonymized pane follows it)
+function setViewMode(mode) {
+  document.querySelectorAll(".viewmode button").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  try { localStorage.setItem(SYNC_KEY, mode === "pdf" ? "0" : "1"); } catch (e) { /* no storage */ }
   applyViewMode();
+}
+document.querySelectorAll(".viewmode button").forEach((b) => {
+  b.addEventListener("click", () => setViewMode(b.dataset.mode));
 });
+try { if (localStorage.getItem(SYNC_KEY) === "0") document.querySelectorAll(".viewmode button").forEach((b) => b.classList.toggle("on", b.dataset.mode === "pdf")); } catch (e) { /* no storage */ }
 applyViewMode();
 
 if ("ResizeObserver" in window) {
@@ -477,19 +482,25 @@ function pagePoint(pageEl, e) {
 }
 
 async function saveBoxes(message) {
+  if (state.cfgView !== "table") await switchView("table");   // the boxes live in the model: work from the table view
   if (state.cfgView !== "table" || !state.model) {
-    setStatus("Black boxes are saved from the Table view of the config", "err");
+    setStatus("Black box not saved: the config is not readable in the Table view (see Config)", "err");
     return;
   }
   setDirty(true);
   const ok = await saveConfig();
   renderTable();
   drawBoxes();
-  if (ok) setStatus(message, "ok");
+  if (ok) {
+    state.boxesStale = true;                                  // the anonymized file does not show them yet
+    updateToolbar();
+    setStatus(message, "ok");
+  }
 }
 
-$("#btnBox").onclick = () => {
+$("#btnBox").onclick = async () => {
   if (!state.model) return;
+  if (!boxes.tool && state.cfgView !== "table") await switchView("table");
   setBoxTool(!boxes.tool);
 };
 
@@ -714,7 +725,7 @@ document.addEventListener("change", (e) => {
     try { localStorage.setItem(OCR_KEY, state.ocrVerify ? "1" : "0"); } catch (err) { /* ignore */ }
   }
 });
-state.cfgView = (() => { try { return localStorage.getItem(VIEW_KEY) || "table"; } catch (e) { return "table"; } })();
+state.cfgView = (() => { try { const v = localStorage.getItem(VIEW_KEY); return v === "yaml" ? "yaml" : "table"; } catch (e) { return "table"; } })();
 state.model = null;
 state.ocrVerify = (() => { try { return localStorage.getItem(OCR_KEY) === "1"; } catch (e) { return false; } })();
 state.openGroups = null;          // types whose group is unfolded (null = default: groups with active entries)
@@ -901,13 +912,14 @@ function openTypes() {
 // ---- Table / YAML switch ----
 function showConfigView() {
   const table = state.cfgView === "table";
-  document.querySelectorAll(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.view === state.cfgView));
+  document.querySelectorAll(".cfgbar .seg button").forEach((b) => b.classList.toggle("on", b.dataset.view === state.cfgView));
   $("#cfgTable").hidden = !table;
   $("#cfgSearch").hidden = !table;
   $("#configText").hidden = table;
 }
 
 async function switchView(view) {
+  if (view !== "table" && view !== "yaml") return;
   if (view === state.cfgView) return;
   const msg = $("#configMsgText");
   try {
@@ -926,7 +938,7 @@ async function switchView(view) {
   try { localStorage.setItem(VIEW_KEY, view); } catch (e) { /* ignore */ }
   showConfigView();
 }
-document.querySelectorAll(".seg button").forEach((b) => { b.onclick = () => switchView(b.dataset.view); });
+document.querySelectorAll(".cfgbar .seg button").forEach((b) => { b.onclick = () => switchView(b.dataset.view); });
 
 function updateToolbar() {
   const node = state.folder !== null ? state.nodes[state.folder] : null;
@@ -945,6 +957,7 @@ function updateToolbar() {
   $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
   const cur = state.file ? state.nodes[state.file] : null;
   $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur || cur.anonymized;
+  $("#btnRunFile").classList.toggle("save-needed", !!state.boxesStale);
   const orig = currentOriginalNode();
   $("#btnBox").hidden = !(orig && orig.anon && state.hasConfig);
 }
@@ -1016,6 +1029,7 @@ $("#btnRunFile").onclick = async () => {
   await loadTree();
   await loadReport();
   if (r && r.status === "done") {
+    state.boxesStale = false;
     showTab("recap");
     const f = state.file; state.file = null; await openFile(f);
   }
