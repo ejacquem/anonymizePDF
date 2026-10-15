@@ -185,6 +185,7 @@ details.grp[open] > summary::before { content: "▾"; }
 .mlist { display: grid; gap: 3px; padding: 4px 0; }
 .mrow { display: grid; grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) auto; gap: 4px; align-items: center; font-size: 12px; }
 .mrow .mfind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.mdel { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
 .mrow .mrep { font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); background: transparent; color: var(--text); min-width: 0; }
 .mhead { padding-top: 4px; }
 .addrow { display: grid; grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) auto auto; gap: 4px; align-items: center;
