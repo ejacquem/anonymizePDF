@@ -597,7 +597,9 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         black += [("qr code", r) for r in (regions.find_codes_digital(page) if bo["qr_codes"] else [])]
         black += [("signature", r) for r in
                   (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
-        plan = plan_page(words, pc, [], numberer)
+        manual = cfg.get("manual_boxes", {}).get(pno, [])
+        black += [("manual", r) for r in manual]
+        plan = [(m, bx) for m, bx in plan_page(words, pc, [], numberer) if not _inside(bx[0], manual)]
         if plan:
             _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, lay["hidden"])
         if lay["pixels"]:
@@ -858,11 +860,12 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     # a face, with its hair and its shoulders (the photo around it): not signature ink either
     photo_area = [(b[0] - 0.5 * (b[2] - b[0]), b[1] - 0.5 * (b[3] - b[1]), b[2] + 0.5 * (b[2] - b[0]),
                    b[3] + 0.5 * (b[3] - b[1])) for b in found_photos]
-    not_ink = ([zone] if zone else []) + codes + photo_area
+    manual = [tuple(v * 300 / 72 for v in b) for b in cfg.get("manual_boxes", {}).get(pno, [])]   # pt -> px
+    not_ink = ([zone] if zone else []) + codes + photo_area + manual
     signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
     if cfg["mrz"] == "keep":
         mrz = zone = None
-    covered = photos + codes + signs + ([zone] if zone else [])
+    covered = photos + codes + signs + manual + ([zone] if zone else [])
     # measure everything before painting (ink colour, free space on the right)
     bold = render.BoldMeter(img, words)
     looks = [(render.ink_color(img, boxes[0]), render.free_right(words, boxes[0], img.width),
@@ -898,7 +901,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
         render.draw_mrz(img, draw, mrz, zone, lines)
         extras["mrz"].append({"page": pno, "action": "regenerated", "format": mrz["format"], "lines": lines})
         log(f"   page {pno}: machine readable zone (MRZ, {mrz['format']}) regenerated")
-    for kind, boxes_ in (("photo", photos), ("qr code", codes), ("signature", signs)):
+    for kind, boxes_ in (("photo", photos), ("qr code", codes), ("signature", signs), ("manual", manual)):
         for b in boxes_:
             draw.rectangle(b, fill=(0, 0, 0))
             extras["blackouts"].append({"page": pno, "kind": kind,   # box in PDF points, like digital
@@ -965,6 +968,15 @@ def _clear_review(folder: Path, name: str):
         pass
 
 
+def _manual_boxes(cfg: dict, name: str) -> dict:
+    """{page: [box in PDF points]} of the black boxes drawn by hand on one file."""
+    out: dict = {}
+    for b in cfg.get("manual_blackouts") or []:
+        if b["file"] == name:
+            out.setdefault(int(b["page"]), []).append(tuple(b["box"]))
+    return out
+
+
 def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log,
                   only: list[str] | None = None) -> dict:
     """Anonymize every source of the folder, or only the files named in `only` (their entries replace the ones of
@@ -1001,10 +1013,11 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 if not ocr.available():
                     raise RuntimeError("scanned pages / images but no OCR engine is available (Tesseract or Windows OCR)")
                 log(f"   OCR engine: {ocr.describe(ocr_lang)}")
+            fcfg = {**cfg, "manual_boxes": _manual_boxes(cfg, pdf.name)}
             if mode == "scan":
-                records, extras = _scan_source(pdf, out, cfg, ocr_lang, log)
+                records, extras = _scan_source(pdf, out, fcfg, ocr_lang, log)
             else:
-                records, extras = _digital(pdf, out, cfg, ocr_lang, log, layouts)
+                records, extras = _digital(pdf, out, fcfg, ocr_lang, log, layouts)
             entry["items"] = summarize(records, cfg)
             entry["blackouts"] = extras["blackouts"]
             entry["mrz"] = extras["mrz"]
