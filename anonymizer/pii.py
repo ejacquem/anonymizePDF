@@ -168,6 +168,22 @@ def _v_postal(m):
     return None if city in _CITY_STOPLIST else (m.start(), m.end())
 
 
+# words of the bank operation labels ('VIRT RECU MARION', 'PRLV SEPA REF', 'ACHAT-DEBIT'): they are never part of a
+# name or of a place, so they are taken out of those candidates before anything else reads them
+OPERATION_WORDS = {w.casefold() for w in """
+virt vir virement recu reçu sepa prlv prelevement prélèvement ref ret dab fr faveur achat debit débit cb paiement
+retrait carte frais commission versement transfert permanent online bancontact
+""".split()}
+NAME_TYPES = {"PERSON", "ORG", "LOCATION"}
+
+
+def strip_operations(value: str) -> str:
+    """'VIRT RECU MARION' -> 'MARION'. A word made of operation labels only ('ACHAT-DEBIT') goes too; a value with
+    nothing else left is empty, and the caller drops it."""
+    kept = [t for t in value.split() if not all(p.casefold() in OPERATION_WORDS for p in re.split(r"[-/]", t) if p)]
+    return " ".join(kept)
+
+
 _CAP = r"[A-ZÀ-ÖØ-Þ]"
 _WORD = r"[\wÀ-ÿ'’\-]"
 _NR = r"\d{1,4}(?:\s?[A-Za-z](?!\w)|/\d{1,3}|\s?(?i:bus|bte|box)\s?\d{1,3})?"

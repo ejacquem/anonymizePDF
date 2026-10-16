@@ -404,6 +404,10 @@ def detector_tests():
     check("masked apostrophe-grouped reference", any(t == "ACCOUNT_NUMBER" for t, _ in found("86'***'***'***'***")))
     check("an amount with apostrophes is no reference", not any(t == "ACCOUNT_NUMBER" for t, _ in found("Total 1'240.00 CHF")))
     check("'Code SWIFT' is not accepted as a name", not engine.accept_person("Code SWIFT", False, False))
+    check("operation labels are taken out of a name", pii.strip_operations("VIRT RECU MARION") == "MARION")
+    check("a label made of operation words only is empty", pii.strip_operations("PRLV SEPA REF") == "")
+    check("'ACHAT-DEBIT' and 'VIR RECU' are operation labels",
+          pii.strip_operations("ACHAT-DEBIT Jean Dupont") == "Jean Dupont" and pii.strip_operations("VIR RECU") == "")
     check("BIC after its label, any country code", ("BIC", "SWEDSESS") in found("BIC/SWIFT SWEDSESS XXX"))
     check("account number with a slash after its label", ("ACCOUNT_NUMBER", "51/234519") in found("Numéro de compte : 51/234519"))
     check("a date after an account label is no account number",

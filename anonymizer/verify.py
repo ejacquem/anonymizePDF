@@ -17,7 +17,8 @@ from pathlib import Path
 
 from . import fields, ocr
 from .ocr import ocr_words, render_page
-from .pii import PERSON_RANKS, detect_structured, digital_words, fitz, norm_value, term_regex, words_to_text
+from .pii import (NAME_TYPES, PERSON_RANKS, detect_structured, digital_words, fitz, norm_value, strip_operations,
+                  term_regex, words_to_text)
 
 # the identity fields of an ID document (label kind -> type) that the second check reads back
 _LEAK_LABELS = {"surname": "PERSON", "given": "PERSON", "doc_number": "DOC_NUMBER", "birth_place": "BIRTH_PLACE",
@@ -114,6 +115,8 @@ def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
         seen: set[str] = set()
         for typ, value in found:
             value = " ".join(value.split())
+            if typ in NAME_TYPES:
+                value = strip_operations(value)
             key = norm_value(value)
             # a replacement read back by the OCR with a few errors ('Irnier' for a fake name) is a replacement too
             if len(key) < 3 or key in seen or any(

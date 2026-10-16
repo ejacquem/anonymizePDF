@@ -222,6 +222,9 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - Split types: groups of ≥ 5 digits of ACCOUNT_NUMBER / BANK_CODE and ≥ 4 digits of masked CARD_NUMBER are also
   separate entries (OCR may drop the stars); digit groups get the same fake everywhere (`Faker.digit_groups`).
 - Dates are active only for birth dates (`_BIRTH_RX` within 35 chars before / 8 after, or a birth-date label).
+- Bank operation labels (`pii.OPERATION_WORDS`: VIRT, RECU, PRLV, SEPA, REF, RET, DAB, FR, ACHAT-DEBIT, ...) are taken
+  out of PERSON / ORG / LOCATION candidates (`strip_operations`, in `_detect_words` and the second check): 'VIRT RECU
+  MARION' is the name 'MARION', and a label alone is dropped. Add a label to the list when a statement shows one.
 - PERSON: after a title, `Prénom NOM`, `NOM Prénom`, spaCy PERSON; active only if after a title, contains a known
   first name, spaCy Title Case, or found under a label. `_STOP` words (including label words such as signature, nom,
   nationalité, adresse) are never names.

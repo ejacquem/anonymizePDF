@@ -24,8 +24,8 @@ from PIL import ImageDraw
 from . import configmodel, faces, fields, ocr, regions, render, verify
 from .fake import Faker, is_town_name, match_case
 from .ocr import DIGITAL_DPI, ocr_words, render_page
-from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz,
-                  invisible_areas, plan_page, visible_words, words_to_text, norm_value)
+from .pii import (NAME_TYPES, PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz,
+                  invisible_areas, plan_page, strip_operations, visible_words, words_to_text, norm_value)
 
 CONFIG_NAME = "anon_config.yaml"
 REPORT_NAME = "anon_report.json"
@@ -281,6 +281,8 @@ def _detect_words(found: dict, words: list[dict], ocr_page: bool, ner, file: str
         value = " ".join(m.value.split())
         if m.type == "PERSON":
             value = _HONORIFIC_START.sub("", value.split(" - ")[0]).strip(" ,.;:")
+        if m.type in NAME_TYPES:
+            value = strip_operations(value)           # 'VIRT RECU MARION' is the name MARION
         if len(value) < 3:
             continue
         key = (m.type, norm_value(value))
