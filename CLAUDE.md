@@ -160,8 +160,11 @@ API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api
 3. **Anonymize** (`run_anonymize`): every entry is a literal `find → replace` term (plus optional regex).
    - Only scan pages → `_scan_pdf` (a brand new PDF of images). Otherwise `_digital`, page by page:
      scan pages are rebuilt with `_scan_page` and replace the original page (delete + new page with the image);
-     digital pages: `plan_page` → read fonts first (`page_spans`), redact matched words (graphics kept; matches in
-     invisible text are removed without a fake on top), write the fake with `insert_replacement` (same font / size /
+     digital pages: `plan_page` → read fonts first (`page_spans`), redact matched words (graphics kept; a match is
+     INVISIBLE only when every word it covers is invisible text: `_mark_invisible`, `is_invisible_word` (the word starts
+     where an invisible character of `get_texttrace` starts). An invisible match is removed without a fake on top; a
+     drawn match always gets its fake, even when an invisible copy of the same text lies under it. Limit: the redaction
+     of an invisible match also takes the drawn text it overlaps, if that text is not itself a match), write the fake with `insert_replacement` (same font / size /
      colour / baseline); then `_pixel_pass` if the page has images (OCR minus visible text, redaction with
      `images=2` and the sampled paper colour, fake written as Helvetica text sized on the ink height, MRZ in an
      image rebuilt in Courier); then black boxes (`render.black_out_digital`). Finally annotations deleted,

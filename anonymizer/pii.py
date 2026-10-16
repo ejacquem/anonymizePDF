@@ -32,6 +32,7 @@ class Match:
     source: int = 2          # 0 = terms, 1 = regex rules, 2 = auto detectors
     rank: int = 0            # lower = higher priority inside the same source
     replacement: str | None = None
+    invisible: bool = False  # every word of the match is invisible text (set by the engine, digital pages)
 
 
 NER_TYPES = {"PERSON", "LOCATION", "ORG"}
@@ -525,6 +526,30 @@ def invisible_areas(page) -> list[tuple]:
     except Exception:  # noqa: BLE001
         return []
     return [tuple(s["bbox"]) for s in trace if s.get("type") == 3 or s.get("opacity", 1) == 0]
+
+
+def invisible_chars(page) -> dict:
+    """The INVISIBLE characters of the page, by the rounded x of their left edge: {x: [(x0, y1), ...]}."""
+    try:
+        trace = page.get_texttrace()
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict = {}
+    for s in trace:
+        if s.get("type") == 3 or s.get("opacity", 1) == 0:
+            for c in s.get("chars", []):
+                x0, _, _, y1 = c[3]
+                out.setdefault(round(x0), []).append((x0, y1))
+    return out
+
+
+def is_invisible_word(box, chars: dict) -> bool:
+    """A word is invisible text when an invisible character starts where it starts, on the same line. Compared with
+    the word's own start, not its centre: an invisible copy of a text can lie almost on top of the drawn one."""
+    x0, y1 = box[0], box[3]
+    key = round(x0)
+    return any(abs(cx - x0) < 0.5 and abs(cy - y1) < 1.5
+               for k in (key - 1, key, key + 1) for cx, cy in chars.get(k, []))
 
 
 def visible_words(page) -> list[dict]:

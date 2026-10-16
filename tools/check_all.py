@@ -494,6 +494,34 @@ def reported_cases_tests():
           .endswith(" place"))
 
 
+def invisible_copy_tests():
+    """A drawn name with an invisible copy of it on top (the OCR layer of a scan): the drawn name gets its replacement.
+    Bug seen on a real file: the name was erased (white, no text) because the drawn match was taken for invisible text."""
+    print("\n== invisible copy of a drawn text")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_hidden_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((60, 100), "MILLIES BANQUE", fontname="helv", fontsize=18)                  # drawn
+        page.insert_text((70, 100), "MILLIES BANQUE", fontname="helv", fontsize=18, render_mode=3)   # invisible copy
+        page.insert_text((60, 300), "Relevé du compte courant", fontname="helv", fontsize=10)
+        doc.save(tmp / "copie_cachee.pdf", garbage=4)
+        cfg = "\n".join([
+            'ocr_lang: "fra+eng"', "case_sensitive: false", "match_case: true",
+            "style: {mode: replace, digital_fill: none}",
+            "blackout: {photos: false, photos_only_on_id_documents: false, signatures: false, qr_codes: false}",
+            "mrz: regenerate", "replacements:",
+            '  - {find: "MILLIES BANQUE", replace: "ZELLIES BANQUE", type: ORG}', "regex: []"])
+        engine.run_anonymize(tmp, "copie", cfg, "fra+eng", False, lambda m: None)
+        out = fitz.open(tmp / "copie_cachee_anonymized.pdf")
+        text = out[0].get_text()
+        check("the drawn name is replaced (not left blank)", "ZELLIES" in text and "BANQUE" in text, repr(text[:80]))
+        check("no original name left in the text layer", "MILLIES" not in text)
+        check("the replacement is written once", text.count("ZELLIES") == 1, repr(text[:80]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def town_tests():
     """A town has one fake, whatever form it is written in, and the postcode of the fake belongs to the fake town."""
     print("\n== towns and postcodes")
@@ -625,6 +653,7 @@ def main():
     try:
         detector_tests()
         reported_cases_tests()
+        invisible_copy_tests()
         town_tests()
         speedup_tests()
         key_and_fake_tests(tmp)

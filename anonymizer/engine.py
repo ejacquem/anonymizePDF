@@ -26,6 +26,7 @@ from . import configmodel, faces, fields, ocr, regions, render, verify
 from .fake import Faker, _pkey, is_town_name, match_case
 from .ocr import DIGITAL_DPI, ocr_words, render_page
 from .pii import (NAME_TYPES, PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, detect_structured,
+                  invisible_chars, is_invisible_word,
                   digital_words, fitz,
                   invisible_areas, plan_page, strip_operations, visible_words, words_to_text, norm_value)
 
@@ -687,6 +688,9 @@ def page_layout(page) -> dict:
     for info in page.get_image_info():
         r = fitz.Rect(info["bbox"]) & page.rect
         img_area += r.width * r.height if r.is_valid else 0
+    chars = invisible_chars(page) if hidden else {}
+    for w in words:                                   # a word is drawn, or invisible (the OCR layer of a scan)
+        w["invisible"] = is_invisible_word(w["box"], chars) if chars else False
     kind = "digital" if len(visible) >= 3 else "scan"
     return {"kind": kind, "words": words, "visible": visible, "hidden": hidden,
             "pixels": kind == "digital" and img_area / area >= PIXEL_MIN_AREA}
@@ -744,8 +748,9 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         manual = cfg.get("manual_boxes", {}).get(pno, [])
         black += [("manual", r) for r in manual]
         plan = [(m, bx) for m, bx in plan_page(words, pc, [], numberer) if not _inside(bx[0], manual)]
+        _mark_invisible(plan, words)
         if plan:
-            _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, lay["hidden"])
+            _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno)
         if lay["pixels"]:
             _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, [r for _, r in black], log)
         if black:
@@ -758,21 +763,31 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
     return records, extras
 
 
-def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, hidden=()):
-    """Text replacements of one digital page (fonts read before the text is removed). Matches in INVISIBLE text
-    (a scanner's OCR layer) are removed without writing a fake on top: the pixel pass handles what is visible."""
+def _mark_invisible(plan, words):
+    """A match is invisible when every word it covers is invisible text (a scanner's OCR layer under the image). A
+    match on a drawn word is visible, even when an invisible copy of the same text lies under it."""
+    _, spans = words_to_text(words)
+    for m, _ in plan:
+        covered = [w for w, (ws, we) in zip(words, spans) if we > m.start and ws < m.end]
+        m.invisible = bool(covered) and all(w["invisible"] for w in covered)
+
+
+def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno):
+    """Text replacements of one digital page (fonts read before the text is removed). An INVISIBLE match (a scanner's
+    OCR layer) is removed without writing a fake on top: the pixel pass handles what is visible. Its redaction may
+    also take the drawn text it overlaps; a drawn match always gets its replacement."""
     spans = render.page_spans(page)            # read fonts before the text is removed
     styles = [render.style_at(spans, boxes[0]) for _, boxes in plan]
     limits = [render.free_right(words, boxes[0], page.rect.width) for _, boxes in plan]
     for m, boxes in plan:
         m.replacement = _adjust(cfg, m)
         for b in boxes:
-            page.add_redact_annot(fitz.Rect(b), fill=fill if not _inside(b, hidden) else False)
+            page.add_redact_annot(fitz.Rect(b), fill=False if m.invisible else fill)
         records.append({"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes)})
     render.apply_redactions(page)
     if not blackbox:
         for (m, boxes), style, limit in zip(plan, styles, limits):
-            if not m.replacement or _inside(boxes[0], hidden):
+            if not m.replacement or m.invisible:
                 continue
             # a value on several lines gets its replacement on the same lines, each line cut in proportion to its width
             parts = _cut_lines(m.replacement, [b[2] - b[0] for b in boxes]) if len(boxes) > 1 else [m.replacement]
