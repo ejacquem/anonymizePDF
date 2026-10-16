@@ -8,7 +8,8 @@ Tesseract). Fully local: no network, no cloud service.
 
 It prints per document what it found (method: text or OCR, identifiers by type), then the pairs of documents that
 share something, with the shared items and a score, then the groups (documents linked to each other, directly or
-through others). Nothing is written except the optional --json file. The outputs contain personal data: keep them
+through others; each group has its own colour in a terminal, NO_COLOR turns it off). Nothing is written except the
+optional --json file. The outputs contain personal data: keep them
 out of the repository.
 
 Matching:
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from collections import Counter, defaultdict
@@ -42,6 +44,16 @@ AMOUNT_RX = re.compile(r"(?<![\d.,/])(-?\d{1,3}(?:[ .\u202f']\d{3})+,\d{2}|-?\d+
                        r"|-?\d{1,3}(?:,\d{3})+\.\d{2}|-?\d+\.\d{2})(?!\d)")
 DATE_RX = re.compile(r"(?<!\d)(\d{1,2})[/.\-](\d{1,2})(?:[/.\-]\d{2,4})?(?!\d)")
 OCR_FOLD = str.maketrans("OIlSBZ", "011582")                  # the digit confusions of the OCR, read as digits
+GROUP_COLORS = [31, 32, 33, 34, 35, 36, 91, 92, 93, 94, 95, 96]   # ANSI foreground colours, one per group
+
+
+def colour_output() -> bool:
+    """Colours only in a terminal (not in a pipe or a file), unless NO_COLOR is set. Turns on ANSI on Windows consoles."""
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        return False
+    if os.name == "nt":
+        os.system("")                                     # a console starts reading ANSI sequences after this call
+    return True
 
 
 def page_text(page, ocr_lang: str) -> tuple[str, str]:
@@ -207,10 +219,13 @@ def main() -> int:
 
     gs = groups([d.name for d in docs], pairs, args.min_score)
     print(f"\n== groups of linked documents ({len(gs)})")
+    colour = colour_output()
     for i, g in enumerate(gs, 1):
+        code = GROUP_COLORS[(i - 1) % len(GROUP_COLORS)]
         print(f"  group {i} ({len(g)} documents):")
         for name in g:
-            print(f"      - {name}")
+            shown = f"\033[{code}m{name}\033[0m" if colour else name
+            print(f"      - {shown}")
     linked = {n for g in gs for n in g}
     print(f"\n== stats: {len(linked)}/{len(docs)} document(s) linked to at least one other, "
           f"{sum(1 for p in pairs if p['score'] >= args.min_score)} link(s) at score >= {args.min_score}")
