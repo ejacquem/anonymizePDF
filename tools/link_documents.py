@@ -100,6 +100,9 @@ class Document:
 
 
 IGNORE_RX: re.Pattern | None = None                       # the words of --ignore, blanked before anything is read
+# a date: day and month (dd/mm, dd.mm, dd-mm) with an optional year. '31.12' is a date too, and so is read as an amount
+# by the decimal rule; '12.50' is not a date (month 50), and a comma is never a date separator
+DATE_BLANK_RX = re.compile(r"(?<![\d.,/-])(0?[1-9]|[12]\d|3[01])[./-](0?[1-9]|1[0-2])(?:[./-](?:\d{4}|\d{2}))?(?![\d.,/-])")
 
 
 def set_ignore(words: list[str]) -> None:
@@ -110,10 +113,15 @@ def set_ignore(words: list[str]) -> None:
         if terms else None
 
 
+IGNORE_DATES = False                                      # --ignore-dates: the dates are blanked too
+
+
 def read_document(name: str, pages: list[tuple[str, str]]) -> Document:
     text = "\n".join(t for t, _ in pages)
     if IGNORE_RX:                                        # blanked, not removed: the spans of the text stay valid
         text = IGNORE_RX.sub(lambda m: " " * len(m.group()), text)
+    if IGNORE_DATES:
+        text = DATE_BLANK_RX.sub(lambda m: " " * len(m.group()), text)
     method = "/".join(sorted({m for _, m in pages}))
     doc = Document(name, len(pages), method)
     folded = text.translate(OCR_FOLD)                    # same length as the text: the spans match
@@ -214,12 +222,16 @@ def main() -> int:
     ap.add_argument("--min-score", type=float, default=2.0, help="score from which two documents are linked")
     ap.add_argument("--rare-amount", type=int, default=3, help="an amount in more documents is ignored")
     ap.add_argument("--json", type=Path, help="also write the whole analysis to this file")
+    ap.add_argument("--ignore-dates", action="store_true",
+                    help="ignore the dates (31/12, 31.12, 31-12-2024): no identifier, amount or transaction line from them")
     ap.add_argument("--ignore", action="append", default=[], metavar="WORDS",
                     help="words or phrases to ignore, comma-separated, repeatable (e.g. --ignore 'rue des Lilas,PARIS')")
     args = ap.parse_args()
     if not args.folder.is_dir():
         ap.error(f"not a folder: {args.folder}")
     set_ignore([w for group in args.ignore for w in group.split(",")])
+    global IGNORE_DATES
+    IGNORE_DATES = args.ignore_dates
     docs = read_folder(args.folder, args.ocr_lang)
     if not docs:
         print("no PDF or image in this folder")
