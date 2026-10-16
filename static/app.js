@@ -249,7 +249,6 @@ function drawChanges(which) {
   const v = viewers[which], k = pageScale();
   const on = btnChanges.classList.contains("on");
   const changes = on ? changedBoxes() : { replaced: [], removed: [] };
-  $("#changesLegend").hidden = !on;
   const shapes = [...changes.replaced.map((c) => ({ ...c, cls: "chg" })), ...changes.removed.map((c) => ({ ...c, cls: "chg removed" }))];
   [...v.list.children].forEach((el, i) => {
     el.querySelectorAll(".chg").forEach((n) => n.remove());

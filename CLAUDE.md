@@ -103,7 +103,7 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   of the report. Disabled while the report has no box for the file (anonymize it again: reports made before the
   Changes feature have none). Black boxes and the rebuilt MRZ are not framed. An area removed with nothing written in
   its place (`items[].removed`: an invisible copy, an empty replacement, a scanned area painted without text) is framed
-  in purple, dashed (`.chg.removed`, legend `#changesLegend`). A removed area mostly under an orange frame is not drawn
+  in purple, dashed (`.chg.removed`; the button title gives the colours). A removed area mostly under an orange frame is not drawn
   again. Engine: a record is `placed` when the fake was really written, `covered` when under a black box or the MRZ.
 - Status bar (footer, bottom): the message on the left (`setStatus`), on the right the progress of the running job:
   bar, % and files done / total, time left (`showProgress`, `fmtDuration`). The job reports `progress`
