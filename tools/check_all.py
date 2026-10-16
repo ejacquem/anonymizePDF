@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import secrets as pysecrets
@@ -72,6 +73,9 @@ SENSITIVE_11 = ["Ylona", "YLONA", "Océane", "Zaïra", "REYES", "REYS", "REYE", 
 # written in full, in pieces, initialled, in capitals, cut and reversed; a second person as a control
 SENSITIVE_12 = ["Théo", "THEO", "Aurélien", "AURELIEN", "Gaspard", "GASPARD", "Gasp", "Gas", "Morin", "MORIN",
                 "Clément", "Roux", "Théo Aurélien Gaspard Morin", "Gaspard Morin"]
+# values of the turned text (Dossier Test 13): columns written vertically and lines skewed (tools/make_test_rotated.py)
+SENSITIVE_13 = ["Théo", "Aurélien", "Morin", "Clément", "Roux", "BE68 5390 0754 7034", "0048213976", "15878645",
+                "8 rue des Cerisiers", "69003 Lyon", "14 mars 1985"]
 # values of the invoice (Dossier Test 8)
 SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 3000 6000 0112 3456 7890 189",
                "BNPAFRPP", "GEBABEBB", "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
@@ -140,6 +144,11 @@ EXPECT = {
     # traditional statement with transfers, many accounts and names in several forms: digital (embedded subset fonts)
     # and scan (tools/make_test_transfers.py)
     # one person in every form a folder writes a name: full, pieces, initials, capitals, cut, reversed (tools/make_test_names.py)
+    # text written vertically and skewed: the replacements keep the direction of the text they replace
+    "Dossier Test 13": (SENSITIVE_13, {
+        "texte_vertical.pdf": ("digital", [], []),
+        "texte_incline.pdf": ("digital", [], []),
+    }),
     "Dossier Test 12": (SENSITIVE_12, {
         "courrier_complet.pdf": ("digital", [], []),
         "releve_partiel.pdf": ("digital", [], []),
@@ -504,6 +513,60 @@ def reported_cases_tests():
           .endswith(" place"))
 
 
+def turned_lines(doc) -> list:
+    """(direction, text without spaces) of the lines that are not horizontal, in the order of the page."""
+    out = []
+    for page in doc:
+        for block in page.get_text("rawdict")["blocks"]:
+            for line in block.get("lines", []):
+                d = tuple(round(v, 2) for v in line["dir"])
+                if d[1] == 0 and d[0] > 0:
+                    continue
+                text = "".join(c["c"] for sp in line["spans"] for c in sp.get("chars", []) if not c["c"].isspace())
+                out.append((d, text))
+    return out
+
+
+def rotated_tests():
+    """Text that is not horizontal: a replacement is written turned with its line (same direction), and the glyphs
+    next to a turned value are kept (a redaction takes them with its wide box)."""
+    print("\n== turned text")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_turned_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((40, 780), "Titulaire : Théo Aurélien Morin", fontname="helv", fontsize=10, rotate=90)
+        page.insert_text((540, 60), "Client : Clément Roux", fontname="helv", fontsize=10, rotate=270)
+        a = math.radians(30)
+        page.insert_text((80, 300), "N° de compte : 15878645 - Carte 6703 **** **** 4471", fontname="helv", fontsize=10,
+                         morph=(fitz.Point(80, 300), fitz.Matrix(math.cos(a), math.sin(a), -math.sin(a), math.cos(a), 0, 0)))
+        doc.save(tmp / "tourne.pdf", garbage=4)
+        cfg = "\n".join([
+            'ocr_lang: "fra+eng"', "case_sensitive: false", "match_case: true",
+            "style: {mode: replace, digital_fill: none}",
+            "blackout: {photos: false, photos_only_on_id_documents: false, signatures: false, qr_codes: false}",
+            "mrz: regenerate", "replacements:",
+            '  - {find: "Théo Aurélien Morin", replace: "Koen Emmanuel Marin", type: PERSON}',
+            '  - {find: "Clément Roux", replace: "Marchal Brun", type: PERSON}',
+            '  - {find: "15878645", replace: "21195106", type: ACCOUNT_NUMBER}',
+            "regex: []"])
+        engine.run_anonymize(tmp, "tourne", cfg, "fra+eng", False, lambda m: None)
+        out = fitz.open(tmp / "tourne_anonymized.pdf")
+        lines = turned_lines(out)
+        check("the vertical value is written vertically (same direction as the original)",
+              any(d == (0.0, -1.0) and "KoenEmmanuelMarin" in t for d, t in lines), repr(lines))
+        check("the value read top to bottom is written top to bottom",
+              any(d == (0.0, 1.0) and "MarchalBrun" in t for d, t in lines), repr(lines))
+        check("the skewed value keeps the angle of its line",
+              any(abs(d[0] - math.cos(a)) < 0.02 and any(c.isdigit() for c in t) for d, t in lines), repr(lines))
+        check("the glyphs next to a turned value are kept ('Carte' is not 'Cart')",
+              any("Carte" in t for d, t in lines), repr(lines))
+        check("no original turned value left", not any("Théo" in t or "Clément" in t or "15878645" in t for _, t in lines),
+              repr(lines))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def names_tests():
     """Names of several words in the forms a folder writes them in: the full name under a title (up to five words),
     the cut forms (a cut word gets the cut replacement of the full word), the first names of the middle, the
@@ -705,6 +768,7 @@ def main():
         reported_cases_tests()
         invisible_copy_tests()
         names_tests()
+        rotated_tests()
         town_tests()
         speedup_tests()
         key_and_fake_tests(tmp)

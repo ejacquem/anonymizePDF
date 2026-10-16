@@ -321,6 +321,14 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   colour, baseline; may extend up to +35 % into free space (`free_right`), else shrunk. `digital_fill: none` keeps
   the page background (redaction with `fill=False`). A value on several lines gets its replacement cut across the same
   lines (`engine._cut_lines`, digital and scan), each line with its own baseline.
+  A digital line that is not horizontal (vertical, skewed: its span `dir` is not (1, 0)) is handled as a whole:
+  `render.rotated_extent` reads the exact glyph positions of the value from the characters (a word box of a slanted
+  word overlaps its neighbours), `rotated_quad` is the area redacted, `insert_rotated` writes the replacement on the
+  baseline, turned with the line (`morph` matrix (dx, -dy, dy, dx): PyMuPDF's y axis points down). PyMuPDF removes the
+  text whose box touches a redaction's bounding box, which takes the glyphs next to a turned value: those still missing
+  after the redaction are written again (`neighbour_glyphs` before, `redraw_missing` after). Scanned turned text is only
+  handled up to the tilt range of the scan path (`regions.TILT`, about 20 degrees): a scanned column written vertically
+  is not covered.
 - Scans: text sized from the ink height of the original (tight OCR boxes), same baseline, ink colour sampled, paper
   colour sampled for the patch. Bold (`BoldMeter`): median horizontal ink run / estimated font size vs the page
   median, bold if > 1.4× (calibrated against Test 1's digital twin). Fails on ID documents (mostly bold text, no

@@ -265,7 +265,7 @@ DETECTORS = [
     ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET}){_SPACE}+(?:(?i:de la|du|des|de l'|de|d'){_SPACE}*)?"
                                   rf"{_STREET_NAME},?{_SPACE}+{_NR}(?!\d)(?![ 	]+[A-ZÀ-Þ][A-Za-zÀ-ÿ]{{2,}})"), None),
     # an address after its label, to the end of the line: 'Rue : 04 Library place', 'Adresse : 12 bis rue ...'
-    ("STREET_ADDRESS", re.compile(r"(?<!\w)(?i:rue|adresse|address|adres|straat|street)\s*:\s*"
+    ("STREET_ADDRESS", re.compile(r"(?<!\w)(?i:rue|adresse|address|adres|straat|street)[ \t]*:[ \t]*"
                                   r"(\d{1,4}[^\n:]*?|[A-ZÀ-Þ][^\n:]*?)(?=\s{3,}|\s*\n|\Z)"), _v_street_label),
     # an English address written number first: '04 Library place', '12 Main Street'
     ("STREET_ADDRESS", re.compile(r"(?<![\w/])\d{1,4}[ ]+[A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]+(?:[ ][A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]+){0,2}"

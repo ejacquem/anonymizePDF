@@ -219,7 +219,8 @@ def page_spans(page) -> list[dict]:
                 name = _clean_font_name(s["font"])
                 spans.append({"bbox": fitz.Rect(s["bbox"]), "font": name, "xref": fonts.get(name),
                               "size": s["size"], "flags": s["flags"], "color": s["color"],
-                              "baseline": s["origin"][1], "dir": tuple(line.get("dir", (1, 0)))})
+                              "baseline": s["origin"][1], "dir": tuple(line.get("dir", (1, 0))),
+                              "origin": tuple(s["origin"])})
     return spans
 
 
@@ -246,16 +247,124 @@ def free_right(words: list[dict], box, page_width: float) -> float:
     return limit
 
 
+def _is_horizontal(d) -> bool:
+    return abs(d[1]) < 1e-3 and d[0] > 0
+
+
+def rotated_extent(page, value: str, box):
+    """Where `value` lies on a line that is not horizontal, read from the characters of the page (their origins are
+    exact, a word box is not for a slanted word): {origin, dir, t0, t1, size}, t being the distance along the line from
+    its origin. None when no such line holds the value next to `box`."""
+    target = "".join(value.split())
+    bx = fitz.Rect(box)
+    for block in page.get_text("rawdict")["blocks"]:
+        for line in block.get("lines", []):
+            d = tuple(line["dir"])
+            if _is_horizontal(d) or not fitz.Rect(line["bbox"]).intersects(bx):
+                continue
+            # the size is on the span, not on the character
+            chars = [dict(c, size=sp["size"], color=sp["color"], dir=d) for sp in line["spans"]
+                     for c in sp.get("chars", []) if not c["c"].isspace()]
+            text = "".join(c["c"] for c in chars)
+            best = None
+            i = text.find(target)
+            while i >= 0 and target:
+                seg = chars[i:i + len(target)]
+                near = fitz.Rect(seg[0]["bbox"]).intersects(bx) or fitz.Rect(seg[-1]["bbox"]).intersects(bx)
+                if near:
+                    best = seg
+                    break
+                i = text.find(target, i + 1)
+            if not best:
+                continue
+            dx, dy = d
+            ox, oy = chars[0]["origin"]
+
+            def along(x, y):
+                return (x - ox) * dx + (y - oy) * dy
+            t0 = along(*best[0]["origin"])
+            t1 = max(along(x, y) for c in best for x, y in (c["bbox"][:2], c["bbox"][2:]))
+            first = chars.index(best[0])
+            return {"origin": (ox, oy), "dir": d, "t0": t0, "t1": t1, "size": best[0]["size"],
+                    "chars": chars, "first": first, "last": first + len(best) - 1}
+    return None
+
+
+def rotated_quad(ext: dict):
+    """The quadrilateral of a turned value (its glyphs, from the baseline up to the ascent): what is redacted."""
+    ox, oy = ext["origin"]
+    dx, dy = ext["dir"]
+    ux, uy = dy, -dx                              # 'up' of the glyphs: to the left for text read upwards
+    size = ext["size"]
+
+    def pt(t, h):
+        return fitz.Point(ox + t * dx + h * ux, oy + t * dy + h * uy)
+    top, bottom = size * 0.85, -size * 0.25
+    return fitz.Quad(pt(ext["t0"], top), pt(ext["t1"], top), pt(ext["t0"], bottom), pt(ext["t1"], bottom))
+
+
+def neighbour_glyphs(ext: dict, quad, taken: set) -> list[dict]:
+    """The glyphs next to a turned value that its redaction may take: outside the value, not part of another value of
+    the line, and with a box that touches the redaction. Read BEFORE the redaction."""
+    rect = quad.rect
+    return [c for i, c in enumerate(ext["chars"])
+            if not (ext["first"] <= i <= ext["last"]) and (ext["origin"], i) not in taken
+            and fitz.Rect(c["bbox"]).intersects(rect)]
+
+
+def redraw_missing(page, glyphs: list[dict], style: dict, fonts: FontBook):
+    """PyMuPDF removes the text whose box touches the box of a redaction, which is wider than a turned quad: the
+    neighbouring glyphs it actually took are written again, at their origin and turned as they were. Read AFTER the
+    redaction: a glyph still there is not drawn twice."""
+    if not glyphs:
+        return
+    present = {(round(c["origin"][0], 1), round(c["origin"][1], 1), c["c"])
+               for b in page.get_text("rawdict")["blocks"] for l in b.get("lines", []) if not _is_horizontal(l["dir"])
+               for sp in l["spans"] for c in sp.get("chars", []) if True}
+    for c in glyphs:
+        key = (round(c["origin"][0], 1), round(c["origin"][1], 1), c["c"])
+        if key in present:
+            continue
+        dx, dy = c["dir"]
+        origin = fitz.Point(*c["origin"])
+        font = fonts.font_for(style, c["c"])
+        col = c["color"]
+        color = (((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255)
+        tw = fitz.TextWriter(page.rect, color=color)
+        tw.append((origin.x, origin.y), c["c"], font=font, fontsize=c["size"])
+        tw.write_text(page, morph=(origin, fitz.Matrix(dx, -dy, dy, dx, 0, 0)))
+
+
+def insert_rotated(page, ext: dict, text: str, style: dict, fonts: FontBook):
+    """Text of a line that is not horizontal (vertical, skewed): written on the baseline of the removed text, turned
+    with its line, so that it reads like the text it replaces. Shrunk when longer than the removed text."""
+    dx, dy = ext["dir"]
+    ox, oy = ext["origin"]
+    start = fitz.Point(ox + ext["t0"] * dx, oy + ext["t0"] * dy)
+    font = fonts.font_for(style, text)
+    size = ext["size"]
+    width = font.text_length(text, fontsize=size)
+    span = ext["t1"] - ext["t0"]
+    if width > span > 0:
+        size = max(size * span / width, 4)
+    c = style["color"]
+    color = (((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255)
+    tw = fitz.TextWriter(page.rect, color=color)
+    tw.append((start.x, start.y), text, font=font, fontsize=size)
+    # PyMuPDF's page y axis points down, the turned matrix takes that into account (checked on vertical and skewed text)
+    tw.write_text(page, morph=(start, fitz.Matrix(dx, -dy, dy, dx, 0, 0)))
+
+
 def insert_replacement(page, box, text, style: dict | None = None, fonts: FontBook | None = None,
                        limit_x: float | None = None):
     """Write `text` at the place of the removed text, in the original font/size/colour when known.
     It may run a little past the original width if nothing is next to it (up to `limit_x`, at most +35 %);
-    otherwise the font size is reduced to fit."""
+    otherwise the font size is reduced to fit. A line that is not horizontal is written turned with it."""
     x0, y0, x1, y1 = box
     avail = max(x1 - x0, 1)
     if limit_x is not None:
         avail = max(avail, min(limit_x - x0, avail * 1.35))
-    if style is None or fonts is None or style["dir"] != (1, 0):
+    if style is None or fonts is None:
         h = max(y1 - y0, 4)
         size = h * 0.8
         width = fitz.get_text_length(text, fontname="helv", fontsize=size)

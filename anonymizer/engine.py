@@ -843,16 +843,37 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
     spans = render.page_spans(page)            # read fonts before the text is removed
     styles = [render.style_at(spans, boxes[0]) for _, boxes in plan]
     limits = [render.free_right(words, boxes[0], page.rect.width) for _, boxes in plan]
-    for m, boxes in plan:
+    # a line that is not horizontal: the removed glyphs are taken from the characters (a word box of a slanted word
+    # overlaps its neighbours), and the replacement is turned with the line
+    turned = []
+    for (m, boxes), style in zip(plan, styles):
+        ext = render.rotated_extent(page, m.value, boxes[0]) if style and not render._is_horizontal(style["dir"]) else None
+        turned.append(ext)
+    # the glyphs of every turned value (kept apart: a neighbouring value is not written again as a neighbour)
+    # (keyed by the origin of the line: the indices are only unique inside one line)
+    taken_chars = {(ext["origin"], i) for ext in turned if ext for i in range(ext["first"], ext["last"] + 1)}
+    quads = {}
+    for (m, boxes), ext in zip(plan, turned):
         m.replacement = _adjust(cfg, m)
-        for b in boxes:
-            page.add_redact_annot(fitz.Rect(b), fill=False if m.invisible else fill)
+        if ext:
+            quads[id(ext)] = render.rotated_quad(ext)
+            page.add_redact_annot(quads[id(ext)], fill=False if m.invisible else fill)
+        else:
+            for b in boxes:
+                page.add_redact_annot(fitz.Rect(b), fill=False if m.invisible else fill)
         records.append({"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes),
                         "placed": not blackbox and bool(m.replacement) and not m.invisible})
+    neighbours = [render.neighbour_glyphs(ext, quads[id(ext)], taken_chars) if ext and not m.invisible else []
+                  for (m, _), ext in zip(plan, turned)]
     render.apply_redactions(page)
+    for (m, _), style, glyphs in zip(plan, styles, neighbours):
+        render.redraw_missing(page, glyphs, style, fonts)
     if not blackbox:
-        for (m, boxes), style, limit in zip(plan, styles, limits):
+        for (m, boxes), style, limit, ext in zip(plan, styles, limits, turned):
             if not m.replacement or m.invisible:
+                continue
+            if ext:
+                render.insert_rotated(page, ext, m.replacement, style, fonts)
                 continue
             # a value on several lines gets its replacement on the same lines, each line cut in proportion to its width
             parts = _cut_lines(m.replacement, [b[2] - b[0] for b in boxes]) if len(boxes) > 1 else [m.replacement]
