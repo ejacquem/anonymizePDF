@@ -157,7 +157,9 @@ def main() -> int:
     gs = groups(sorted(docs), pairs, args.min_score)
     print(f"\n== groups of linked documents ({len(gs)})")
     for i, g in enumerate(gs, 1):
-        print(f"  group {i}: " + "; ".join(g))
+        print(f"  group {i} ({len(g)} documents):")
+        for name in g:
+            print(f"      - {name}")
     docs_linked = {n for g in gs for n in g}
     print(f"\n== stats: {len(docs_linked)}/{len(docs)} document(s) linked to at least one other, "
           f"{sum(1 for p in pairs if p['score'] >= args.min_score)} link(s) at score >= {args.min_score}")
