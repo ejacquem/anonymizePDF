@@ -382,28 +382,42 @@ def status():
 # ---------------------------------------------------------------------------
 
 def start_job(kind: str, fn):
+    """fn(log, progress): progress(files done, files total, current file) feeds the status bar."""
     if not JOB_LOCK.acquire(blocking=False):
         return None
     job_id = uuid.uuid4().hex[:8]
-    job = {"id": job_id, "kind": kind, "status": "running", "log": [], "result": None, "error": None}
+    job = {"id": job_id, "kind": kind, "status": "running", "log": [], "result": None, "error": None,
+           "progress": None, "started": time.time(), "ended": None}
     JOBS[job_id] = job
 
     def log(msg: str):
         job["log"].append(f"{time.strftime('%H:%M:%S')}  {msg}")
 
+    def progress(done: int, total: int, current: str = ""):
+        job["progress"] = {"done": done, "total": total, "current": current}
+
     def run():
         try:
-            job["result"] = fn(log)
+            job["result"] = fn(log, progress)
             job["status"] = "done"
         except Exception as e:  # noqa: BLE001
             job["error"] = str(e)
             job["status"] = "error"
             log(f"ERROR: {e}")
         finally:
+            job["ended"] = time.time()
             JOB_LOCK.release()
 
     threading.Thread(target=run, daemon=True).start()
     return job
+
+
+def job_progress(job) -> dict:
+    """Files done / total, the time spent so far and the time left, estimated from the rate so far."""
+    elapsed = (job["ended"] or time.time()) - job["started"]
+    p = job["progress"] or {"done": 0, "total": 0, "current": ""}
+    eta = elapsed / p["done"] * (p["total"] - p["done"]) if p["done"] and job["status"] == "running" else None
+    return {**p, "elapsed": round(elapsed, 1), "eta": None if eta is None else round(eta, 1)}
 
 
 def get_ner(log):
@@ -425,9 +439,9 @@ def scan():
         return bad(str(e), 404)
     rel = rel_of(folder)
 
-    def work(log):
+    def work(log, progress):
         log(f"Scanning folder '{rel or '.'}' ...")
-        res = eng.scan_folder(folder, rel, get_ner(log), STATE["ocr_lang"], log)
+        res = eng.scan_folder(folder, rel, get_ner(log), STATE["ocr_lang"], log, progress=progress)
         (folder / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
         log(f"Draft config written to {eng.CONFIG_NAME}: review it, then anonymize.")
         return res["stats"]
@@ -454,13 +468,27 @@ def anonymize():
     only = [Path(str(data["file"])).name] if data.get("file") else None     # one file, or the whole folder
     removed = data.get("removed") if isinstance(data.get("removed"), list) else []   # automatic boxes removed: this run only
 
-    def work(log):
+    def work(log, progress):
         rep = eng.run_anonymize(folder, rel, cfg_file.read_text(encoding="utf-8"), STATE["ocr_lang"], ocr_verify, log,
-                                only=only, removed=removed)
+                                only=only, removed=removed, progress=progress)
         return {"files": len(rep["files"]), "seconds": rep["total_seconds"]}
 
     job = start_job("anonymize", work)
     return jsonify({"job": job["id"]}) if job else bad("Another job is running", 409)
+
+
+def _batch_phases(d: Path, action: str, redo: bool) -> tuple[list[str], str]:
+    """The phases a batch run does on one client folder ('scan', 'anonymize'), and when there are none, why."""
+    st = folder_status(d)
+    if action == "all":                                  # scan if needed, then anonymize if needed
+        scan = not st["config"] or redo
+        phases = (["scan"] if scan else []) + (["anonymize"] if scan or st["to_do"] or redo else [])
+        return phases, "up to date"
+    if action == "scan":
+        return (["scan"], "") if not (st["config"] and not redo) else ([], "already has a config")
+    if not st["config"]:
+        return [], "no config yet (scan it first)"
+    return (["anonymize"], "") if st["to_do"] or redo else ([], "up to date")
 
 
 @app.post("/api/batch")
@@ -477,51 +505,34 @@ def batch():
     if action not in ("scan", "anonymize", "all"):
         return bad("action must be 'scan', 'anonymize' or 'all'")
 
-    def work(log):
+    def work(log, progress):
         folders = client_folders(base)
         done, skipped, failed = [], [], []
         log(f"Batch {action}: {len(folders)} folder(s) with PDFs under '{rel_of(base) or '.'}'")
+        plans = {d: _batch_phases(d, action, redo) for d in folders}
+        counts = {d: len(eng.list_sources(d)) for d in folders}
+        total = sum(counts[d] * len(plans[d][0]) for d in folders)     # files x phases, skipped folders not counted
+        offset = 0
         for k, d in enumerate(folders, start=1):
             rel = rel_of(d) or "."
-            st = folder_status(d)
-            if action == "all":                         # scan if needed, then anonymize if needed
-                try:
-                    if not st["config"] or redo:
-                        log(f"[{k}/{len(folders)}] {rel}: scan ...")
-                        res = eng.scan_folder(d, rel_of(d), get_ner(log), STATE["ocr_lang"], lambda m: log("   " + m))
-                        (d / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
-                    if folder_status(d)["to_do"] or redo:
-                        log(f"[{k}/{len(folders)}] {rel}: anonymize ...")
-                        text = (d / eng.CONFIG_NAME).read_text(encoding="utf-8")
-                        eng.run_anonymize(d, rel_of(d), text, STATE["ocr_lang"], ocr_verify, lambda m: log("   " + m))
-                        done.append(rel)
-                    else:
-                        skipped.append(rel)
-                        log(f"[{k}/{len(folders)}] {rel}: up to date -> skipped")
-                except Exception as e:  # noqa: BLE001
-                    failed.append(rel)
-                    log(f"   ERROR in {rel}: {e}")
-                continue
-            if action == "scan" and st["config"] and not redo:
+            phases, why = plans[d]
+            if not phases:
                 skipped.append(rel)
-                log(f"[{k}/{len(folders)}] {rel}: already has a config -> skipped")
+                log(f"[{k}/{len(folders)}] {rel}: {why} -> skipped")
                 continue
-            if action == "anonymize" and not st["config"]:
-                skipped.append(rel)
-                log(f"[{k}/{len(folders)}] {rel}: no config yet -> skipped (scan it first)")
-                continue
-            if action == "anonymize" and not st["to_do"] and not redo:
-                skipped.append(rel)
-                log(f"[{k}/{len(folders)}] {rel}: up to date -> skipped")
-                continue
-            log(f"[{k}/{len(folders)}] {rel}: {action} ...")
             try:
-                if action == "scan":
-                    res = eng.scan_folder(d, rel_of(d), get_ner(log), STATE["ocr_lang"], lambda m: log("   " + m))
-                    (d / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
-                else:
-                    text = (d / eng.CONFIG_NAME).read_text(encoding="utf-8")
-                    eng.run_anonymize(d, rel_of(d), text, STATE["ocr_lang"], ocr_verify, lambda m: log("   " + m))
+                for phase in phases:
+                    log(f"[{k}/{len(folders)}] {rel}: {phase} ...")
+                    report = (lambda o: lambda n, m, cur="": progress(o + n, total, cur))(offset)
+                    if phase == "scan":
+                        res = eng.scan_folder(d, rel_of(d), get_ner(log), STATE["ocr_lang"], lambda m: log("   " + m),
+                                              progress=report)
+                        (d / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+                    else:
+                        text = (d / eng.CONFIG_NAME).read_text(encoding="utf-8")
+                        eng.run_anonymize(d, rel_of(d), text, STATE["ocr_lang"], ocr_verify, lambda m: log("   " + m),
+                                          progress=report)
+                    offset += counts[d]
                 done.append(rel)
             except Exception as e:  # noqa: BLE001  (one folder failing must not stop the others)
                 failed.append(rel)
@@ -541,7 +552,8 @@ def job_status(job_id):
         return bad("unknown job", 404)
     since = int(request.args.get("since", 0))
     return jsonify({"status": job["status"], "log": job["log"][since:], "next": len(job["log"]),
-                    "result": job["result"], "error": job["error"], "kind": job["kind"]})
+                    "result": job["result"], "error": job["error"], "kind": job["kind"],
+                    "progress": job_progress(job)})
 
 
 @app.after_request

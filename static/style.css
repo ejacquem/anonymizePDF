@@ -39,8 +39,18 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 button.mini { padding: 0 6px; font-size: 13px; }
 button.save-needed { border-color: var(--warn); box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 35%, transparent); }
 .chk { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
-.status { font-size: 12px; min-width: 120px; }
+.status { font-size: 12px; }
 .status.busy { color: var(--warn); } .status.ok { color: var(--ok); } .status.err { color: var(--bad); }
+
+/* status bar at the bottom: the message on the left, the progress of the files on the right */
+#statusbar { display: flex; align-items: center; gap: 14px; padding: 6px 14px; min-height: 34px;
+  background: var(--panel); border-top: 1px solid var(--line); }
+#statusbar .status { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress { flex: 0 1 380px; min-width: 200px; display: flex; align-items: center; gap: 10px; }
+.progress[hidden] { display: none; }
+.progress-track { flex: 1; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.progress-fill { height: 100%; width: 0; border-radius: 4px; background: var(--accent); transition: width .4s ease; }
+.progress-text { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 main { flex: 1; min-height: 0; display: flex; padding: 4px; gap: 4px;
   --w-tree: 220px; --w-side: 440px; }

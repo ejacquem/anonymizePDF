@@ -17,7 +17,6 @@
   <button id="btnTree" class="mini" title="Show / hide the file tree">☰</button>
   <div id="folderInfo" class="muted">Select a folder in the tree (click a folder or a file).</div>
   <div class="spacer"></div>
-  <span id="status" class="status"></span>
   <button id="btnScan" class="primary" disabled>1 · Scan &amp; draft config</button>
   <button id="btnRun" class="primary" disabled>2 · Anonymize folder</button>
   <button id="btnRunFile" disabled title="Anonymize only the selected file (↑ ↓ in the tree switch file)">Anonymize file</button>
@@ -94,6 +93,14 @@
     <div id="tab-log" class="tabbody" hidden><pre id="logBox"></pre></div>
   </section>
 </main>
+
+<footer id="statusbar">
+  <span id="status" class="status" role="status" aria-live="polite"></span>
+  <div id="progress" class="progress" hidden>
+    <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+    <span id="progressText" class="progress-text"></span>
+  </div>
+</footer>
 
 <script src="/static/app.js"></script>
 </body>

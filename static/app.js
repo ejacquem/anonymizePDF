@@ -1175,12 +1175,38 @@ function appendLog(lines) {
   box.parentElement.scrollTop = box.parentElement.scrollHeight;
 }
 
+// ---------- status bar (bottom): the message, the files done, the time left ----------
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return `${sec} s`;
+  const m = Math.floor(sec / 60), s = String(sec % 60).padStart(2, "0");
+  return m < 60 ? `${m} min ${s} s` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
+}
+
+// p: the progress of a job from /api/job (files done / total, elapsed, eta); null hides the bar
+function showProgress(p) {
+  const box = $("#progress");
+  box.hidden = !p;
+  if (!p) return;
+  const pct = p.total ? Math.floor(100 * p.done / p.total) : 0;
+  $("#progressFill").style.width = pct + "%";
+  let text;
+  if (!p.total) text = state.running ? "starting…" : "no file";
+  else {
+    text = `${pct} %  ·  ${p.done}/${p.total} file${p.total > 1 ? "s" : ""}`;
+    if (p.done < p.total && p.eta != null) text += `  ·  about ${fmtDuration(p.eta)} left`;
+    else if (p.done >= p.total && p.elapsed != null) text += `  ·  done in ${fmtDuration(p.elapsed)}`;
+  }
+  $("#progressText").textContent = text;
+}
+
 async function runJob(kind, url, body, label, opts = {}) {
   let started;
   try { started = await post(url, body); } catch (e) { alert(e.message); return null; }
   state.running = true;
   updateToolbar();
   setStatus(label + "…", "busy");
+  showProgress({ done: 0, total: 0 });
   appendLog([`──── ${new Date().toLocaleTimeString()}  ${label}  (${state.folder || "."}) ────`]);
   if (!opts.quiet) showTab("log");
   let since = 0, last = null;
@@ -1190,9 +1216,12 @@ async function runJob(kind, url, body, label, opts = {}) {
     try { j = await api(`/api/job/${started.job}?since=${since}`); } catch (e) { appendLog(["Lost connection: " + e.message]); break; }
     appendLog(j.log);
     since = j.next;
+    showProgress(j.progress);
+    if (j.status === "running" && j.progress && j.progress.current) setStatus(`${label}: ${j.progress.current}…`, "busy");
     if (j.status !== "running") { last = j; break; }
   }
   state.running = false;
+  if (last) showProgress(last.progress);
   if (last && last.status === "done") setStatus(label + ": done", "ok");
   else setStatus(label + ": failed", "err");
   updateToolbar();

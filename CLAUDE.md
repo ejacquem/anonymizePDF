@@ -102,6 +102,11 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   frame (`.chg`, `drawChanges`) around each value replaced in the selected file, in both panes, from `items[].boxes`
   of the report. Disabled while the report has no box for the file (anonymize it again: reports made before the
   Changes feature have none). Black boxes and the rebuilt MRZ are not framed.
+- Status bar (footer, bottom): the message on the left (`setStatus`), on the right the progress of the running job:
+  bar, % and files done / total, time left (`showProgress`, `fmtDuration`). The job reports `progress`
+  (`done`, `total`, `current`) through the `progress` callback of `scan_folder` / `run_anonymize` (one step per
+  file); `GET /api/job/<id>` returns it with `elapsed` and `eta` (from the rate so far). A batch counts the files
+  of the folders it works on (`_batch_phases`), skipped folders are not counted.
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Anonymize file** (either file of the pair; the
   report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).
@@ -135,7 +140,7 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api/page?path=&page=&scale=`,
 `GET|PUT /api/config?folder=`, `GET /api/report?folder=`, `POST /api/scan`, `POST /api/anonymize` (job id; `file` = one file name; `removed` = [{file, page, kind, box}] automatic boxes left out of this run),
 `GET|PUT /api/review?folder=`, `GET /api/status?folder=`, `POST /api/batch`,
-`GET /api/job/<id>?since=N` (log lines + status). Jobs run in a thread, one at a time.
+`GET /api/job/<id>?since=N` (log lines + status + progress: files done / total, elapsed, eta). Jobs run in a thread, one at a time.
 
 ## 5. Pipeline
 

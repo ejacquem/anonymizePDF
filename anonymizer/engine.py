@@ -322,7 +322,14 @@ def _detect_words(found: dict, tokens: dict, words: list[dict], ocr_page: bool, 
     _add_labeled(found, words, ocr_page, file, pno)
 
 
-def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None) -> dict:
+def _report(progress, done: int, total: int, name: str = ""):
+    """progress(files done, files total, name of the file being done): optional, for the status bar."""
+    if progress:
+        progress(done, total, name)
+
+
+def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None,
+                progress=None) -> dict:
     t0 = time.time()
     pdfs = list_sources(folder)
     if not pdfs:
@@ -333,6 +340,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     found: dict = {}
     tokens: dict[str, int] = {}
     for fi, pdf in enumerate(pdfs, start=1):
+        _report(progress, fi - 1, len(pdfs), pdf.name)
         doc = open_source(pdf)
         layouts = [page_layout(p) for p in doc]
         modes = sorted({page_mode_name(l) for l in layouts})
@@ -355,6 +363,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                     log(f"   page {pno}: OCR of the images ({len(pw)} words)")
                     _detect_words(found, tokens, pw, True, ner, pdf.name, pno)
 
+    _report(progress, len(pdfs), len(pdfs))
     faker = Faker(secret_key)        # None: this computer's secret key (anonymizer.secret)
     faker.reserve(e["value"] for e in found.values())
     faker.aliases = name_aliases(tokens, [e["value"] for e in found.values() if e["type"] == "PERSON"])
@@ -1166,7 +1175,7 @@ def _is_removed(removed: list, kind: str, box) -> bool:
 
 
 def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log,
-                  only: list[str] | None = None, removed: list | None = None) -> dict:
+                  only: list[str] | None = None, removed: list | None = None, progress=None) -> dict:
     """Anonymize every source of the folder, or only the files named in `only` (their entries replace the ones of
     the report; the other entries are kept). `removed`: the automatic black boxes the user removed since the last run."""
     t_all = time.time()
@@ -1183,6 +1192,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
     log(f"Config: {len(cfg['terms'])} replacement(s), {len(cfg['regex'])} regex rule(s). {len(pdfs)} file(s).")
     files = []
     for i, pdf in enumerate(pdfs, start=1):
+        _report(progress, i - 1, len(pdfs), pdf.name)
         out = output_of(pdf)
         _clear_review(folder, pdf.name)                # a new output has not been reviewed yet
         t0 = time.time()
@@ -1246,6 +1256,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         entry["seconds"] = round(time.time() - t0, 1)
         log(f"   done in {entry['seconds']}s")
         files.append(entry)
+    _report(progress, len(pdfs), len(pdfs))
     done = files                                        # the files of this run (the report may keep others)
     if only is not None:                                # one file: keep the report of the other files
         kept = []
