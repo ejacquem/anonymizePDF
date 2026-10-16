@@ -44,7 +44,7 @@ AMOUNT_RX = re.compile(r"(?<![\d.,/])(-?\d{1,3}(?:[ .\u202f']\d{3})+,\d{2}|-?\d+
                        r"|-?\d{1,3}(?:,\d{3})+\.\d{2}|-?\d+\.\d{2})(?!\d)")
 DATE_RX = re.compile(r"(?<!\d)(\d{1,2})[/.\-](\d{1,2})(?:[/.\-]\d{2,4})?(?!\d)")
 OCR_FOLD = str.maketrans("OIlSBZ", "011582")                  # the digit confusions of the OCR, read as digits
-GROUP_COLORS = [31, 32, 33, 34, 35, 36, 91, 92, 93, 94, 95, 96]   # ANSI foreground colours, one per group
+GROUP_COLORS = [91, 92, 93, 94, 95, 96]   # bright ANSI foreground colours, one per group (they cycle)
 
 
 def colour_output() -> bool:
@@ -210,22 +210,27 @@ def main() -> int:
         summary = ", ".join(f"{k} {n}" for k, n in sorted(by_kind.items())) or "no identifier"
         print(f"  {d.name}: {d.pages} page(s), read by {d.method}; {summary}; {len(d.lines)} transaction line(s)")
 
+    gs = groups([d.name for d in docs], pairs, args.min_score)
+    colour = colour_output()
+    code_of = {name: GROUP_COLORS[(i - 1) % len(GROUP_COLORS)] for i, g in enumerate(gs, 1) for name in g}
+
+    def paint(name: str) -> str:
+        """The name in the colour of its group; a document in no group stays plain."""
+        code = code_of.get(name)
+        return f"\033[{code}m{name}\033[0m" if colour and code else name
+
     print(f"\n== links ({len(pairs)} pair(s) share something)")
     for p in pairs:
         flag = "LINKED" if p["score"] >= args.min_score else "weak  "
-        print(f"  {flag} score {p['score']:.1f}  {p['a']}  <->  {p['b']}")
+        print(f"  {flag} score {p['score']:.1f}  {paint(p['a'])}  <->  {paint(p['b'])}")
         for item in p["shared"]:
             print(f"           {item}")
 
-    gs = groups([d.name for d in docs], pairs, args.min_score)
     print(f"\n== groups of linked documents ({len(gs)})")
-    colour = colour_output()
     for i, g in enumerate(gs, 1):
-        code = GROUP_COLORS[(i - 1) % len(GROUP_COLORS)]
         print(f"  group {i} ({len(g)} documents):")
         for name in g:
-            shown = f"\033[{code}m{name}\033[0m" if colour else name
-            print(f"      - {shown}")
+            print(f"      - {paint(name)}")
     linked = {n for g in gs for n in g}
     print(f"\n== stats: {len(linked)}/{len(docs)} document(s) linked to at least one other, "
           f"{sum(1 for p in pairs if p['score'] >= args.min_score)} link(s) at score >= {args.min_score}")
