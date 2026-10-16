@@ -44,7 +44,7 @@ AMOUNT_RX = re.compile(r"(?<![\d.,/])(-?\d{1,3}(?:[ .\u202f']\d{3})+,\d{2}|-?\d+
                        r"|-?\d{1,3}(?:,\d{3})+\.\d{2}|-?\d+\.\d{2})(?!\d)")
 DATE_RX = re.compile(r"(?<!\d)(\d{1,2})[/.\-](\d{1,2})(?:[/.\-]\d{2,4})?(?!\d)")
 OCR_FOLD = str.maketrans("OIlSBZ", "011582")                  # the digit confusions of the OCR, read as digits
-GROUP_COLORS = [91, 92, 93, 94, 95, 96]   # bright ANSI foreground colours, one per group (they cycle)
+GROUP_COLORS = ["38;5;252", "38;5;194", "38;5;189", "38;5;223", "38;5;152", "38;5;247"]   # pale tints (256 colours), one per group, they cycle
 
 
 def colour_output() -> bool:
