@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Link the documents of a folder that share identifiers: IBAN, account number, reference, contract, card, and
-amounts that are rare. Works on digital PDFs (text layer), on scans and on screenshots (OCR, Windows OCR or
+Link the documents of a folder that share identifiers: IBAN, account number, BIC, reference, contract, card, rare
+amounts and transaction lines. Works on digital PDFs (text layer), on scans and on screenshots (OCR, Windows OCR or
 Tesseract). Fully local: no network, no cloud service.
 
   python tools/link_documents.py "C:\\path\\to\\folder" [--ocr-lang fra+eng] [--min-score 2] [--json report.json]
@@ -11,8 +11,14 @@ share something, with the shared items and a score, then the groups (documents l
 through others). Nothing is written except the optional --json file. The outputs contain personal data: keep them
 out of the repository.
 
-Score: a shared strong identifier (IBAN, account, card, contract, reference) counts 3; a shared amount counts 1 when
-it is rare (in at most --rare-amount documents), so 'frais 6,50' shared by every statement counts nothing.
+Matching:
+- OCR tolerance: the digits the OCR confuses (0/O, 1/I/l, 5/S, 8/B, 2/Z) are folded in the text before anything is
+  read, so 'FR76 30OO...' is the IBAN 'FR7630 00...'. The folded text keeps its length, so the values shown are the
+  ones of the document.
+- an identifier shared scores 3 (strong: IBAN, account, card, contract, reference, BIC) or 1 (a rare amount);
+- a transaction line (a date, then an amount: day, month and amount) shared by two documents scores 2 each. Only the
+  year is left out, so 'le 02/10' and '02/10/2024' are the same line. Amounts of shared lines are not counted again.
+Amounts are read in both formats: '3321.12' and '3 321,12' are the same amount.
 """
 from __future__ import annotations
 
@@ -29,10 +35,13 @@ from anonymizer import ocr  # noqa: E402
 from anonymizer.engine import list_sources, open_source  # noqa: E402
 from anonymizer.pii import detect_structured, words_to_text  # noqa: E402
 
-STRONG = {"IBAN", "ACCOUNT_NUMBER", "CARD_NUMBER", "CONTRACT_REF", "SEPA_CREDITOR_ID", "BANK_CODE", "REFERENCE"}
+STRONG = {"IBAN", "ACCOUNT_NUMBER", "CARD_NUMBER", "CONTRACT_REF", "SEPA_CREDITOR_ID", "BANK_CODE", "REFERENCE", "BIC"}
 REFERENCE_RX = re.compile(r"(?i:r[ée]f[ée]rence|r[ée]f\.?|n[°o]\s*de\s+transaction|transaction\s+n[°o])\s*[:\-]?\s*"
                           r"([A-Z0-9][A-Z0-9/\-]{4,})")
-AMOUNT_RX = re.compile(r"(?<![\d.,/])(-?\d{1,3}(?:[ .\u202f']\d{3})*,\d{2}|-?\d{1,3}(?:,\d{3})*\.\d{2})(?![\d])")
+AMOUNT_RX = re.compile(r"(?<![\d.,/])(-?\d{1,3}(?:[ .\u202f']\d{3})+,\d{2}|-?\d+,\d{2}"
+                       r"|-?\d{1,3}(?:,\d{3})+\.\d{2}|-?\d+\.\d{2})(?!\d)")
+DATE_RX = re.compile(r"(?<!\d)(\d{1,2})[/.\-](\d{1,2})(?:[/.\-]\d{2,4})?(?!\d)")
+OCR_FOLD = str.maketrans("OIlSBZ", "011582")                  # the digit confusions of the OCR, read as digits
 
 
 def page_text(page, ocr_lang: str) -> tuple[str, str]:
@@ -44,64 +53,109 @@ def page_text(page, ocr_lang: str) -> tuple[str, str]:
     return text, "OCR"
 
 
-def identifiers(text: str) -> set[tuple[str, str]]:
-    """(kind, normalized value) of every identifier and amount found in a text."""
-    found: set[tuple[str, str]] = set()
-    for m in detect_structured(text):
-        if m.type in STRONG or m.type == "BIC":
-            value = re.sub(r"[\s.\-/]", "", m.value).upper()
-            if len(value) >= 6:
-                found.add((m.type, value))
-    for m in REFERENCE_RX.finditer(text):
-        found.add(("REFERENCE", re.sub(r"[\s\-/]", "", m.group(1)).upper()))
-    for m in AMOUNT_RX.finditer(text):
-        value = _amount(m.group(1))
-        if abs(value) >= 5:
-            found.add(("AMOUNT", f"{value:.2f}"))
-    return found
-
-
-def _amount(raw: str) -> float:
-    """'1 234,56' (French) or '1,234.56' (English) -> 1234.56."""
+def parse_amount(raw: str) -> float:
+    """'3321.12', '3 321,12', '3.321,12' and '3,321.12' -> 3321.12."""
     raw = re.sub(r"[\s\u202f']", "", raw)
-    if raw.endswith(",") or re.search(r",\d{2}$", raw):   # decimal comma: dots are thousand separators
+    if re.search(r",\d{2}$", raw):                        # decimal comma: the dots are thousand separators
         raw = raw.replace(".", "").replace(",", ".")
-    else:
+    else:                                                 # decimal point: the commas are thousand separators
         raw = raw.replace(",", "")
     return float(raw)
 
 
-def analyse(folder: Path, ocr_lang: str, rare_amount: int) -> tuple[dict, list[dict]]:
-    docs = {}
+def _compact(text: str) -> str:
+    return re.sub(r"[\s.\-/]", "", text).upper()
+
+
+class Document:
+    """What a document says: its identifiers and amounts (OCR-folded), and its transaction lines."""
+
+    def __init__(self, name: str, pages: int, method: str):
+        self.name, self.pages, self.method = name, pages, method
+        self.ids: set[tuple[str, str]] = set()           # (kind, folded value)
+        self.shown: dict[tuple[str, str], str] = {}      # (kind, folded value) -> the value as the document writes it
+        self.lines: set[tuple[int, int, float]] = set()  # (day, month, amount) of the transaction lines
+
+    def add(self, kind: str, folded: str, shown: str | None = None) -> None:
+        self.ids.add((kind, folded))
+        self.shown.setdefault((kind, folded), shown or folded)
+
+
+def read_document(name: str, pages: list[tuple[str, str]]) -> Document:
+    text = "\n".join(t for t, _ in pages)
+    method = "/".join(sorted({m for _, m in pages}))
+    doc = Document(name, len(pages), method)
+    folded = text.translate(OCR_FOLD)                    # same length as the text: the spans match
+    for m in detect_structured(folded):
+        if m.type in STRONG:
+            value = _compact(m.value)
+            if len(value) >= 6:
+                doc.add(m.type, value, _compact(text[m.start:m.end]))
+    for m in REFERENCE_RX.finditer(folded):
+        value = _compact(m.group(1))
+        doc.add("REFERENCE", value, _compact(text[m.start(1):m.end(1)]))
+    for m in AMOUNT_RX.finditer(folded):
+        value = parse_amount(m.group(1))
+        if abs(value) >= 5:
+            doc.add("AMOUNT", f"{value:.2f}", m.group(1))
+    for line in folded.splitlines():
+        dates = list(DATE_RX.finditer(line))
+        if not dates:
+            continue
+        day, month = int(dates[0].group(1)), int(dates[0].group(2))
+        for m in AMOUNT_RX.finditer(line):
+            value = parse_amount(m.group(1))
+            if abs(value) >= 5 and 1 <= day <= 31 and 1 <= month <= 12:
+                doc.lines.add((day, month, round(value, 2)))
+    return doc
+
+
+def read_folder(folder: Path, ocr_lang: str) -> list[Document]:
+    docs = []
     for src in list_sources(folder):
-        doc = open_source(src)
-        texts, methods = [], []
-        for page in doc:
-            text, method = page_text(page, ocr_lang)
-            texts.append(text)
-            methods.append(method)
-        doc.close()
-        docs[src.name] = {"pages": len(texts), "method": "/".join(sorted(set(methods))),
-                          "ids": identifiers("\n".join(texts))}
-    # rare amounts: an amount in too many documents is a fee or a common value, not a link
-    df = Counter(k for d in docs.values() for k in d["ids"])
+        opened = open_source(src)
+        pages = [page_text(page, ocr_lang) for page in opened]
+        opened.close()
+        docs.append(read_document(src.name, pages))
+    return docs
+
+
+def compare(a: Document, b: Document, df: Counter, rare_amount: int) -> dict | None:
+    score, kept = 0.0, []
+    for kind, value in sorted(a.ids & b.ids):
+        if kind == "AMOUNT":
+            continue                                       # counted below, after the transaction lines
+        score += 3.0
+        shown = a.shown[(kind, value)]
+        if shown != b.shown[(kind, value)]:
+            shown = f"{shown} / {b.shown[(kind, value)]}"  # the OCR wrote it differently
+        kept.append(f"{kind} {shown}")
+    # transaction lines: the same day, month and amount
+    shared_lines = sorted(a.lines & b.lines)
+    score += 2.0 * len(shared_lines)
+    if shared_lines:
+        shown = ", ".join(f"{d:02d}/{m:02d} {v:.2f}" for d, m, v in shared_lines[:5])
+        kept.append(f"{len(shared_lines)} transaction line(s): {shown}")
+    line_amounts = {v for _, _, v in shared_lines}
+    # rare amounts, not already in a shared transaction line
+    for kind, value in sorted(a.ids & b.ids):
+        if kind == "AMOUNT" and float(value) not in line_amounts and df[(kind, value)] <= rare_amount:
+            score += 1.0
+            kept.append(f"AMOUNT {value}")
+    if not kept:
+        return None
+    return {"a": a.name, "b": b.name, "score": score, "shared": kept}
+
+
+def analyse(docs: list[Document], rare_amount: int) -> list[dict]:
+    df = Counter(k for d in docs for k in d.ids)
     pairs = []
-    names = sorted(docs)
-    for i, a in enumerate(names):
-        for b in names[i + 1:]:
-            shared = docs[a]["ids"] & docs[b]["ids"]
-            score, kept = 0.0, []
-            for kind, value in sorted(shared):
-                if kind == "AMOUNT":
-                    if df[(kind, value)] <= rare_amount:
-                        score += 1.0
-                        kept.append(f"{kind} {value}")
-                else:
-                    score += 3.0
-                    kept.append(f"{kind} {value}")
-            if kept:
-                pairs.append({"a": a, "b": b, "score": score, "shared": kept})
-    return docs, sorted(pairs, key=lambda p: -p["score"])
+    for i, a in enumerate(docs):
+        for b in docs[i + 1:]:
+            p = compare(a, b, df, rare_amount)
+            if p:
+                pairs.append(p)
+    return sorted(pairs, key=lambda p: -p["score"])
 
 
 def groups(names: list[str], pairs: list[dict], min_score: float) -> list[list[str]]:
@@ -132,40 +186,38 @@ def main() -> int:
     args = ap.parse_args()
     if not args.folder.is_dir():
         ap.error(f"not a folder: {args.folder}")
-    docs, pairs = analyse(args.folder, args.ocr_lang, args.rare_amount)
+    docs = read_folder(args.folder, args.ocr_lang)
     if not docs:
         print("no PDF or image in this folder")
         return 1
+    pairs = analyse(docs, args.rare_amount)
 
     print(f"== {len(docs)} document(s) in {args.folder}\n")
-    for name, d in docs.items():
-        by_kind = Counter(k for k, _ in d["ids"])
+    for d in docs:
+        by_kind = Counter(k for k, _ in d.ids)
         summary = ", ".join(f"{k} {n}" for k, n in sorted(by_kind.items())) or "no identifier"
-        print(f"  {name}: {d['pages']} page(s), read by {d['method']}; {summary}")
+        print(f"  {d.name}: {d.pages} page(s), read by {d.method}; {summary}; {len(d.lines)} transaction line(s)")
 
     print(f"\n== links ({len(pairs)} pair(s) share something)")
     for p in pairs:
         flag = "LINKED" if p["score"] >= args.min_score else "weak  "
         print(f"  {flag} score {p['score']:.1f}  {p['a']}  <->  {p['b']}")
-        strong = [i for i in p["shared"] if not i.startswith("AMOUNT")]
-        amounts = [i.split(" ", 1)[1] for i in p["shared"] if i.startswith("AMOUNT")]
-        for item in strong:
+        for item in p["shared"]:
             print(f"           {item}")
-        if amounts:
-            print(f"           {len(amounts)} rare amount(s) in common, e.g. {', '.join(amounts[:6])}")
 
-    gs = groups(sorted(docs), pairs, args.min_score)
+    gs = groups([d.name for d in docs], pairs, args.min_score)
     print(f"\n== groups of linked documents ({len(gs)})")
     for i, g in enumerate(gs, 1):
         print(f"  group {i} ({len(g)} documents):")
         for name in g:
             print(f"      - {name}")
-    docs_linked = {n for g in gs for n in g}
-    print(f"\n== stats: {len(docs_linked)}/{len(docs)} document(s) linked to at least one other, "
+    linked = {n for g in gs for n in g}
+    print(f"\n== stats: {len(linked)}/{len(docs)} document(s) linked to at least one other, "
           f"{sum(1 for p in pairs if p['score'] >= args.min_score)} link(s) at score >= {args.min_score}")
 
     if args.json:
-        report = {"documents": {n: {**d, "ids": sorted(f"{k} {v}" for k, v in d["ids"])} for n, d in docs.items()},
+        report = {"documents": {d.name: {"pages": d.pages, "method": d.method, "lines": len(d.lines),
+                                         "ids": sorted(f"{k} {v}" for k, v in d.ids)} for d in docs},
                   "pairs": pairs, "groups": gs}
         args.json.write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
         print(f"analysis written to {args.json}")
