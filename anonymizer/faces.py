@@ -13,12 +13,13 @@ from pathlib import Path
 
 import numpy as np
 
+from .ocr import DIGITAL_DPI
+
 MODEL = Path(__file__).resolve().parent / "models" / "face_detection_yunet_2023mar.onnx"
 MODEL_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"   # the file that was tested
 WINDOW = 640            # the model takes a fixed 640 x 640 input: big images are cut into windows
 SCORE = 0.6             # face score (sqrt(class * objectness)) below which a detection is dropped
 NMS = 0.3               # overlapping detections (IoU above this) are merged, the best one is kept
-DIGITAL_DPI = 150       # digital pages are rendered at this resolution to look for faces
 _session = None
 
 
@@ -159,11 +160,8 @@ def find_faces(img, dpi: int = 300) -> list[tuple]:
     return [_widen(d[:4], w, h) for d in detect(rgb)]
 
 
-def find_faces_digital(page) -> list[tuple]:
-    """Boxes (PDF points) covering the faces of people on a digital page (rendered to look for them)."""
-    from PIL import Image
-
-    pix = page.get_pixmap(dpi=DIGITAL_DPI, alpha=False)
-    rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
+def find_faces_digital(img) -> list[tuple]:
+    """Boxes (PDF points) covering the faces of people on a digital page: `img` is the page rendered at
+    ocr.DIGITAL_DPI (the same render serves the code search)."""
     k = 72 / DIGITAL_DPI
-    return [tuple(v * k for v in b) for b in find_faces(Image.fromarray(np.ascontiguousarray(rgb)))]
+    return [tuple(v * k for v in b) for b in find_faces(img)]

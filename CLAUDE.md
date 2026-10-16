@@ -36,7 +36,9 @@ Repo: `C:\Users\Lucas\Project\anonymizePDF` (Windows 10, Git Bash + PowerShell).
 app.py                 Flask server: tree, pdf serving / page rendering, config get/put, scan/anonymize jobs (thread + polling)
 anonymizer/
   engine.py            scan_folder(), parse_config(), render_config(), run_anonymize(), _digital(), _scan_pdf(),
-                       verify_output(), summarize(); labeled fields (_add_labeled), MRZ rebuild (_new_mrz)
+                       summarize(); labeled fields (_add_labeled), MRZ rebuild (_new_mrz)
+  verify.py            checks of an anonymized file, read once: read_output (text layer, OCR), verify_output
+                       (original values still in the file), leak_suspects (the second check)
   pii.py               DETECTORS (regex + validators), spaCy NER (load_ner, detect_ner), detect_all, resolve,
                        term_regex (OCR-tolerant mode), apply_config, words_to_text, match_boxes, plan_page
   ocr.py               OCR engines (Tesseract / Windows winrt), engine(), ocr_words(), fix_digits(), render_page()
@@ -45,7 +47,8 @@ anonymizer/
   render.py            digital: FontBook, page_spans, style_at, free_right, insert_replacement, black_out_digital;
                        scans: scan_text_layout, BoldMeter, ink_color, background_color, draw_mrz
   fields.py            identity documents: lines_of, find_labeled, is_id_document; MRZ: find_mrz, build_mrz, mrz_zone
-  regions.py           find_codes, find_signatures (+ *_digital variants), is_signature_label
+  regions.py           find_codes, find_signatures (+ *_digital variants), is_signature_label, line_angles (skew)
+  morph.py             square max / min / closing on arrays, two 1-D passes (same result as PIL's rank filters)
   faces.py             faces of people (YuNet, ONNX Runtime, offline): detect, find_faces, find_faces_digital
   models/              face_detection_yunet_2023mar.onnx (OpenCV zoo, MIT; sha256 checked at load)
   configmodel.py       anon_config.yaml <-> review-table model (settings, entries incl. the commented suggestions)
@@ -69,7 +72,8 @@ sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
                        make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
                        Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 8);
-                       make_test_idcard.py also writes the poor copy (Dossier Test 9); check_all.py (section 12)
+                       make_test_idcard.py also writes the poor copy (Dossier Test 9); check_all.py (section 12);
+                       snapshot_results.py (before / after comparison of the results, section 11b)
 ```
 (There is no "Dossier Test 2".) The original numbered CLI scripts were removed long ago.
 
@@ -155,11 +159,13 @@ API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api
      option), QR codes, signatures (excluding MRZ / photos / codes), ink colour, free space, bold. Paint each match with
      the sampled paper colour, write the fake (`scan_text_layout`), rebuild the MRZ, draw black boxes; the page is
      saved as a new JPEG in a new PDF (nothing of the original file is copied).
-   - Verify (`verify_output`): searches the output for each original value (metadata, text layer, and OCR with the
+   - The output is read once (`verify.read_output`: metadata, text layer, OCR when used); both checks work on that
+     reading, and a second pass re-reads it because it changed the file.
+   - Verify (`verify.verify_output`): searches the output for each original value (metadata, text layer, and OCR with the
      tolerant regex whenever the file is not purely digital, or when "OCR check" is ticked). If a scanned file has
      leftovers, `run_anonymize` runs a second pass on its output: text only (photos / codes / signatures are off in
      that pass, so a box the user removed is not blacked out again, and the report keeps the first pass's boxes).
-   - Second check (`leak_suspects`): the detectors run again on what the output still says (text layer, or its OCR),
+   - Second check (`verify.leak_suspects`): the detectors run again on what the output still says (text layer, or its OCR),
      with the fake values taken out of the text first (a fake street and the fake town on one line are not an
      address). Every value found that is not a replacement is listed in the report (`suspects`) and as a warning
      in the Recap. It catches what the config never knew (verify_output only searches the detected values). Types:
@@ -289,7 +295,7 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   rendered at 150 dpi and searched the same way. Kind in the report: `photo`. Searched on every page unless
   `photos_only_on_id_documents: true`. Limits: frontal model (profiles can be missed), no face on a document
   that is far below ~25 px.
-- **QR / 2D codes** (`find_codes`, 100 dpi): dark modules merged by closings of 3 / 5 / 7 px into a mostly solid square
+- **QR / 2D codes** (`find_codes`, 100 dpi): dark modules merged by closings (`morph.close`, 3 / 5 / 7 px) into a mostly solid square
   7–60 mm; accepted if fine checkerboard (density 0.3–0.75, ≥ 0.45 transitions / mm both ways) or structured
   (`_code_structure`: QR finder squares in ≥ 2 corners, or Data Matrix solid left + bottom edges). Digital pages are
   rendered at 150 dpi and searched the same way (image and vector codes).
@@ -311,6 +317,21 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   strokes, i.e. signatures), redraws the collateral lines that are not inside a box (frames, table borders) from
   `get_drawings()`, then paints the boxes again on top.
 
+## 11b. Speed (what is shared, what is cached, and what must stay exact)
+
+- A scanned page is measured once in `_scan_page`: one grey copy of the page (`gray`), one skew memo shared by the two
+  `line_angles` passes (a crop measured once is not measured again, `regions.line_angles(memo=)`).
+- Square max / min filters (`morph`) replace PIL's rank filters: identical results, 10 to 30 times faster. Used by the
+  code search and the paper colour of the MRZ erase. PIL can crash (divide by zero) on a kernel larger than a small
+  image: do not use it as the reference there.
+- A digital page is rendered once at `ocr.DIGITAL_DPI` for the face and code searches (`_digital`).
+- The ink level of a page (`fields.ink_threshold`) is computed once per MRZ search, and passed on.
+- Not done on purpose: an on-disk OCR cache (scan and anonymize read the same page twice); it would add files next to
+  the originals.
+- Every speed-up keeps the results identical. Check it with `tools/snapshot_results.py`: `save` before and after a
+  change (`--code <root>` runs an exported older commit), then `compare` prints IDENTICAL (configs, reports, output
+  hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs.
+
 ## 12. Test suite: `python tools/check_all.py`
 
 Run it after every change (exit code 0 = all passed; ~3 min with 2 keys, `--quick` = 1 key and no option tests,
@@ -327,6 +348,8 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   misreadings, never the original without accents, a wrong key does not single out the true name.
 - Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements,
   a removed photo stays removed on the second pass of a scan.
+- Speed-up helpers (`speedup_tests`): morph equals a window reference (edges included) and PIL, the shared skew memo
+  gives the same angles, the output is read once and verify finds what is still there.
 - Detectors (`detector_tests`, no OCR): the strings the real files showed ('MONSIEUR' is no BIC, capitalised cities,
   Swiss VAT, apostrophe references and amounts, 'Code SWIFT' not a name, identity by shape).
 - `KEEP`: values that must stay readable in a digital output (no over-redaction), e.g. 'MONSIEUR'.

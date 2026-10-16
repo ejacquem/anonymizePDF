@@ -373,8 +373,7 @@ def ink_threshold(gray) -> int:
     which the fixed 140 misses (the MRZ lines of a poor copy lost characters: 16 of 22 read)."""
     import numpy as np
 
-    paper = float(np.percentile(gray, 60))
-    darkest = float(np.percentile(gray, 0.5))
+    paper, darkest = (float(v) for v in np.percentile(gray, [60, 0.5]))     # one pass over the page
     return int(min(170, max(130, paper - 0.5 * (paper - darkest))))
 
 
@@ -409,7 +408,7 @@ def find_mrz(words: list[dict], gray) -> dict | None:
             if best is None or ln["box"][1] < best["box"][1]:
                 best = ln
     if best is None:
-        best = _mrz_by_image(words, gray)
+        best = _mrz_by_image(words, gray, thr)
         if best is None:
             return None
     x0, y0, x1, y1 = (int(v) for v in best["box"])
@@ -521,13 +520,13 @@ def _mrz_like(gray, band, x0, x1, thr: int = 140) -> bool:
     return _regular_run(cols)[0] >= 14
 
 
-def _mrz_by_image(words: list[dict], gray):
+def _mrz_by_image(words: list[dict], gray, thr: int | None = None):
     """MRZ that OCR did not read at all: 2 or 3 lines of the same height and length, made of evenly spaced
     characters (monospaced), that no OCR word covers. Returns a pseudo OCR line for its first line, or None."""
     import numpy as np
 
     H, W = gray.shape
-    ink = gray < ink_threshold(gray)
+    ink = gray < (ink_threshold(gray) if thr is None else thr)
     for w in words:                                       # what OCR did read is not the MRZ
         x0, y0, x1, y1 = (int(v) for v in w["box"])
         ink[max(y0 - 3, 0):y1 + 3, max(x0 - 3, 0):x1 + 3] = False

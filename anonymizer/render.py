@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageFont
 
+from . import morph
 from .pii import fitz
 
 # ---------------------------------------------------------------------------
@@ -514,18 +515,15 @@ def _turn(p, c, angle: float):
 def _erase_ink(img, zone, h: float):
     """Remove the dark text inside `zone` only: each dark pixel takes the local paper colour (the brightest pixels
     around it, which follows the card's shading). Nothing else of the card is painted over."""
-    from PIL import ImageFilter
-
     x0, y0, x1, y1 = (int(v) for v in zone)
     box = (max(x0, 0), max(y0, 0), min(x1, img.width), min(y1, img.height))
     crop = img.crop(box)
     size = max(int(0.3 * h) | 1, 3)                          # wider than a stroke of the text
     lum = np.asarray(crop.convert("L")).astype(int)
-    paper_lum = np.asarray(crop.convert("L").filter(ImageFilter.MaxFilter(size))).astype(int)
-    dark = Image.fromarray(((lum < paper_lum - 12) * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(3))
-    dark = np.asarray(dark) > 0                              # the anti-aliased edge of the strokes too
+    paper_lum = morph.square_max(np.asarray(crop.convert("L")), size).astype(int)
+    dark = morph.square_max(((lum < paper_lum - 12) * 255).astype(np.uint8), 3) > 0   # + the anti-aliased edge
     bands = [np.asarray(b).copy() for b in crop.split()]
-    paper = [np.asarray(b.filter(ImageFilter.MaxFilter(size))) for b in crop.split()]
+    paper = [morph.square_max(np.asarray(b), size) for b in crop.split()]
     for arr, pap in zip(bands, paper):
         arr[dark] = pap[dark]
     img.paste(Image.fromarray(np.dstack(bands).astype(np.uint8)), box)

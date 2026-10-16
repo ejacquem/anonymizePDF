@@ -9,7 +9,6 @@ Engine used by the web app (and usable from Python directly).
 from __future__ import annotations
 
 import datetime as dt
-import difflib
 import io
 import json
 import re
@@ -22,11 +21,11 @@ import numpy as np
 import yaml
 from PIL import ImageDraw
 
-from . import configmodel, faces, fields, ocr, regions, render
+from . import configmodel, faces, fields, ocr, regions, render, verify
 from .fake import Faker, match_case
-from .ocr import ocr_words, render_page
-from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, detect_structured, digital_words,
-                  fitz, invisible_areas, plan_page, term_regex, visible_words, words_to_text, norm_value)
+from .ocr import DIGITAL_DPI, ocr_words, render_page
+from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz,
+                  invisible_areas, plan_page, visible_words, words_to_text, norm_value)
 
 CONFIG_NAME = "anon_config.yaml"
 REPORT_NAME = "anon_report.json"
@@ -612,8 +611,10 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         words = lay["words"]
         bo = cfg["blackout"]
         want_photos = bo["photos"] and (not bo["photos_only_on_id_documents"] or fields.is_id_document(words))
-        black = [("photo", r) for r in (faces.find_faces_digital(page) if want_photos else [])]
-        black += [("qr code", r) for r in (regions.find_codes_digital(page) if bo["qr_codes"] else [])]
+        # faces and codes are both looked for on one render of the page, taken before it is redacted
+        page_rgb = render_page(page, DIGITAL_DPI) if (want_photos or bo["qr_codes"]) else None
+        black = [("photo", r) for r in (faces.find_faces_digital(page_rgb) if want_photos else [])]
+        black += [("qr code", r) for r in (regions.find_codes_digital(page_rgb) if bo["qr_codes"] else [])]
         black += [("signature", r) for r in
                   (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
         removed = cfg.get("removed_boxes", {}).get(pno, [])
@@ -865,16 +866,18 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     blackbox = cfg["style"]["mode"] == "blackbox"
     t0 = time.time()
     img = render_page(page, 300)
+    gray = np.asarray(img.convert("L"))                  # the page is not painted before the end: one grey copy
     words = ocr_words(img, ocr_lang)
-    angles = regions.line_angles(np.asarray(img.convert("L")), words)     # slant of each word, before painting
+    skew = {}                                            # measures of the crops, shared by both passes
+    angles = regions.line_angles(gray, words, skew)      # slant of each word, before painting
     words = _refine_slanted(img, words, angles, ocr_lang)                  # exact boxes of the slanted lines
-    angles = regions.line_angles(np.asarray(img.convert("L")), words)
+    angles = regions.line_angles(gray, words, skew)
     plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer)
     draw = ImageDraw.Draw(img)
     pad = 3
     # areas handled as a whole (found before anything is painted): MRZ, photos, signatures
     bo = cfg["blackout"]
-    mrz = fields.find_mrz(words, np.asarray(img.convert("L")))
+    mrz = fields.find_mrz(words, gray)
     zone = fields.mrz_zone(mrz) if mrz else None
     id_page = fields.is_id_document(words, bool(mrz))
     want_photos = bo["photos"] and (id_page or not bo["photos_only_on_id_documents"])
@@ -945,90 +948,6 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     log(f"   page {pno}/{n_pages} (scan): OCR {len(words)} words, {len(plan)} replacement(s)"
         f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
     return img
-
-
-def _ocr_fold(text: str) -> str:
-    """Letters and digits as an OCR reads them: 0 / 1 / 5 / 8 / 2 come back as O / I / S / B / Z, so a fake number
-    read back with those errors is folded to the same text."""
-    return re.sub(r"[^A-Z0-9]", "", text.upper()).translate(str.maketrans("OILSBZ", "011582"))
-
-
-# the identity fields of an ID document (label kind -> type) that the second check reads back
-_LEAK_LABELS = {"surname": "PERSON", "given": "PERSON", "doc_number": "DOC_NUMBER", "birth_place": "BIRTH_PLACE",
-                "birth_date": "DATE"}
-# the types the second check reports when they are still in the output (not one of the replacements)
-LEAK_TYPES = {"IBAN", "EMAIL", "PHONE", "CREDIT_CARD", "CARD_NUMBER", "BE_NATIONAL_NUMBER", "BE_VAT", "VAT_NUMBER",
-              "SEPA_CREDITOR_ID", "ACCOUNT_NUMBER", "CONTRACT_REF", "BANK_CODE", "STREET_ADDRESS", "POSTAL_CITY"}
-
-
-def leak_suspects(path: Path, cfg: dict, ocr_lang: str, use_ocr: bool) -> list[dict]:
-    """Second check of an anonymized file. The detectors are run again on what the file still says (its text layer,
-    and its OCR when `use_ocr`), and every value they find that is not one of the replacements is reported. This
-    finds what the first pass did not know: verify_output only searches the values it detected. The file itself is
-    not changed. On identity documents the dates, and the values found by their shape, are checked too."""
-    replacements = {norm_value(v) for v in cfg["terms"].values() if v}
-    replacements_folded = [(r, _ocr_fold(r)) for r in replacements]
-    # the fake values as written (longest first): taken out of the text before the detectors run, so that a fake
-    # street and the fake town written on the same line are not read as one address
-    fakes = sorted({" ".join(v.split()) for v in cfg["terms"].values() if v and len(v.strip()) >= 3},
-                   key=len, reverse=True)
-    doc = fitz.open(path)
-    out: list[dict] = []
-    for pno, page in enumerate(doc, start=1):
-        if use_ocr and ocr.available():
-            words = ocr_words(render_page(page, 300), ocr_lang)
-        else:
-            words = digital_words(page)
-        text, _ = words_to_text(words)
-        for fake in fakes:
-            text = re.sub(re.escape(fake), " ", text, flags=re.IGNORECASE)
-        id_page = fields.is_id_document(words)
-        found = [(m.type, m.value) for m in detect_structured(text)
-                 if m.type in LEAK_TYPES or (m.type == "DATE" and id_page)
-                 or (m.type == "PERSON" and m.rank == PERSON_RANKS[0])]
-        if id_page:
-            found += fields.identity_shape(words)
-            # the values under their labels: a surname or a number left there is a leak too
-            found += [(_LEAK_LABELS[f["kind"]], f["value"]) for f in fields.find_labeled(words)
-                      if f["kind"] in _LEAK_LABELS
-                      and not (f["kind"] in ("surname", "given") and fields.is_boilerplate(f["value"]))]
-        seen: set[str] = set()
-        for typ, value in found:
-            value = " ".join(value.split())
-            key = norm_value(value)
-            # a replacement read back by the OCR with a few errors ('Irnier' for a fake name) is a replacement too
-            if len(key) < 3 or key in seen or any(key in r or difflib.SequenceMatcher(None, _ocr_fold(key), rf).ratio() >= 0.8
-                                                  for r, rf in replacements_folded):
-                continue
-            seen.add(key)
-            out.append({"page": pno, "type": typ, "value": value})
-    doc.close()
-    return out
-
-
-def verify_output(path: Path, cfg: dict, ocr_lang: str, use_ocr: bool) -> list[dict]:
-    """Search the anonymized file for any original value that survived."""
-    rxs = [(f, term_regex(f, cfg["case_sensitive"])) for f in cfg["terms"] if len(f) >= 3]
-    ocr_rxs = [(f, term_regex(f, cfg["case_sensitive"], ocr=True)) for f in cfg["terms"] if len(f) >= 3]
-    left: list[dict] = []
-
-    def check(where: str, text: str, tolerant: bool = False):
-        for find, rx in (ocr_rxs if tolerant else rxs):
-            n = len(rx.findall(text))
-            if n:
-                left.append({"where": where, "find": find, "count": n})
-
-    doc = fitz.open(path)
-    for k, v in (doc.metadata or {}).items():
-        if v and k not in ("format", "encryption"):
-            check(f"metadata.{k}", str(v))
-    for pno, page in enumerate(doc, start=1):
-        check(f"p.{pno} text layer", words_to_text(digital_words(page))[0])
-    if use_ocr and ocr.available():
-        for pno, page in enumerate(doc, start=1):
-            check(f"p.{pno} OCR", words_to_text(ocr_words(render_page(page, 300), ocr_lang))[0], tolerant=True)
-    doc.close()
-    return left
 
 
 def summarize(records: list[dict], cfg: dict) -> list[dict]:
@@ -1159,7 +1078,9 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 log(f"   blacked out: " + ", ".join(f"{b['kind']} p.{b['page']}" for b in extras["blackouts"]))
             entry["replaced"] = len(records)
             log(f"   {len(records)} replacement(s), verifying...")
-            entry["leftovers"] = verify_output(out, cfg, ocr_lang, use_ocr=(mode != "digital" or ocr_verify))
+            use_ocr = mode != "digital" or ocr_verify            # a digital file is checked on its text, unless asked
+            read = verify.read_output(out, ocr_lang, use_ocr)    # read once: both checks work on this reading
+            entry["leftovers"] = verify.verify_output(read, cfg)
             if entry["leftovers"] and mode == "scan":
                 # a scanned page is only read once by OCR: a value the first pass missed (small print, a second
                 # label) is searched again on the new output, and replaced if found
@@ -1173,10 +1094,11 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 records += more
                 entry["replaced"] = len(records)
                 entry["items"] = summarize(records, cfg)
-                entry["leftovers"] = verify_output(out, cfg, ocr_lang, use_ocr=True)
+                read = verify.read_output(out, ocr_lang, use_ocr=True)
+                entry["leftovers"] = verify.verify_output(read, cfg)
             if entry["leftovers"]:
                 log(f"   WARNING: {len(entry['leftovers'])} original value(s) still found in the output")
-            entry["suspects"] = leak_suspects(out, cfg, ocr_lang, use_ocr=(mode != "digital" or ocr_verify))
+            entry["suspects"] = verify.leak_suspects(read, cfg)
             if entry["suspects"]:
                 shown = ", ".join(f"{s['type']} '{s['value']}' p.{s['page']}" for s in entry["suspects"][:8])
                 entry["warnings"].append(f"{len(entry['suspects'])} value(s) still readable in the output, not replaced: "

@@ -41,7 +41,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from anonymizer import configmodel, engine, fields, ocr, pii, secret  # noqa: E402
+from anonymizer import configmodel, engine, fields, ocr, pii, secret, verify  # noqa: E402
 from anonymizer.fake import FEMALE_NAMES, LAST_NAMES, MALE_NAMES, Faker, _pkey  # noqa: E402
 from anonymizer.pii import digital_words, fitz, load_ner, words_to_text  # noqa: E402
 
@@ -347,18 +347,18 @@ def option_tests(work_root: Path, ner):
     first = [b for b in rep["files"][0]["blackouts"] if b["kind"] == "photo"]
     check("visages_scan.pdf: photos found before removal", len(first) > 0, f"{len(first)} photo(s)")
     removed = [{"file": "visages_scan.pdf", "page": b["page"], "kind": "photo", "box": b["box"]} for b in first]
-    real_verify, calls = engine.verify_output, {"n": 0}
+    real_verify, calls = verify.verify_output, {"n": 0}
 
-    def leftover_once(path, cfg, ocr_lang, use_ocr):          # the first check finds one value left: second pass
+    def leftover_once(read, cfg):                             # the first check finds one value left: second pass
         calls["n"] += 1
-        left = real_verify(path, cfg, ocr_lang, use_ocr)
+        left = real_verify(read, cfg)
         return left + [{"where": "test", "find": "test", "count": 1}] if calls["n"] == 1 else left
 
-    engine.verify_output = leftover_once
+    verify.verify_output = leftover_once
     try:
         _, rep = run_folder("Dossier Test 6", work_root, ner, files_only=["visages_scan.pdf"], removed=removed)
     finally:
-        engine.verify_output = real_verify
+        verify.verify_output = real_verify
     check("visages_scan.pdf: removed photos not in the report", not any(b["kind"] == "photo" for b in rep["files"][0]["blackouts"]))
     doc = engine.open_source(work_root / "Dossier Test 6" / rep["files"][0]["output"])
     pages = {}
@@ -399,6 +399,66 @@ def detector_tests():
     check("identity by shape: surname, given name and document number", ("PERSON", "MARTINEAU") in shape
           and ("PERSON", "Julie") in shape and ("DOC_NUMBER", "X4RTBPFW4") in shape)
     check("identity by shape: no boilerplate", not any(v in ("SPECIMEN", "RÉPUBLIQUE", "FRA") for _, v in shape))
+
+
+def speedup_tests():
+    """The helpers behind the speed-ups give exactly the results of the code they replaced."""
+    print("\n== speed-up helpers")
+    from PIL import Image, ImageFilter
+    from anonymizer import morph, regions
+
+    def brute(a, k, is_max):                  # reference: every k x k window, clipped at the edges
+        r = k // 2
+        out = np.empty_like(a)
+        for y in range(a.shape[0]):
+            for x in range(a.shape[1]):
+                win = a[max(y - r, 0):y + r + 1, max(x - r, 0):x + r + 1]
+                out[y, x] = win.max() if is_max else win.min()
+        return out
+
+    rng = np.random.default_rng(3)
+    grey = rng.integers(0, 256, (23, 31), dtype=np.uint8)
+    binary = (rng.random((23, 31)) < 0.3).astype(np.uint8) * 255
+    ok = all(np.array_equal(morph.square_max(a, k), brute(a, k, True)) and
+             np.array_equal(morph.square_min(a, k), brute(a, k, False)) and
+             np.array_equal(morph.close(a, k), brute(brute(a, k, True), k, False))
+             for a in (grey, binary) for k in (1, 3, 5, 7))
+    check("square max / min / closing = the window reference (edges included)", ok)
+    big = (rng.random((300, 240)) < 0.3).astype(np.uint8) * 255
+    pil = np.asarray(Image.fromarray(big).filter(ImageFilter.MaxFilter(7)).filter(ImageFilter.MinFilter(7)))
+    check("closing = PIL's MaxFilter then MinFilter on a page-sized image", np.array_equal(pil, morph.close(big, 7)))
+
+    # the skew: a page measured again with the crops it already measured gives the same angles
+    stripes = np.full((260, 520), 245, np.uint8)
+    for y in range(20, 240, 18):
+        stripes[y:y + 6, 30:490] = 40
+    slanted = np.asarray(Image.fromarray(stripes).rotate(3.0, resample=Image.BILINEAR, fillcolor=245))
+    words = [{"text": "w", "box": (30, y, 490, y + 8), "line": ("t", i), "conf": 100.0}
+             for i, y in enumerate(range(20, 240, 18))]
+    alone = regions.line_angles(slanted, words)
+    shared = {}
+    twice = regions.line_angles(slanted, words, shared)
+    again = regions.line_angles(slanted, words, shared)
+    check("skew measured with a shared memo = without", alone == twice == again and len(shared) > 0,
+          f"{len(shared)} crop(s) kept")
+
+    # the ink level: one percentile call gives the two values the separate calls gave
+    gray = rng.integers(0, 256, (400, 300), dtype=np.uint8)
+    paper, darkest = np.percentile(gray, 60), np.percentile(gray, 0.5)
+    one = np.percentile(gray, [60, 0.5])
+    check("ink level: one percentile call = two", float(one[0]) == float(paper) and float(one[1]) == float(darkest))
+
+    # the output is read once and the two checks work on that reading
+    with tempfile.TemporaryDirectory() as d:
+        pdf = Path(d) / "sortie.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 100), "Jean MOREAU - Rue des Lilas 12", fontsize=11)
+        doc.save(pdf)
+        cfg = {"terms": {"DUPONT": "MOREAU", "Lilas": "Pins"}, "case_sensitive": False}
+        read = verify.read_output(pdf, "fra+eng", use_ocr=False)
+        left = verify.verify_output(read, cfg)
+        check("verify: a value still in the file is found (text layer)", [x["find"] for x in left] == ["Lilas"], str(left))
+        check("verify: the read keeps one reading per page", len(read.pages) == 1 and read.pages[0].layer.count("MOREAU") == 1)
 
 
 def key_and_fake_tests(tmp: Path):
@@ -457,6 +517,7 @@ def main():
     t0 = time.time()
     try:
         detector_tests()
+        speedup_tests()
         key_and_fake_tests(tmp)
         for k in range(1 if args.quick else args.keys):
             print(f"\n######## random key {k + 1}")

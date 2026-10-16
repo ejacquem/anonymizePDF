@@ -15,12 +15,15 @@ Digital PDFs:
 """
 from __future__ import annotations
 
+import hashlib
 import re
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
+from . import morph
 from .fields import lines_of
+from .ocr import DIGITAL_DPI
 
 MM_PER_INCH = 25.4
 _SIGNATURE_WORD = re.compile(r"(?i)^(signature|handtekening|unterschrift)$")
@@ -145,10 +148,9 @@ def find_codes(img: Image.Image, dpi: int) -> list[tuple]:
     # merge the modules of one code into a solid square; module sizes differ (0.3 mm on an ID card, 1 mm or more
     # on an invoice), so the closing is tried at several sizes
     comps = []
+    dark_u8 = (dark * 255).astype(np.uint8)
     for size in (3, 5, 7):
-        closed = Image.fromarray((dark * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(size)) \
-            .filter(ImageFilter.MinFilter(size))
-        comps += _components(np.asarray(closed) > 0)
+        comps += _components(morph.close(dark_u8, size) > 0)
     for x0, y0, x1, y1, n in comps:
         if any(not (x1 * k <= o[0] or o[2] <= x0 * k or y1 * k <= o[1] or o[3] <= y0 * k) for o in out):
             continue                                              # already found at another closing size
@@ -172,14 +174,11 @@ def find_codes(img: Image.Image, dpi: int) -> list[tuple]:
     return out
 
 
-def find_codes_digital(page) -> list[tuple]:
-    """Rects (PDF points) of QR codes / 2D barcodes on a digital page, image or vector: the page is rendered and
-    searched like a scan."""
-    dpi = 150
-    pix = page.get_pixmap(dpi=dpi, alpha=False)
-    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-    f = 72 / dpi
-    return [(x0 * f, y0 * f, x1 * f, y1 * f) for x0, y0, x1, y1 in find_codes(img, dpi)]
+def find_codes_digital(img) -> list[tuple]:
+    """Rects (PDF points) of QR codes / 2D barcodes on a digital page, image or vector: `img` is the page rendered at
+    ocr.DIGITAL_DPI, searched like a scan."""
+    f = 72 / DIGITAL_DPI
+    return [(x0 * f, y0 * f, x1 * f, y1 * f) for x0, y0, x1, y1 in find_codes(img, DIGITAL_DPI)]
 
 
 def text_angle(gray: np.ndarray) -> float:
@@ -195,10 +194,13 @@ def text_angle(gray: np.ndarray) -> float:
     if ink.sum() < 30:
         return 0.0
     mask = Image.fromarray((ink * 255).astype(np.uint8))
+    seen: dict[float, float] = {}                         # the grid and the refinement share some angles
 
     def score(a: float) -> float:
-        rot = np.asarray(mask.rotate(a, resample=Image.BILINEAR)) > 127
-        return float(rot.sum(axis=1).astype(float).var())
+        if a not in seen:
+            rot = np.asarray(mask.rotate(a, resample=Image.BILINEAR)) > 127
+            seen[a] = float(rot.sum(axis=1).astype(float).var())
+        return seen[a]
 
     base = score(0.0)
     best = max(np.arange(-20, 20.5, 1.0), key=score)
@@ -211,16 +213,26 @@ def text_angle(gray: np.ndarray) -> float:
 TILT = 1.5        # degrees: from this slant a word is painted turned (see engine.TILT_MIN)
 
 
-def line_angles(gray: np.ndarray, words: list[dict]) -> dict:
+def line_angles(gray: np.ndarray, words: list[dict], memo: dict | None = None) -> dict:
     """{word box: skew angle} for each OCR word, measured once per OCR line. A short line whose own measure is
-    unreliable takes the slant of the other slanted lines of the page when they agree (one card, one skew)."""
+    unreliable takes the slant of the other slanted lines of the page when they agree (one card, one skew).
+    `memo` (optional, shared between calls on the same image) keeps the measure of each crop by its content: a page
+    measured again after its slanted lines were re-read measures the unchanged lines only once."""
+    memo = {} if memo is None else memo
+
+    def measure(crop: np.ndarray) -> float:
+        key = (crop.shape, hashlib.blake2b(np.ascontiguousarray(crop).tobytes(), digest_size=16).digest())
+        if key not in memo:
+            memo[key] = text_angle(crop)
+        return memo[key]
+
     lines = []
     for ln in lines_of(words):
         x0, y0, x1, y1 = (int(v) for v in ln["box"])
         if x1 - x0 < 20 or y1 - y0 < 8:
             lines.append((ln, None))
             continue
-        lines.append((ln, text_angle(gray[max(y0 - 2, 0):y1 + 2, max(x0 - 2, 0):x1 + 2])))
+        lines.append((ln, measure(gray[max(y0 - 2, 0):y1 + 2, max(x0 - 2, 0):x1 + 2])))
     # the lines with several words are the reliable ones: they decide the common slant
     slanted = [a for ln, a in lines if a is not None and abs(a) >= TILT and len(ln["words"]) >= 2]
     common = None

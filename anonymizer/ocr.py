@@ -31,6 +31,9 @@ def set_engine(name: str):
     _choice = name
 
 
+DIGITAL_DPI = 150       # a digital page is rendered at this resolution to look for faces and codes (one render)
+
+
 def render_page(page, dpi: int = 300):
     from PIL import Image
 
