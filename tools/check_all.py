@@ -73,6 +73,8 @@ SENSITIVE_11 = ["Ylona", "YLONA", "Océane", "Zaïra", "REYES", "REYS", "REYE", 
 # written in full, in pieces, initialled, in capitals, cut and reversed; a second person as a control
 SENSITIVE_12 = ["Théo", "THEO", "Aurélien", "AURELIEN", "Gaspard", "GASPARD", "Gasp", "Gas", "Morin", "MORIN",
                 "Clément", "Roux", "Théo Aurélien Gaspard Morin", "Gaspard Morin"]
+# the real names of the common-words statements (Dossier Test 14); the headings around them are no names
+SENSITIVE_14 = ["Clément", "Roux", "Théo", "Aurélien", "Morin"]
 # values of the turned text (Dossier Test 13): columns written vertically and lines skewed (tools/make_test_rotated.py)
 SENSITIVE_13 = ["Théo", "Aurélien", "Morin", "Clément", "Roux", "BE68 5390 0754 7034", "0048213976", "15878645",
                 "8 rue des Cerisiers", "69003 Lyon", "14 mars 1985"]
@@ -81,7 +83,16 @@ SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 300
                "BNPAFRPP", "GEBABEBB", "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
                "CHE-123.456.789", "Route de Florissant 14", "CH-1206", "86'123'456'789'012"]
 # values that must stay readable in a digital output (no over-redaction): folder -> {file: [values]}
+# the headings of the statements that must stay readable: none of them is a name (Dossier Test 14)
+HEADINGS_14 = {
+    "releve_placements.pdf": ["Bill payment", "Capital Invested", "Interest earned", "Gross Interest Amount Due At Maturity",
+                              "App Store", "May Start", "Jun interest earned", "Apr Start", "Jun Bill payment"],
+    "tableau_labels.pdf": ["Asset Allocation", "Cash Balance", "Money Market", "Quarter End", "Net Asset Value",
+                           "Bank Transfer", "Investment Summary"],
+    "tableau_operations.pdf": ["Accounts", "Income", "Maturity", "May Bill Payment"],
+}
 KEEP = {
+    "Dossier Test 14": HEADINGS_14,
     "Dossier Test 8": {"facture_suisse_fr.pdf": ["MONSIEUR", "Banque Exemple", "Lumen Services SA"]},
     "Dossier Test 10": {"courrier_adresses.pdf": ["Lieu de la signature", "Bonjour Madame", "Atelier Lumen SPRL"]},
     # the operation labels are no name: 'VIRT RECU', 'PRLV SEPA', 'RET DAB FR', 'ACHAT-DEBIT' stay (and the company)
@@ -145,6 +156,12 @@ EXPECT = {
     # and scan (tools/make_test_transfers.py)
     # one person in every form a folder writes a name: full, pieces, initials, capitals, cut, reversed (tools/make_test_names.py)
     # text written vertically and skewed: the replacements keep the direction of the text they replace
+    # common words written with capitals (headings, labels, months): they must not be read as names
+    "Dossier Test 14": (SENSITIVE_14, {
+        "releve_placements.pdf": ("digital", [], []),
+        "tableau_operations.pdf": ("digital", [], []),
+        "tableau_labels.pdf": ("digital", [], []),
+    }),
     "Dossier Test 13": (SENSITIVE_13, {
         "texte_vertical.pdf": ("digital", [], []),
         "texte_incline.pdf": ("digital", [], []),
@@ -631,6 +648,9 @@ def invisible_copy_tests():
         check("the drawn name is replaced (not left blank)", "ZELLIES" in text and "BANQUE" in text, repr(text[:80]))
         check("no original name left in the text layer", "MILLIES" not in text)
         check("the replacement is written once", text.count("ZELLIES") == 1, repr(text[:80]))
+        trace = rep["files"][0].get("trace", [])
+        check("the debug trace lists each redacted area with its rule",
+              len(trace) == 2 and all(t["kind"] and t["box"] for t in trace), repr(trace)[:200])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

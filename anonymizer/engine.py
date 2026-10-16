@@ -48,6 +48,12 @@ SPLIT_TYPES = {"ACCOUNT_NUMBER": 5, "BANK_CODE": 5, "CARD_NUMBER": 4}
 TYPE_ORDER = ["PERSON"] + ACTIVE_TYPES + ["DATE", "ORG", "LOCATION"]
 
 _STOP = set("""
+janvier février fevrier mars avril mai juin juillet août aout septembre octobre novembre décembre
+january february march april may june july august september october november december jan feb apr jun jul aug sep sept oct nov dec
+bill payment payments interest interests capital income amount amounts rate rates gross net account accounts maturity
+earned invested investment investments due start end store app internet total balance fee fees tax dividend coupon bond
+bonds stock stocks share shares fund funds deposit deposits withdrawal transfer value price cost number reference
+description details summary period product products service services portfolio savings cash bank invoice overview
 banque agence compte relevé releve total solde carte date libellé libelle détail detail débit debit crédit credit
 votre vos titulaire numéro numero téléphone telephone période periode synthèse synthese informations ancien nouveau
 virement prélèvement prelevement retrait chèque cheque paiement facture contrat client clients conseiller conseillère
@@ -169,11 +175,12 @@ def _town_of(typ: str, value: str) -> str | None:
     return town.strip() or None
 
 
-def accept_person(value: str, honorific: bool, from_ner: bool) -> bool:
+def accept_person(value: str, honorific: bool, from_ner: bool, vocab: frozenset = frozenset()) -> bool:
     """Is this PERSON candidate reliable enough to be active by default?
     - found after M./Mme/Dr/...            -> yes (strong signal)
     - contains a known first name           -> yes
-    - found by the NER model, Title Case    -> yes
+    - found by the NER model, Title Case    -> yes, unless one of its words is an ordinary word of the documents
+      (`vocab`: the words written in lower case somewhere: 'Interest earned' is a heading, not a name)
     otherwise (e.g. 'Assurance MAIF', 'RETRAIT DAB') it is only suggested, commented out."""
     toks = [t.strip(",.;:") for t in value.split() if t.strip(",.;:")]
     if not toks or any(c.isdigit() for c in value):
@@ -187,7 +194,9 @@ def accept_person(value: str, honorific: bool, from_ner: bool) -> bool:
     firsts = _first_names()
     if any(t.casefold() in firsts for t in toks):
         return True
-    return from_ner and all(t.istitle() for t in toks)
+    if not from_ner or not all(t.istitle() for t in toks):
+        return False
+    return not any(_pkey(t) in vocab for t in toks)
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +297,7 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
     id_page = fields.is_id_document(words)
     if ocr_page:
         text = ocr.fix_digits(text)           # '04 72 OO 11 22' -> '04 72 00 11 22' (same length)
-    for w in re.findall(r"[^\W\d_]{4,}", text):
+    for w in re.findall(r"(?<![\w.@'’-])[^\W\d_]{4,}(?![\w.@'’-])", text):
         tokens[w] = tokens.get(w, 0) + 1
     for m in CAP_SEQUENCE.finditer(text):
         info = sequences.setdefault(m.group(), {"count": 0, "files": set(), "pages": set()})
@@ -443,9 +452,10 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                            "note": f"part of '{e['value']}'"})
 
     rejected = []
+    vocab = frozenset(_pkey(w) for w in tokens if w[:1].islower())     # ordinary words of the documents
     # the fullest names first: their words tell the kinds of the shorter forms that follow ('Morin Aurélien Gaspard')
     for e in sorted(persons, key=lambda e: (has_initial(e), -len(e["value"].split()), -e["count"])):
-        if e.get("labeled") or accept_person(e["value"], e["honorific"], e["ner"]):
+        if e.get("labeled") or accept_person(e["value"], e["honorific"], e["ner"], vocab):
             activate(e)
         else:
             rejected.append(e)
@@ -495,9 +505,12 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                        "replace": faker.name_token(word, kind_of.get(best, "last")),
                        "note": "close to a known name word"})
     for e in rejected:
-        # capitals alone are headings and company names ('BANQUE MOSANE'): only suggested with a known name word
-        if not e["value"].isupper():
-            off.append({**e, "replace": faker.person(e["value"], gender(e)), "note": "uncertain name - check it"})
+        # capitals alone are headings and company names ('BANQUE MOSANE'): only suggested with a known name word.
+        # A candidate with a stop word or an ordinary word of the documents is no name at all: not suggested either.
+        toks = e["value"].split()
+        if e["value"].isupper() or any(t.casefold() in _STOP or _pkey(t) in vocab for t in toks):
+            continue
+        off.append({**e, "replace": faker.person(e["value"], gender(e)), "note": "uncertain name - check it"})
 
     numbers_added = {norm_value(e["value"]) for e in found.values() if e["type"] in SPLIT_TYPES}
     for e in found.values():
@@ -726,6 +739,12 @@ def _new_mrz(words: list[dict], mrz: dict, cfg: dict) -> list[str]:
     return fields.build_mrz(mrz["format"], fake, rng)
 
 
+def _note(extras: dict, page: int, box, kind: str, value: str = "", replacement: str = ""):
+    """Trace of what was redacted or painted, for the debug view (PDF points): where, by which rule, for which value."""
+    extras.setdefault("trace", []).append({"page": page, "kind": kind, "box": [round(float(v), 1) for v in box],
+                                           "value": value, "replacement": replacement or ""})
+
+
 def _inside(box, areas) -> bool:
     cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     return any(a[0] <= cx <= a[2] and a[1] <= cy <= a[3] for a in areas)
@@ -787,7 +806,7 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
     fill = (0, 0, 0) if blackbox else (1, 1, 1) if cfg["style"]["digital_fill"] == "white" else False
     fonts = render.FontBook(doc)
     numberer, records = Numberer(), []
-    extras: dict = {"blackouts": [], "mrz": []}
+    extras: dict = {"blackouts": [], "mrz": [], "trace": []}
     for i, lay in enumerate(layouts):
         pno, page = i + 1, doc[i]
         if lay["kind"] == "scan":
@@ -814,12 +833,14 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         plan = [(m, bx) for m, bx in plan_page(words, pc, [], numberer) if not _inside(bx[0], manual)]
         _mark_invisible(plan, words)
         if plan:
-            _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno)
+            _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, extras)
         if lay["pixels"]:
             _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, [r for _, r in black], log)
         if black:
             render.black_out_digital(page, [r for _, r in black])
             extras["blackouts"] += [{"page": pno, "kind": k, "box": [round(v, 1) for v in r]} for k, r in black]
+            for k, r in black:
+                _note(extras, pno, r, f"black box ({k})")
     if fonts.used:
         log("   fonts: " + ", ".join(f"{n} {k}" for k, n in sorted(fonts.used.items()))
             + "  (embedded = same font as the PDF, system = same font from this PC, standard = closest PDF font)")
@@ -836,7 +857,7 @@ def _mark_invisible(plan, words):
         m.invisible = bool(covered) and all(w["invisible"] for w in covered)
 
 
-def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno):
+def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, extras):
     """Text replacements of one digital page (fonts read before the text is removed). An INVISIBLE match (a scanner's
     OCR layer) is removed without writing a fake on top: the pixel pass handles what is visible. Its redaction may
     also take the drawn text it overlaps; a drawn match always gets its replacement."""
@@ -855,12 +876,15 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
     quads = {}
     for (m, boxes), ext in zip(plan, turned):
         m.replacement = _adjust(cfg, m)
+        kind = ("invisible match" if m.invisible else "turned match" if ext else "match") +             (" (replaced)" if m.replacement and not blackbox and not m.invisible else " (removed)")
         if ext:
             quads[id(ext)] = render.rotated_quad(ext)
             page.add_redact_annot(quads[id(ext)], fill=False if m.invisible else fill)
+            _note(extras, pno, quads[id(ext)].rect, kind, m.value, m.replacement)
         else:
             for b in boxes:
                 page.add_redact_annot(fitz.Rect(b), fill=False if m.invisible else fill)
+                _note(extras, pno, b, kind, m.value, m.replacement)
         records.append({"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes),
                         "placed": not blackbox and bool(m.replacement) and not m.invisible})
     neighbours = [render.neighbour_glyphs(ext, quads[id(ext)], taken_chars) if ext and not m.invisible else []
@@ -926,10 +950,13 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
             bg = (0, 0, 0) if blackbox else render.background_color(img, (b[0] - 3, b[1] - 3, b[2] + 3, b[3] + 3))
             page.add_redact_annot(fitz.Rect(b[0] * k - 1, b[1] * k - 1, b[2] * k + 1, b[3] * k + 1),
                                   fill=tuple(c / 255 for c in bg))
+            _note(extras, pno, [v * k for v in b], "pixel match (" + ("replaced" if m.replacement and not blackbox
+                                                                    else "removed") + ")", m.value, m.replacement)
         todo.append((m, boxes[0], ink))
     if zone:
         page.add_redact_annot(fitz.Rect(*(v * k for v in zone)),
                               fill=tuple(c / 255 for c in render.background_color(img, zone)))
+        _note(extras, pno, [v * k for v in zone], "MRZ zone erased (pixels)")
     if not todo and not zone:
         return
     page.apply_redactions(images=2, graphics=1, text=0)    # image pixels under the values are overwritten
@@ -987,7 +1014,7 @@ def _scan_image(src: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[li
     """A scanned image: the anonymized page is saved as an image of the same kind (not a PDF)."""
     pc = pii_cfg(cfg)
     numberer, records = Numberer(), []
-    extras: dict = {"blackouts": [], "mrz": []}
+    extras: dict = {"blackouts": [], "mrz": [], "trace": []}
     page = open_source(src)[0]
     img = _scan_page(page, 1, 1, cfg, pc, ocr_lang, numberer, records, extras, log)
     if out.suffix.lower() in (".jpg", ".jpeg"):
@@ -1009,7 +1036,7 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list
     src, dst = open_source(pdf), fitz.open()
     pc = pii_cfg(cfg)
     numberer, records = Numberer(), []
-    extras: dict = {"blackouts": [], "mrz": []}
+    extras: dict = {"blackouts": [], "mrz": [], "trace": []}
     for pno, page in enumerate(src, start=1):
         img = _scan_page(page, pno, len(src), cfg, pc, ocr_lang, numberer, records, extras, log)
         newp = dst.new_page(width=page.rect.width, height=page.rect.height)
@@ -1173,6 +1200,8 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
             fill = (0, 0, 0) if blackbox else render.background_color(img, box)
             draw.rectangle(box, fill=fill)
+            _note(extras, pno, [v * 72 / 300 for v in box], "scan match (" + ("replaced" if part else "removed") + ")",
+                  m.value, part)
             changed.append(box)
             if part:
                 font, xy = render.scan_text_layout(m.value, part, b, limit, is_bold)
@@ -1185,6 +1214,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     if mrz:
         lines = _new_mrz(words, mrz, cfg)
         render.draw_mrz(img, draw, mrz, zone, lines)
+        _note(extras, pno, [v * 72 / 300 for v in zone], "MRZ zone erased and rebuilt (scan)")
         extras["mrz"].append({"page": pno, "action": "regenerated", "format": mrz["format"], "lines": lines})
         log(f"   page {pno}: machine readable zone (MRZ, {mrz['format']}) regenerated")
     for kind, boxes_ in (("photo", photos), ("qr code", codes), ("signature", signs), ("manual", manual)):
@@ -1192,6 +1222,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             draw.rectangle(b, fill=(0, 0, 0))
             extras["blackouts"].append({"page": pno, "kind": kind,   # box in PDF points, like digital
                                         "box": [round(v * 72 / 300, 1) for v in b]})
+            _note(extras, pno, [v * 72 / 300 for v in b], f"black box ({kind})")
     if photos or codes or signs or manual:
         log(f"   page {pno}: blacked out {len(photos)} photo(s), {len(codes)} QR code(s), {len(signs)} signature(s), "
             f"{len(manual)} box(es) drawn by hand")
@@ -1330,6 +1361,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
             entry["items"] = summarize(records, cfg)
             entry["blackouts"] = extras["blackouts"]
             entry["mrz"] = extras["mrz"]
+            entry["trace"] = extras.get("trace", [])          # shared list: a second scan pass adds to it
             if extras["blackouts"] and mode != "scan":
                 log(f"   blacked out: " + ", ".join(f"{b['kind']} p.{b['page']}" for b in extras["blackouts"]))
             entry["replaced"] = len(records)
@@ -1345,7 +1377,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 # only text is replaced here: the photos, codes and signatures were decided by the first pass (the
                 # ones the user removed included), so they are not searched again on the output
                 text_only = {**cfg, "blackout": {**cfg["blackout"], "photos": False, "qr_codes": False, "signatures": False}}
-                more, _ = _scan_source(out, tmp, text_only, ocr_lang, log)
+                more, more_extras = _scan_source(out, tmp, text_only, ocr_lang, log)
+                extras.setdefault("trace", []).extend(more_extras.get("trace", []))
                 tmp.replace(out)
                 records += more
                 entry["replaced"] = len(records)

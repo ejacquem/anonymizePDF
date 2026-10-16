@@ -224,7 +224,9 @@ async function setViewer(which, path) {
 
 // ----- changed fields: a rectangle around each value replaced in the file, in both panes (Changes button) -----
 const CHANGES_KEY = "anonymizePDF.changes";
+const TRACE_KEY = "anonymizePDF.trace";
 const btnChanges = $("#btnChanges");
+const btnTrace = $("#btnTrace");
 // share of the area of box a that lies inside box b (PDF points)
 function coveredShare(a, b) {
   const w = Math.min(a[2], b[2]) - Math.max(a[0], b[0]), h = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
@@ -245,16 +247,27 @@ function changedBoxes() {
   const kept = removed.filter((r) => !replaced.some((c) => c.page === r.page && coveredShare(r.box, c.box) >= 0.5));
   return { replaced, removed: kept };
 }
+// debug: every area the anonymizer redacted or painted (its trace in the report), with the rule that did it
+function traceBoxes() {
+  const name = currentFileName();
+  const rep = name && state.report && (state.report.files || []).find((f) => f.file === name);
+  return rep ? rep.trace || [] : [];
+}
 function drawChanges(which) {
   const v = viewers[which], k = pageScale();
   const on = btnChanges.classList.contains("on");
   const changes = on ? changedBoxes() : { replaced: [], removed: [] };
   const shapes = [...changes.replaced.map((c) => ({ ...c, cls: "chg" })), ...changes.removed.map((c) => ({ ...c, cls: "chg removed" }))];
+  if (btnTrace.classList.contains("on")) {
+    traceBoxes().forEach((t) => shapes.push({ page: t.page, box: t.box, cls: "chg trace",
+      title: `${t.kind}${t.value ? ": " + t.value : ""}${t.replacement ? " → " + t.replacement : ""}` }));
+  }
   [...v.list.children].forEach((el, i) => {
     el.querySelectorAll(".chg").forEach((n) => n.remove());
     shapes.filter((c) => c.page === i + 1).forEach((c) => {
       const d = document.createElement("div");
       d.className = c.cls;
+      if (c.title) d.title = c.title;
       d.style.left = c.box[0] * k + "px";
       d.style.top = c.box[1] * k + "px";
       d.style.width = (c.box[2] - c.box[0]) * k + "px";
@@ -263,6 +276,12 @@ function drawChanges(which) {
     });
   });
 }
+btnTrace.onclick = () => {
+  btnTrace.classList.toggle("on");
+  try { localStorage.setItem(TRACE_KEY, btnTrace.classList.contains("on") ? "1" : "0"); } catch (e) { /* no storage */ }
+  VIEWERS.forEach(drawChanges);
+};
+try { if (localStorage.getItem(TRACE_KEY) === "1") btnTrace.classList.add("on"); } catch (e) { /* no storage */ }
 btnChanges.onclick = () => {
   btnChanges.classList.toggle("on");
   try { localStorage.setItem(CHANGES_KEY, btnChanges.classList.contains("on") ? "1" : "0"); } catch (e) { /* no storage */ }
@@ -1174,6 +1193,10 @@ function updateToolbar() {
   const changes = changedBoxes();
   const nChanges = changes.replaced.length + changes.removed.length;
   btnChanges.disabled = !nChanges;
+  btnTrace.disabled = !traceBoxes().length;
+  btnTrace.title = traceBoxes().length
+    ? `Debug: draw the ${traceBoxes().length} area(s) the anonymizer redacted or painted (blue dotted); hover for the rule`
+    : "No trace for this file: anonymize it again to see what was redacted";
   btnChanges.title = nChanges
     ? `Frame the ${changes.replaced.length} replaced field(s) (orange) and the ${changes.removed.length} removed area(s) (purple, dashed) of this file, in both panes`
     : "No replaced field recorded for this file: anonymize it to see them";

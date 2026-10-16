@@ -214,6 +214,8 @@ details.grp[open] > summary::before { content: "▾"; }
 /* changed fields (Changes button): a frame around each replaced value, the clicks go through it */
 .chg { position: absolute; box-sizing: border-box; border: 2px solid var(--warn); z-index: 3; pointer-events: none;
   background: color-mix(in srgb, var(--warn) 12%, transparent); }
+/* debug trace (Trace button): every redacted or painted area, blue dotted, hover for the rule */
+.chg.trace { border: 1px dotted #1f78d1; background: color-mix(in srgb, #1f78d1 8%, transparent); pointer-events: auto; }
 /* removed without replacement: dashed purple, so it never looks like a replaced value */
 .chg.removed { border: 2px dashed var(--removed); background: color-mix(in srgb, var(--removed) 14%, transparent); }
 button.mdel { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; line-height: 1; }

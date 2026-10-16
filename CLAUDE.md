@@ -112,6 +112,11 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   (`done`, `total`, `current`) through the `progress` callback of `scan_folder` / `run_anonymize` (one step per
   file); `GET /api/job/<id>` returns it with `elapsed` and `eta` (from the rate so far). A batch counts the files
   of the folders it works on (`_batch_phases`), skipped folders are not counted.
+- Trace (Original pane head, `#btnTrace`, debug, remembered in localStorage `anonymizePDF.trace`): draws every area the
+  anonymizer redacted or painted (`items` are not enough: black boxes, MRZ zones, pixel and scan areas), blue dotted,
+  hover for the rule, the value and its replacement. It reads the report's `trace` (`_note` in engine.py: kinds
+  'match' / 'invisible match' / 'turned match' (replaced or removed), 'pixel match', 'scan match', 'black box (...)',
+  'MRZ zone erased ...'). Reports made before this feature have no trace: anonymize the file again.
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Anonymize file** (either file of the pair; the
   report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).
@@ -256,6 +261,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   name of the list or a word of an active name) are names too, without a title or NER ('Théo Morin', 'Lucas Martin Lu',
   'Théo A Morin'). A run stops at a stop word, a town, a bank operation label or a word with a digit. A title keeps up
   to five words ('Monsieur Théo Aurélien Gaspard Morin').
+  Common words are no names: months and finance / statement vocabulary are stop words (`_STOP`), and a name found only
+  by the NER model is active only when none of its words is an ordinary word of the documents (`vocab`: a word written
+  in lower case somewhere, standalone, not in an e-mail). A candidate with a stop word or an ordinary word is not even
+  suggested ('Jun Bill payment', 'Capital Invested', 'May Start': Dossier Test 14).
   Active PERSON: after a title, contains a known
   first name, spaCy Title Case, or found under a label. `_STOP` words (including label words such as signature, nom,
   nationalité, adresse) are never names.
