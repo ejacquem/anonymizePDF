@@ -68,6 +68,10 @@ SENSITIVE_2 = ["Ylona", "YLONA", "Océane", "Zaïra", "BRUNEAU", "BRUNE", "MAURE
 # the cases of the report, as written on the real statement (Dossier Test 11, invented names)
 SENSITIVE_11 = ["Ylona", "YLONA", "Océane", "Zaïra", "REYES", "REYS", "REYE", "Victor Hugo", "Library", "Lamartine",
                 "495321XXXXXX7425", "157851XXXXXX1568", "5483651240000XA3", "BT187536HE8O43", "15878645", "NÎMES"]
+# values of the names in several forms (Dossier Test 12, invented people): one person, 'Théo Aurélien Gaspard Morin',
+# written in full, in pieces, initialled, in capitals, cut and reversed; a second person as a control
+SENSITIVE_12 = ["Théo", "THEO", "Aurélien", "AURELIEN", "Gaspard", "GASPARD", "Gasp", "Gas", "Morin", "MORIN",
+                "Clément", "Roux", "Théo Aurélien Gaspard Morin", "Gaspard Morin"]
 # values of the invoice (Dossier Test 8)
 SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 3000 6000 0112 3456 7890 189",
                "BNPAFRPP", "GEBABEBB", "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
@@ -135,6 +139,12 @@ EXPECT = {
     }),
     # traditional statement with transfers, many accounts and names in several forms: digital (embedded subset fonts)
     # and scan (tools/make_test_transfers.py)
+    # one person in every form a folder writes a name: full, pieces, initials, capitals, cut, reversed (tools/make_test_names.py)
+    "Dossier Test 12": (SENSITIVE_12, {
+        "courrier_complet.pdf": ("digital", [], []),
+        "releve_partiel.pdf": ("digital", [], []),
+        "contrat_coupe.pdf": ("digital", [], []),
+    }),
     "Dossier Test 2": (SENSITIVE_2, {
         "releve_virements.pdf": ("digital", [], []),
         "releve_virements_scan.pdf": ("scan", [], []),
@@ -494,6 +504,43 @@ def reported_cases_tests():
           .endswith(" place"))
 
 
+def names_tests():
+    """Names of several words in the forms a folder writes them in: the full name under a title (up to five words),
+    the cut forms (a cut word gets the cut replacement of the full word), the first names of the middle, the
+    sequences with a known word, found without a title and without the NER model."""
+    print("\n== names of several words")
+    found = lambda t: [(m.type, m.value) for m in pii.detect_all(t)]   # noqa: E731
+    check("a title keeps the whole name (surname after three words)",
+          ("PERSON", "Théo Aurélien Gaspard Morin") in found("Monsieur Théo Aurélien Gaspard Morin"))
+    f = Faker(b"n" * 32)
+    check("middle names are first names, the last word is the surname",
+          f.name_kinds(["Théo", "Aurélien", "Gaspard", "Morin"]) == ["first", "first", "first", "last"])
+    check("a cut form of a name word is found from the full word",
+          engine.name_truncations(["Théo Aurélien Gaspard Morin", "Théo Aurélien Gasp", "Théo Aurélien Gas"])
+          == {"gas": "Gaspard", "gasp": "Gaspard"})
+    f.truncations = {"gasp": "Gaspard"}
+    full = f.name_token("Gaspard", "first")
+    check("a cut form gets the cut replacement of its full word, of the same kind",
+          f.name_token("Gasp", "last") == full[:4] and f.name_token("GASP", "last") == full[:4].upper())
+    tmp = Path(tempfile.mkdtemp(prefix="anon_names_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((60, 100), "Monsieur Théo Aurélien Gaspard Morin", fontname="helv", fontsize=10)
+        page.insert_text((60, 120), "Virement reçu de Théo A Morin", fontname="helv", fontsize=10)
+        page.insert_text((60, 140), "Représenté par Lucas Martin Lu", fontname="helv", fontsize=10)
+        page.insert_text((60, 160), "Signature : Théo Aurélien Gasp", fontname="helv", fontsize=10)
+        doc.save(tmp / "noms.pdf", garbage=4)
+        cfg = engine.scan_folder(tmp, "noms", None, "fra+eng", lambda m: None)["config"]
+        engine.run_anonymize(tmp, "noms", cfg, "fra+eng", False, lambda m: None)
+        text = fitz.open(tmp / "noms_anonymized.pdf")[0].get_text()
+        words = {w for w in re.split(r"[^\w]+", text) if w}
+        check("without a title and without NER: no fragment of the name is left",
+              not words & {"Théo", "Aurélien", "Gaspard", "Morin", "Gasp", "Lucas", "Martin"}, repr(sorted(words)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def invisible_copy_tests():
     """A drawn name with an invisible copy of it on top (the OCR layer of a scan): the drawn name gets its replacement.
     Bug seen on a real file: the name was erased (white, no text) because the drawn match was taken for invisible text."""
@@ -657,6 +704,7 @@ def main():
         detector_tests()
         reported_cases_tests()
         invisible_copy_tests()
+        names_tests()
         town_tests()
         speedup_tests()
         key_and_fake_tests(tmp)

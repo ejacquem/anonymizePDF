@@ -207,6 +207,10 @@ class Faker:
         # spellings of one name in the documents ('REYES', 'REYE', 'REYS'): key -> the key of the spelling they share
         # the replacement of (see engine.name_aliases)
         self.aliases: dict[str, str] = {}
+        # a cut form of a name word ('Gasp', 'Mo') -> the full word it is cut from ('Gaspard', 'Morin'): it gets the
+        # replacement of the full word, cut the same way (see name_token)
+        self.truncations: dict[str, str] = {}
+        self.kind_seen: dict[str, str] = {}      # name word key -> the kind it was first replaced with
 
     # ---------- primitives ----------
     def rng(self, kind: str, value: str, attempt: int = 0) -> random.Random:
@@ -305,7 +309,14 @@ class Faker:
                 done.add(_norm(new))
                 parts.append(new)
             return "-".join(parts)
-        key = self.aliases.get(_pkey(token), _pkey(token))
+        pk = _pkey(token)
+        if pk in self.truncations and pk not in self.aliases and "-" not in token:
+            # the full word decides the kind: 'Gasp' cut from the middle name 'Gaspard' is a first name too
+            whole = self.truncations[pk]
+            full = self.name_token(whole, self.kind_seen.get(_pkey(whole), kind), avoid, gender)
+            return _style_token(token, full[:len(token)])
+        key = self.aliases.get(pk, pk)
+        self.kind_seen.setdefault(key, kind)
         known = self.names.get((kind, key)) or self._similar_name(kind, key)
         if known:
             return _style_token(token, known)
@@ -364,10 +375,10 @@ class Faker:
                 kinds.append("last")
             elif any(upper) and not all(upper):          # 'Océane Zaïra REY': the capitalised words are first names
                 kinds.append("first")
-            elif any(known):
+            elif any(known) and len(parts) == 2:         # 'Thomas Marchand': the other word is the surname
                 kinds.append("last")
             else:
-                kinds.append("first" if i == 0 and len(parts) > 1 else "last")
+                kinds.append("first" if i < len(parts) - 1 else "last")   # 'Théo Aurélien Gaspard Morin': surname last
         return kinds
 
     def person(self, value: str, gender: str | None = None, kind: str | None = None,

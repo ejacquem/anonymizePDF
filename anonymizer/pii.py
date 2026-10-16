@@ -293,7 +293,8 @@ DETECTORS = [
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,])\d{9,16}(?!\w)"), _v_account),  # generic guess: long digit runs
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w'’.,])\d{2}(?:['’](?:\d{3}|\*{3})){3,}(?![\w'’]|[.,]\d)"), None),
     # Person names (heuristics; the config review step is where you confirm them)
-    ("PERSON", re.compile(rf"(?<!\w){_HONORIFIC}[ ]+({_CAP}{_WORD}+(?:[ ]{_CAP}{_WORD}+){{0,2}})"), _v_group1),
+    # after a title, up to five capitalised words ('Monsieur Théo Aurélien Gaspard Morin' keeps its surname)
+    ("PERSON", re.compile(rf"(?<!\w){_HONORIFIC}[ ]+({_CAP}{_WORD}+(?:[ ]{_CAP}{_WORD}+){{0,4}})"), _v_group1),
     # 'Pr\u00e9nom NOM': up to two middle names ('Merve Chantal Ga\u00eblle REYES'), a surname that may be cut ('REY', 'RE')
     ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_CAP}[a-z\u00e0-\u00ff'\u2019\-]+(?:[ ]{_CAP}[a-z\u00e0-\u00ff'\u2019\-]+){{0,2}}"
                           rf"[ ]+{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]*)(?!\w)"), _v_group1),  # Prenom NOM
@@ -304,6 +305,9 @@ DETECTORS = [
     # an identifier written alone, letters and digits: 'BT187536HE8O43' (lowest priority: other detectors win)
     ("CONTRACT_REF", re.compile(r"(?<![\w/])[A-Z][A-Z0-9]{9,23}(?![\w])"), _v_mixed_id),
 ]
+# capitalised words in a row, an initial counting as a word: 'Théo A. Morin', 'Lucas Martin Lu', 'MORIN Théo'. Kept
+# only with a word the documents already know as a name (see engine.scan_folder): no title and no capitals rule
+CAP_SEQUENCE = re.compile(rf"(?<![\w'’\-]){_CAP}{_WORD}*\.?(?:[ ]{_CAP}{_WORD}*\.?){{0,5}}(?![\w'’\-])")
 # ranks of the PERSON heuristics, in order: honorific (M. Dupont), 'Prenom NOM', 'NOM Prenom'
 PERSON_RANKS = [i for i, (t, _, _) in enumerate(DETECTORS) if t == "PERSON"]
 CAPS_NAME_RANK = PERSON_RANKS[-1]     # the capitals-only pattern, the last PERSON heuristic (see detect_structured)

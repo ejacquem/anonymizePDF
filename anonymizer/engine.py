@@ -25,9 +25,10 @@ from PIL import ImageDraw
 from . import configmodel, faces, fields, ocr, regions, render, verify
 from .fake import Faker, _pkey, is_town_name, match_case
 from .ocr import DIGITAL_DPI, ocr_words, render_page
-from .pii import (NAME_TYPES, PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, detect_structured,
+from .pii import (NAME_TYPES, OPERATION_WORDS, PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all,
+                  detect_structured,
                   invisible_chars, is_invisible_word,
-                  digital_words, fitz,
+                  CAP_SEQUENCE, digital_words, fitz,
                   invisible_areas, plan_page, strip_operations, visible_words, words_to_text, norm_value)
 
 CONFIG_NAME = "anon_config.yaml"
@@ -112,6 +113,9 @@ def open_source(path: Path):
     page = doc.new_page(width=w * 72 / SCAN_DPI, height=h * 72 / SCAN_DPI)
     page.insert_image(page.rect, filename=str(path))
     return doc
+
+
+OPERATION_KEYS = {_pkey(w) for w in OPERATION_WORDS}       # 'VIRT', 'RECU', ...: a run of names stops there
 
 
 def _first_names() -> set[str]:
@@ -275,15 +279,22 @@ def pii_cfg(cfg: dict) -> dict:
 # 1. scan a folder -> draft config
 # ---------------------------------------------------------------------------
 
-def _detect_words(found: dict, tokens: dict, words: list[dict], ocr_page: bool, ner, file: str, pno: int):
+def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict], ocr_page: bool, ner, file: str,
+                  pno: int):
     """Detections of one set of words (a page's text layer, its OCR, or the OCR of its images) into `found`.
-    `tokens` counts the words of 4 letters or more as written (the name variants are looked for among them)."""
+    `tokens` counts the words of 4 letters or more as written (the name variants are looked for among them);
+    `sequences` counts the runs of capitalised words (the names written in a form no rule above detects)."""
     text, _ = words_to_text(words)
     id_page = fields.is_id_document(words)
     if ocr_page:
         text = ocr.fix_digits(text)           # '04 72 OO 11 22' -> '04 72 00 11 22' (same length)
     for w in re.findall(r"[^\W\d_]{4,}", text):
         tokens[w] = tokens.get(w, 0) + 1
+    for m in CAP_SEQUENCE.finditer(text):
+        info = sequences.setdefault(m.group(), {"count": 0, "files": set(), "pages": set()})
+        info["count"] += 1
+        info["files"].add(file)
+        info["pages"].add(pno)
     matches = detect_all(text, ner)
     # the town at the end of an address is a town of its own: '30900 NÎMES' in 'Adresse : 12 bis rue ..., 30900 NÎMES'
     matches += [pc for m in matches if m.type == "STREET_ADDRESS" for pc in detect_structured(m.value, {"POSTAL_CITY"})]
@@ -340,6 +351,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         log(f"OCR engine for scanned pages: {ocr.describe(default_ocr_lang)}")
     found: dict = {}
     tokens: dict[str, int] = {}
+    sequences: dict[str, dict] = {}
     for fi, pdf in enumerate(pdfs, start=1):
         _report(progress, fi - 1, len(pdfs), pdf.name)
         doc = open_source(pdf)
@@ -353,21 +365,23 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                     continue
                 words = ocr_words(render_page(page, 300), default_ocr_lang)
                 log(f"   page {pno}: OCR ({len(words)} words)")
-                _detect_words(found, tokens, words, True, ner, pdf.name, pno)
+                _detect_words(found, tokens, sequences, words, True, ner, pdf.name, pno)
                 if lay["words"]:                       # a scanner's invisible OCR layer: read it too
-                    _detect_words(found, tokens, lay["words"], False, ner, pdf.name, pno)
+                    _detect_words(found, tokens, sequences, lay["words"], False, ner, pdf.name, pno)
                 continue
-            _detect_words(found, tokens, lay["words"], False, ner, pdf.name, pno)
+            _detect_words(found, tokens, sequences, lay["words"], False, ner, pdf.name, pno)
             if lay["pixels"] and can_ocr:                # text that only exists as pixels (images)
                 _, pw = _pixel_words(page, lay["visible"], default_ocr_lang)
                 if pw:
                     log(f"   page {pno}: OCR of the images ({len(pw)} words)")
-                    _detect_words(found, tokens, pw, True, ner, pdf.name, pno)
+                    _detect_words(found, tokens, sequences, pw, True, ner, pdf.name, pno)
 
     _report(progress, len(pdfs), len(pdfs))
     faker = Faker(secret_key)        # None: this computer's secret key (anonymizer.secret)
     faker.reserve(e["value"] for e in found.values())
-    faker.aliases = name_aliases(tokens, [e["value"] for e in found.values() if e["type"] == "PERSON"])
+    person_values = [e["value"] for e in found.values() if e["type"] == "PERSON"]
+    faker.aliases = name_aliases(tokens, person_values)
+    faker.truncations = name_truncations(person_values)
     active: list[dict] = []
     off: list[dict] = []
     tokens_added: set[str] = set()
@@ -429,7 +443,8 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                            "note": f"part of '{e['value']}'"})
 
     rejected = []
-    for e in sorted(persons, key=lambda e: (has_initial(e), -e["count"])):
+    # the fullest names first: their words tell the kinds of the shorter forms that follow ('Morin Aurélien Gaspard')
+    for e in sorted(persons, key=lambda e: (has_initial(e), -len(e["value"].split()), -e["count"])):
         if e.get("labeled") or accept_person(e["value"], e["honorific"], e["ner"]):
             activate(e)
         else:
@@ -442,6 +457,31 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
             activate(e, "shares a name word with an active name")
     # misspelt or shortened forms of a known name word, written elsewhere in the documents: 'REYS' and 'REYE' for
     # 'REYES' (the same replacement, through the name memory of the faker)
+    # runs of capitalised words holding a known name word, in a form no rule above reads ('Théo Morin', 'Lucas Martin
+    # Lu', 'Théo A Morin'). Stop words and towns split a run: 'Monsieur Théo Morin' keeps 'Théo Morin'.
+    known_words = {_pkey(t) for a in active if a["type"] == "PERSON" for t in a["value"].split() if len(_pkey(t)) >= 4}
+    firsts = {_pkey(x) for x in _first_names()}          # a first name of the list is a known name word too
+    for seq in sorted(sequences, key=lambda s: -len(s)):
+        runs, run = [], []
+        for tok in seq.split():
+            # a word with a digit is no name ('BE67' starts an IBAN): it ends the run
+            if tok.casefold() in _STOP or is_town_name(tok) or _pkey(tok) in OPERATION_KEYS or \
+                    any(c.isdigit() for c in tok):
+                runs.append(run)
+                run = []
+            else:
+                run.append(tok)
+        runs.append(run)
+        for run in runs:
+            value = " ".join(run)
+            if len(run) < 2 or not any(_pkey(t) in known_words or _pkey(t) in firsts for t in run):
+                continue
+            if norm_value(value) in tokens_added:
+                continue
+            info = sequences[seq]
+            activate({"type": "PERSON", "value": value, "count": info["count"], "files": info["files"],
+                      "pages": info["pages"], "birth": False, "ner": False, "honorific": False, "title": ""},
+                     "shares a name word with an active name")
     for word in tokens:
         key = _pkey(word)
         if key in known_words or norm_value(word) in tokens_added or not word[:1].isupper():
@@ -502,6 +542,30 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     log(f"Done: {len(active)} active replacement(s), {len(off)} suggestion(s) left commented out "
         f"({stats['seconds']}s)")
     return {"config": text, "stats": stats}
+
+
+def name_truncations(names: list[str]) -> dict[str, str]:
+    """The cut forms of the name words written in the documents: 'Gasp' and 'Mo' for 'Gaspard' and 'Morin'. Each cut
+    form maps to the most written longer word that starts with it (its surface spelling), and gets the replacement of
+    that word, cut the same way ('Gaspard' -> 'Leclerc', so 'Gasp' -> 'Lecl')."""
+    counts: dict[str, int] = {}
+    surface: dict[str, str] = {}
+    for name in names:
+        for tok in name.split():
+            t = tok.strip(",.;:")
+            k = _pkey(t)
+            if len(k) >= 2 and t[:1].isalpha():
+                counts[k] = counts.get(k, 0) + 1
+                surface.setdefault(k, t)
+    # the target is a whole word, never another cut form: 'Gas' -> 'Gaspard', not 'Gasp'
+    whole = [k for k in counts if not any(len(o) > len(k) and o.startswith(k) for o in counts)]
+    out: dict[str, str] = {}
+    for short in counts:
+        longer = [k for k in whole if len(k) > len(short) and k.startswith(short)]
+        if longer:
+            best = max(longer, key=lambda k: (counts[k], len(k)))
+            out[short] = surface[best]
+    return out
 
 
 def name_aliases(tokens: dict[str, int], names: list[str]) -> dict[str, str]:

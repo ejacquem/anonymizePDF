@@ -71,6 +71,8 @@ sample_data/Dossier Test 9/   ID card, poor copy (150 dpi, faded, blurred, noisy
 sample_data/Dossier Test 2/   statement with transfers (digital with embedded subset Arial + scan): many accounts and cards,
                               names in another order or cut ('BRU', 'MAUREL GAËLLE'), addresses (two lines, English
                               'Rue : 04 Library place', 'bis'), transfer labels (VIRT RECU, PRLV SEPA REF, ACHAT-DEBIT)
+sample_data/Dossier Test 12/  one person in every form a folder writes a name (full, pieces, initials, capitals, cut,
+                              reversed), a second person as control (digital, 3 files; tools/make_test_names.py)
 sample_data/Dossier Test 11/  the reported cases, each line as written (digital + scan): masked cards with X, REF, BT id,
                               REYES / REYS / REYE spellings, 'MLE' in capitals, 'numero du compte' far right
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
@@ -78,7 +80,7 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
                        Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 8);
                        make_test_idcard.py also writes the poor copy (Dossier Test 9); make_test_transfers.py (Dossier
-                       Test 2 and 11); check_all.py (section 12);
+                       Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12);
                        snapshot_results.py (before / after comparison of the results, section 11b)
 ```
 (There is no "Dossier Test 2".) The original numbered CLI scripts were removed long ago.
@@ -250,6 +252,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   capitals run that holds another value ('BIC BNPAFRPP') is no name (`detect_structured`, CAPS_NAME_RANK). Candidates
   sharing a word with an active name are active ('REYES MERVE' after 'MLE MERVE REYS'), and the other spellings of a
   name word in the documents are its variants ('REYS', 'REYE' for 'REYES', `engine.name_aliases`, 85 % alike).
+  Runs of capitalised words (`pii.CAP_SEQUENCE`, initials count, up to six words) that hold a known name word (a first
+  name of the list or a word of an active name) are names too, without a title or NER ('Théo Morin', 'Lucas Martin Lu',
+  'Théo A Morin'). A run stops at a stop word, a town, a bank operation label or a word with a digit. A title keeps up
+  to five words ('Monsieur Théo Aurélien Gaspard Morin').
   Active PERSON: after a title, contains a known
   first name, spaCy Title Case, or found under a label. `_STOP` words (including label words such as signature, nom,
   nationalité, adresse) are never names.
@@ -282,6 +288,9 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   Spellings of one name share one replacement (`Faker.aliases`, from `engine.name_aliases`: 'REYES', 'REYE', 'REYS').
   Kinds of the words of a name (`Faker.name_kinds`, `engine.folder_kinds`): a known first name is 'first'; capitals next
   to a capitalised word are the surname ('Océane Zaïra REY'); a word known from another active name keeps its kind.
+  Middle names are first names: in a name of three words or more, every word but the last is 'first' (`name_kinds`).
+  A cut form of a name word ('Gasp', 'Gas', 'Mo') gets the replacement of the full word, cut the same way ('Gaspard' ->
+  'Mickaël', 'Gasp' -> 'Mick'), of the kind the full word got (`engine.name_truncations`, `Faker.truncations`).
   A street name never reuses a word of the documents (`Faker.reserved`). English streets: people-like names.
   The town of an address is replaced like the town of a postcode (`Faker._address_tail`).
 - Other types: phone keeps format + first 2 digits; IBAN country / grouping, valid checksum; BIC keeps country;
@@ -388,6 +397,8 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   format, lengths, check digits, fake surname inside.
 - Expectations per file are in `EXPECT` (sensitive values written by the generators, mode, box kinds, MRZ formats).
   A new test document needs an entry there.
+- Names of several words (`names_tests`): the title keeps five words, middle names are first names, cut forms follow
+  the full word, and a run of names with a known word is found without the title rule and without NER.
 - Reported cases (`reported_cases_tests`): masked cards with X, REF / BT identifiers, 'numero du compte', 'Rue :',
   'MLE', names in another order and cut, 'bis', BIC in capitals, '30002 Code banque', two-line addresses, name
   kinds and spellings, the two-line cut. Dossier Test 2 and 11 are in EXPECT (digital and scan), KEEP holds the
