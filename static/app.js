@@ -225,22 +225,37 @@ async function setViewer(which, path) {
 // ----- changed fields: a rectangle around each value replaced in the file, in both panes (Changes button) -----
 const CHANGES_KEY = "anonymizePDF.changes";
 const btnChanges = $("#btnChanges");
+// share of the area of box a that lies inside box b (PDF points)
+function coveredShare(a, b) {
+  const w = Math.min(a[2], b[2]) - Math.max(a[0], b[0]), h = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+  if (w <= 0 || h <= 0) return 0;
+  return (w * h) / (((a[2] - a[0]) * (a[3] - a[1])) || 1);
+}
 function changedBoxes() {
-  // every replaced value of the selected file: its boxes (PDF points) from the report of its last anonymization
+  // the changes of the selected file, from the report of its last anonymization (boxes in PDF points):
+  // replaced: a fake was written there (orange frame); removed: text taken out with nothing written (purple, dashed).
+  // A removed area that lies mostly under a replaced frame is not drawn again: the orange frame already marks it.
   const name = currentFileName();
   const rep = name && state.report && (state.report.files || []).find((f) => f.file === name);
-  const out = [];
-  (rep ? rep.items || [] : []).forEach((it) => (it.boxes || []).forEach((b) => out.push({ page: b.page, box: b.box })));
-  return out;
+  const replaced = [], removed = [];
+  (rep ? rep.items || [] : []).forEach((it) => {
+    (it.boxes || []).forEach((b) => replaced.push({ page: b.page, box: b.box }));
+    (it.removed || []).forEach((b) => removed.push({ page: b.page, box: b.box }));
+  });
+  const kept = removed.filter((r) => !replaced.some((c) => c.page === r.page && coveredShare(r.box, c.box) >= 0.5));
+  return { replaced, removed: kept };
 }
 function drawChanges(which) {
   const v = viewers[which], k = pageScale();
-  const items = btnChanges.classList.contains("on") ? changedBoxes() : [];
+  const on = btnChanges.classList.contains("on");
+  const changes = on ? changedBoxes() : { replaced: [], removed: [] };
+  $("#changesLegend").hidden = !on;
+  const shapes = [...changes.replaced.map((c) => ({ ...c, cls: "chg" })), ...changes.removed.map((c) => ({ ...c, cls: "chg removed" }))];
   [...v.list.children].forEach((el, i) => {
     el.querySelectorAll(".chg").forEach((n) => n.remove());
-    items.filter((c) => c.page === i + 1).forEach((c) => {
+    shapes.filter((c) => c.page === i + 1).forEach((c) => {
       const d = document.createElement("div");
-      d.className = "chg";
+      d.className = c.cls;
       d.style.left = c.box[0] * k + "px";
       d.style.top = c.box[1] * k + "px";
       d.style.width = (c.box[2] - c.box[0]) * k + "px";
@@ -1157,10 +1172,11 @@ function updateToolbar() {
   $("#btnRunFile").classList.toggle("save-needed", pending);
   $("#btnApply").disabled = state.running || !cur || !state.hasConfig || !pending;
   $("#btnApply").classList.toggle("save-needed", pending);
-  const nChanges = changedBoxes().length;
+  const changes = changedBoxes();
+  const nChanges = changes.replaced.length + changes.removed.length;
   btnChanges.disabled = !nChanges;
   btnChanges.title = nChanges
-    ? `Draw a rectangle around the ${nChanges} replaced field(s) of this file, in both panes`
+    ? `Frame the ${changes.replaced.length} replaced field(s) (orange) and the ${changes.removed.length} removed area(s) (purple, dashed) of this file, in both panes`
     : "No replaced field recorded for this file: anonymize it to see them";
   $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig);
 }

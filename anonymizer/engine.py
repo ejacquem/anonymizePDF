@@ -783,7 +783,8 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
         m.replacement = _adjust(cfg, m)
         for b in boxes:
             page.add_redact_annot(fitz.Rect(b), fill=False if m.invisible else fill)
-        records.append({"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes)})
+        records.append({"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes),
+                        "placed": not blackbox and bool(m.replacement) and not m.invisible})
     render.apply_redactions(page)
     if not blackbox:
         for (m, boxes), style, limit in zip(plan, styles, limits):
@@ -828,9 +829,13 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
     todo = []
     for m, boxes in plan:
         m.replacement = _adjust(cfg, m)
-        records.append({"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes, k)})
+        rec = {"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes, k),
+               "placed": False}
+        records.append(rec)
         if _inside(boxes[0], black_px + ([zone] if zone else [])):
-            continue                                   # covered by a black box / rebuilt with the MRZ
+            rec["covered"] = True                      # covered by a black box / rebuilt with the MRZ
+            continue
+        rec["placed"] = not blackbox and bool(m.replacement)
         ink = render.ink_color(img, boxes[0])
         for b in boxes:
             bg = (0, 0, 0) if blackbox else render.background_color(img, (b[0] - 3, b[1] - 3, b[2] + 3, b[3] + 3))
@@ -1068,7 +1073,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
         m.replacement = _adjust(cfg, m)
         if _inside(boxes[0], covered):             # under a black box or in the MRZ: handled below
             records.append({"page": pno, "original": m.value, "replacement": m.replacement,
-                            "box": _pt_box(boxes)})
+                            "box": _pt_box(boxes), "placed": False, "covered": True})
             continue
         changed = []
         # a value on several lines: its replacement is cut across the same lines (see _digital_replace)
@@ -1091,7 +1096,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                 color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
                 draw.text(xy, part, font=font, anchor="ls", fill=color)
         records.append({"page": pno, "original": m.value, "replacement": m.replacement,
-                        "box": _pt_box(changed)})
+                        "box": _pt_box(changed), "placed": not blackbox and any(parts)})
     if mrz:
         lines = _new_mrz(words, mrz, cfg)
         render.draw_mrz(img, draw, mrz, zone, lines)
@@ -1116,15 +1121,20 @@ def summarize(records: list[dict], cfg: dict) -> list[dict]:
     for r in records:
         k = norm_value(r["original"])
         e = agg.setdefault(k, {"type": cfg["types"].get(k, "TERM"), "original": finds.get(k, r["original"]),
-                               "replacements": set(), "count": 0, "pages": set(), "boxes": []})
+                               "replacements": set(), "count": 0, "pages": set(), "boxes": [], "removed": []})
         e["count"] += 1
         e["pages"].add(r["page"])
         e["replacements"].add(r["replacement"])
-        if r.get("box"):                               # where the replacement is (PDF points), for the checks
-            e["boxes"].append({"page": r["page"], "box": r["box"]})
+        if not r.get("box") or r.get("covered"):      # nothing to show: no box, or under a black box
+            continue
+        # where the replacement is (PDF points), for the checks and the Changes frame; an area removed without a
+        # replacement is listed apart ('removed': text taken out, nothing written in its place)
+        target = e["boxes"] if r.get("placed", bool(r["replacement"])) else e["removed"]
+        target.append({"page": r["page"], "box": r["box"]})
     order = {t: i for i, t in enumerate(TYPE_ORDER)}
     rows = [{"type": e["type"], "original": e["original"], "replacement": " / ".join(sorted(e["replacements"])),
-             "count": e["count"], "pages": sorted(e["pages"]), "boxes": e["boxes"]} for e in agg.values()]
+             "count": e["count"], "pages": sorted(e["pages"]), "boxes": e["boxes"], "removed": e["removed"]}
+            for e in agg.values()]
     return sorted(rows, key=lambda r: (order.get(r["type"], 99), -r["count"], r["original"]))
 
 

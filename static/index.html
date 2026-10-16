@@ -39,7 +39,8 @@
           <button id="zoomFit" class="mini zoom-label" title="Fit page width">Fit</button>
           <button id="zoomIn" class="mini" title="Zoom in (wheel; Shift + wheel scrolls)">+</button>
         </div>
-        <button id="btnChanges" class="mini" disabled title="Draw a rectangle around each replaced field, in both panes">Changes</button>
+        <button id="btnChanges" class="mini" disabled title="Frame each replaced field (orange) and each removed area (purple, dashed), in both panes">Changes</button>
+        <span id="changesLegend" class="chg-legend" hidden><span class="sw rep"></span>replaced<span class="sw rem"></span>removed</span>
         <div class="seg viewmode" title="Viewer: the pages as images, both PDFs zoom and scroll together.&#10;PDF: the browser's own PDF viewer (text can be selected, copied, searched).">
           <button id="modeViewer" data-mode="viewer" class="on">Viewer</button><button id="modePdf" data-mode="pdf">PDF</button>
         </div>

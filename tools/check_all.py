@@ -512,7 +512,10 @@ def invisible_copy_tests():
             "blackout: {photos: false, photos_only_on_id_documents: false, signatures: false, qr_codes: false}",
             "mrz: regenerate", "replacements:",
             '  - {find: "MILLIES BANQUE", replace: "ZELLIES BANQUE", type: ORG}', "regex: []"])
-        engine.run_anonymize(tmp, "copie", cfg, "fra+eng", False, lambda m: None)
+        rep = engine.run_anonymize(tmp, "copie", cfg, "fra+eng", False, lambda m: None)
+        item = rep["files"][0]["items"][0]
+        check("the Changes report: one replaced box (orange) and one removed box (purple) for the invisible copy",
+              len(item["boxes"]) == 1 and len(item["removed"]) == 1, repr(item)[:200])
         out = fitz.open(tmp / "copie_cachee_anonymized.pdf")
         text = out[0].get_text()
         check("the drawn name is replaced (not left blank)", "ZELLIES" in text and "BANQUE" in text, repr(text[:80]))
