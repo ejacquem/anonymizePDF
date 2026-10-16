@@ -99,8 +99,21 @@ class Document:
         self.shown.setdefault((kind, folded), shown or folded)
 
 
+IGNORE_RX: re.Pattern | None = None                       # the words of --ignore, blanked before anything is read
+
+
+def set_ignore(words: list[str]) -> None:
+    """--ignore: words or phrases that are no identifier (an address on every page is not a contract number)."""
+    global IGNORE_RX
+    terms = [w.strip() for w in words if w.strip()]
+    IGNORE_RX = re.compile("|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)), re.IGNORECASE) \
+        if terms else None
+
+
 def read_document(name: str, pages: list[tuple[str, str]]) -> Document:
     text = "\n".join(t for t, _ in pages)
+    if IGNORE_RX:                                        # blanked, not removed: the spans of the text stay valid
+        text = IGNORE_RX.sub(lambda m: " " * len(m.group()), text)
     method = "/".join(sorted({m for _, m in pages}))
     doc = Document(name, len(pages), method)
     folded = text.translate(OCR_FOLD)                    # same length as the text: the spans match
@@ -201,9 +214,12 @@ def main() -> int:
     ap.add_argument("--min-score", type=float, default=2.0, help="score from which two documents are linked")
     ap.add_argument("--rare-amount", type=int, default=3, help="an amount in more documents is ignored")
     ap.add_argument("--json", type=Path, help="also write the whole analysis to this file")
+    ap.add_argument("--ignore", action="append", default=[], metavar="WORDS",
+                    help="words or phrases to ignore, comma-separated, repeatable (e.g. --ignore 'rue des Lilas,PARIS')")
     args = ap.parse_args()
     if not args.folder.is_dir():
         ap.error(f"not a folder: {args.folder}")
+    set_ignore([w for group in args.ignore for w in group.split(",")])
     docs = read_folder(args.folder, args.ocr_lang)
     if not docs:
         print("no PDF or image in this folder")
