@@ -23,6 +23,8 @@ import random
 import re
 import unicodedata
 
+from .fake import is_town_name
+
 # ---------------------------------------------------------------------------
 # labels
 # ---------------------------------------------------------------------------
@@ -93,7 +95,7 @@ def identity_shape(words: list[dict]) -> list[tuple[str, str]]:
         if re.fullmatch(r"(?=.*\d)(?=.*[A-Z])[A-Z0-9]{9}", t):
             out.append(("DOC_NUMBER", t))
         elif (re.fullmatch(r"[A-ZÀ-Þ][A-ZÀ-Þ'’\-]{2,}|[A-ZÀ-Þ][a-zà-ÿ'’\-]{2,}", t)     # CAPS or Capitalised only
-              and not is_boilerplate(t)):                                                  # ('OilDENT' is OCR noise)
+              and not is_boilerplate(t) and not is_town_name(t)):                          # ('OilDENT' is OCR noise)
             out.append(("PERSON", t))
     return out
 

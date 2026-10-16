@@ -22,7 +22,7 @@ import yaml
 from PIL import ImageDraw
 
 from . import configmodel, faces, fields, ocr, regions, render, verify
-from .fake import Faker, match_case
+from .fake import Faker, is_town_name, match_case
 from .ocr import DIGITAL_DPI, ocr_words, render_page
 from .pii import (PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz,
                   invisible_areas, plan_page, visible_words, words_to_text, norm_value)
@@ -48,6 +48,7 @@ banque agence compte relevé releve total solde carte date libellé libelle dét
 votre vos titulaire numéro numero téléphone telephone période periode synthèse synthese informations ancien nouveau
 virement prélèvement prelevement retrait chèque cheque paiement facture contrat client clients conseiller conseillère
 conseillere service services monsieur madame mademoiselle bank account statement balance dear mister miss
+square rue avenue boulevard chaussée chaussee chemin allée allee impasse quai route passage villa cours
 code swift bic iban tva btw vat
 rekening saldo datum klant overschrijving factuur mevrouw heer
 signature handtekening unterschrift nom surname prénom prénoms prenom prenoms given names name sexe sex
@@ -154,6 +155,12 @@ def _add_labeled(found: dict, words: list[dict], ocr_page: bool, file: str, pno:
             e["birth"] = True
 
 
+def _town_of(typ: str, value: str) -> str | None:
+    """The town of a postcode-and-city value ('75017 PARIS' -> 'PARIS') or of a birth place ('RENNES (35)' -> 'RENNES')."""
+    town = re.sub(r"^(?:[A-Z]{1,2}-)?\d{4,5}\s+", "", value) if typ == "POSTAL_CITY" else re.sub(r"\s*\(.*$", "", value)
+    return town.strip() or None
+
+
 def accept_person(value: str, honorific: bool, from_ner: bool) -> bool:
     """Is this PERSON candidate reliable enough to be active by default?
     - found after M./Mme/Dr/...            -> yes (strong signal)
@@ -163,7 +170,7 @@ def accept_person(value: str, honorific: bool, from_ner: bool) -> bool:
     toks = [t.strip(",.;:") for t in value.split() if t.strip(",.;:")]
     if not toks or any(c.isdigit() for c in value):
         return False
-    if any(t.casefold() in _STOP for t in toks):
+    if any(t.casefold() in _STOP or is_town_name(t) for t in toks):
         return False
     if honorific:
         return len(toks) >= 2 or len(toks[0]) >= 3
@@ -369,7 +376,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
             kinds = [e["kind"]] * len(toks) if e.get("kind") else faker.name_kinds(toks)
             for tok, kind in zip(toks if len(toks) > 1 else [], kinds):
                 clean = tok.strip(",.;:")
-                if len(clean) < 4 or clean.casefold() in _STOP or kind == "particle":
+                if len(clean) < 4 or clean.casefold() in _STOP or is_town_name(clean) or kind == "particle":
                     continue
                 if norm_value(clean) in tokens_added:
                     continue
@@ -404,6 +411,15 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         else:  # ORG, LOCATION: noisy NER output, off by default
             off.append({**e, "replace": faker.suggest(t, e["value"]), "note": "NER guess"})
 
+    # the town of a postcode ('75017 PARIS') or of a birth place ('RENNES (35)') gets the same fake as the postcode
+    # line does, and the same town written alone ('PARIS' in another sentence) is replaced the same way
+    known = {norm_value(a["value"]) for a in active}
+    for f in [f for f in found.values() if f["type"] in ("POSTAL_CITY", "BIRTH_PLACE")]:
+        town = _town_of(f["type"], f["value"])
+        if town and norm_value(town) not in known:
+            known.add(norm_value(town))
+            active.append({"type": "LOCATION", "value": town, "count": f["count"], "files": f["files"],
+                           "pages": f["pages"], "replace": faker.city(town), "note": f"town of '{f['value']}'"})
     _align_contained_numbers(active)
     # a value already replaced (e.g. a name under a label) is not suggested again as an uncertain NER guess
     active_values = {norm_value(a["value"]) for a in active}

@@ -146,6 +146,16 @@ def _v_bic(m):
     return None
 
 
+_DATE_LIKE = re.compile(r"\d{1,2}[./]\d{1,2}[./]\d{2,4}")
+
+
+def _v_account_labeled(m):
+    """An account number after its label, but not a date written after it ('Numéro de compte 07/09/2024')."""
+    if _DATE_LIKE.fullmatch(m.group(1)):
+        return None
+    return _v_labeled(m)
+
+
 def _v_vat_group(m):
     """VAT number after its label ('TVA : BE0403199700', 'N° TVA CHE-...'): at least 8 digits."""
     if len(re.sub(r"\D", "", m.group(1))) < 8:
@@ -168,6 +178,10 @@ _MONTHS = (
 )
 _FR_STREET = "rue|avenue|boulevard|chaussée|chaussee|place|allée|allee|impasse|chemin|quai|square|cours|route|passage|villa"
 _NOT_UNIT = r"(?!(?i:appartement|appt|apt|bâtiment|batiment|bât|bat|étage|etage|escalier|bte|bp|résidence|residence)\b)"
+# an address can be written on two lines ('SQUARE' / 'Sophie Wouters 8'), and its name can have small words
+_SPACE = r"[ \t\n]"
+_STREET_WORD = r"(?!(?i:et|le|la|les|de|du|des|pour|avec|sur|dans|au|en|par|est)\b)" + _NOT_UNIT + r"[A-Za-zÀ-ÿ'’\-]+"
+_STREET_NAME = rf"{_STREET_WORD}(?:{_SPACE}+{_STREET_WORD}){{0,2}}"
 _NL_STREET = (
     "straat|laan|weg|steenweg|dreef|lei|baan|kaai|gracht|dijk|singel|plein|markt|hof|pad|park"
 )
@@ -192,7 +206,7 @@ DETECTORS = [
     ("VAT_NUMBER", re.compile(r"(?<!\w)CHE[ \-]?[\d*]{3}[.\s]?[\d*]{3}[.\s]?[\d*]{3}(?![\d*])"), None),
     ("VAT_NUMBER", re.compile(r"(?i:n[°o]?\s*(?:de\s+)?tva|tva|btw|vat|mwst|iva)(?:\s+n[°o]\.?)?\s*[:\-]?\s*"
                               r"((?:[A-Z]{2,3}[ .\-]?)?[\d*][\d*.\- ]{5,15}[\d*])(?![\w])"), _v_vat_group),
-    ("BIC", re.compile(r"\b[A-Z]{4}(?:BE|FR|NL|DE|LU|GB|IT|ES|CH|AT|US|IE|PT)[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b"), _v_bic),
+    ("BIC", re.compile(r"\b[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b"), _v_bic),
     ("DATE", re.compile(r"(?<!\d)(?:0?[1-9]|[12]\d|3[01])[./\-](?:0?[1-9]|1[0-2])[./\-](?:19|20)\d{2}(?!\d)"), None),
     ("DATE", re.compile(r"(?<!\d)(?:19|20)\d{2}-\d{2}-\d{2}(?!\d)"), None),
     # identity documents: '14 05 1992' (not inside a longer run of numbers such as a phone number)
@@ -203,8 +217,11 @@ DETECTORS = [
     # Street addresses (heuristic): "Kerkstraat 12", "Grote Markt 5", "Rue de la Loi 16"
     ("STREET_ADDRESS", re.compile(rf"(?<!\w){_CAP}{_WORD}*?(?i:{_NL_STREET})[ ]+{_NR}"), None),
     ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?:{_CAP}{_WORD}+[ ]){{1,2}}(?:Markt|Plein|Kaai|Dreef|Laan)[ ]+{_NR}"), None),
-    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])\d{{1,4}}(?:[ ]?(?i:bis|ter))?,?[ ]+(?i:{_FR_STREET})[ ]+(?:(?i:de la|du|des|de l'|de|d')[ ]?)?[\wÀ-ÿ'’\-]+(?:[ ]{_NOT_UNIT}{_CAP}{_WORD}+)*"), None),
-    ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET})[ ]+(?:(?i:de la|du|des|de l'|de|d')[ ]?)?{_CAP}{_WORD}+(?:[ ]{_NOT_UNIT}{_CAP}{_WORD}+)*,?[ ]+{_NR}"), None),
+    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])\d{{1,4}}(?:[ ]?(?i:bis|ter))?,?{_SPACE}+(?i:{_FR_STREET}){_SPACE}+"
+                                  rf"(?:(?i:de la|du|des|de l'|de|d'){_SPACE}*)?{_STREET_NAME}"), None),
+    # the number ends the address: not the first digits of a postcode ('7501', '1000 Bruxelles' on the next line)
+    ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET}){_SPACE}+(?:(?i:de la|du|des|de l'|de|d'){_SPACE}*)?"
+                                  rf"{_STREET_NAME},?{_SPACE}+{_NR}(?!\d)(?!{_SPACE}+[A-ZÀ-Þ][A-Za-zÀ-ÿ]{{2,}})"), None),
     # Belgian-style postcode + city: "9000 Gent", "B-1000 Bruxelles"
     ("POSTAL_CITY", re.compile(rf"(?<![\w/.\-])(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?[1-9]\d{{3,4}}[ ]+"
                                rf"(?:{_CAP}[A-ZÀ-Þ'’\-]{{2,}}|{_CAP}[a-zà-ÿ'’]+)(?:-{_CAP}?[a-zà-ÿ'’]+)*"
@@ -216,7 +233,7 @@ DETECTORS = [
                              r"(\d{2,}(?:[ ]?/[ ]?\d{2,}|[ ]\d{2,})*)(?![\w,])"), _v_labeled),
     ("ACCOUNT_NUMBER", re.compile(r"(?i:num[ée]ro\s+de\s+compte|n[°o]\s*de\s+compte|compte\s+n[°o]|account\s+n(?:umber|o\.?)|"
                                   r"rekeningnummer|rekening\s+nr\.?|num[ée]ro\s+client|n[°o]\s+client|klantnummer)"
-                                  r"\s*[:\-]?\s*(\d+(?:[ .\-]\d+){0,5})(?![\w,])"), _v_labeled),
+                                  r"\s*[:\-]?\s*(\d+(?:[ ./\-]\d+){0,5})(?![\w,])"), _v_account_labeled),
     # insurance policy / contract / file number after its label: 'police 45.118.902', 'contrat n° 2024-118'
     ("CONTRACT_REF", re.compile(r"(?i:police|polis|n[°o]\s+de\s+police|contrat|n[°o]\s+de\s+contrat|dossier|"
                                 r"contract|policy)(?:\s+n[°o]\.?)?\s*[:\-]?\s*(\d+(?:[ .\-/]\d+){0,5})(?![\w,])"),

@@ -19,6 +19,7 @@ import re
 import string
 import unicodedata
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 # First names by gender (FR / BE / NL), so a replacement keeps the gender of the original name.
 FEMALE_NAMES = """
@@ -82,22 +83,47 @@ Kerk Molen Bos Linde Dorp Beuk Berk Eik Hoek Park Veld Brug School Hei Duin Wei 
 Wilgen Populier Tuin Kasteel Station Vijver Polder Beek Dijk Haven Meers Lelie Kruid Appel
 """.split()
 
-FR_CITIES = """
-Metz Brest Nancy Dijon Tours Nantes Rennes Amiens Angers Limoges Annecy Reims Rouen Nîmes Caen Pau Arles Albi
-Lyon Lille Laval Vannes Quimper Lorient Niort Poitiers Orléans Blois Chartres Troyes Colmar Mulhouse Besançon
-Valence Grenoble Chambéry Bayonne Tarbes Agen Périgueux Cahors Rodez Montauban Béziers Sète Toulon Cannes Antibes
-""".split()
-BE_CITIES = """
-Namur Mons Arlon Huy Spa Ath Tielt Aalst Lier Genk Hasselt Ieper Leuven Brugge Mechelen Dendermonde Tongeren
-Charleroi Tournai Verviers Waremme Wavre Nivelles Dinant Bastogne Courtrai Roeselare Turnhout Sint-Truiden
-""".split()
+# the towns of the fakes, with a real postcode each: a fake postcode always belongs to its fake town
+FR_TOWNS = {
+    "Metz": "57000", "Brest": "29200", "Nancy": "54000", "Dijon": "21000", "Tours": "37000", "Nantes": "44000",
+    "Rennes": "35000", "Amiens": "80000", "Angers": "49000", "Limoges": "87000", "Annecy": "74000", "Reims": "51100",
+    "Rouen": "76000", "Nîmes": "30000", "Caen": "14000", "Pau": "64000", "Arles": "13200", "Albi": "81000",
+    "Lyon": "69000", "Lille": "59000", "Laval": "53000", "Vannes": "56000", "Quimper": "29000", "Lorient": "56100",
+    "Niort": "79000", "Poitiers": "86000", "Orléans": "45000", "Blois": "41000", "Chartres": "28000", "Troyes": "10000",
+    "Colmar": "68000", "Mulhouse": "68100", "Besançon": "25000", "Valence": "26000", "Grenoble": "38000",
+    "Chambéry": "73000", "Bayonne": "64100", "Tarbes": "65000", "Agen": "47000", "Périgueux": "24000",
+    "Cahors": "46000", "Rodez": "12000", "Montauban": "82000", "Béziers": "34500", "Sète": "34200", "Toulon": "83000",
+    "Cannes": "06400", "Antibes": "06600",
+}
+BE_TOWNS = {
+    "Namur": "5000", "Mons": "7000", "Arlon": "6700", "Huy": "4500", "Spa": "4880", "Ath": "7800", "Tielt": "8700",
+    "Aalst": "9300", "Lier": "2500", "Genk": "3600", "Hasselt": "3500", "Ieper": "8900", "Leuven": "3000",
+    "Brugge": "8000", "Mechelen": "2800", "Dendermonde": "9200", "Tongeren": "3700", "Charleroi": "6000",
+    "Tournai": "7500", "Verviers": "4800", "Waremme": "4300", "Wavre": "1300", "Nivelles": "1400", "Dinant": "5500",
+    "Bastogne": "6600", "Courtrai": "8500", "Roeselare": "8800", "Turnhout": "2300", "Sint-Truiden": "3800",
+}
+TOWN_TYPES = {"POSTAL_CITY", "LOCATION", "BIRTH_PLACE"}
+FR_CITIES = list(FR_TOWNS)
+BE_CITIES = list(BE_TOWNS)
 CITIES = FR_CITIES + BE_CITIES
 
 
-def cities_for(code: str) -> list[str]:
-    """Towns of the right country for a postcode: 5 digits = France, 4 digits = Belgium, unknown = both."""
-    digits = "".join(c for c in code if c.isdigit())
-    return FR_CITIES if len(digits) == 5 else BE_CITIES if len(digits) == 4 else CITIES
+@lru_cache(maxsize=None)
+def _town_keys() -> frozenset[str]:
+    return frozenset(_pkey(t) for t in (*FR_TOWNS, *BE_TOWNS))
+
+
+def is_town_name(word: str) -> bool:
+    """A town of the lists written in capitals ('PARIS'): a town, not a person, when it comes in a name."""
+    return word.isupper() and _pkey(word) in _town_keys()
+
+
+def _code_like(code: str | None, length: int, rng: random.Random) -> str:
+    """A postcode with `length` digits, from the postcode of the fake town (cut or completed when the lengths differ)."""
+    digits = code or ""
+    while len(digits) < length:
+        digits += str(rng.randint(0, 9))
+    return digits[:length]
 
 COMMON_EMAIL_DOMAINS = {
     "gmail.com", "outlook.com", "hotmail.com", "hotmail.fr", "yahoo.com", "yahoo.fr", "icloud.com", "live.com",
@@ -542,18 +568,27 @@ class Faker:
             return self.scramble(m.group("name"), rng) + self.digits(m.group("post"), rng)
         return self.scramble(value, rng)
 
+    def town(self, name: str) -> tuple[str, str | None]:
+        """(fake town, its postcode) for a town name. The same name gives the same town whatever form it is written
+        in ('PARIS' alone, '75017 PARIS'): the town only depends on the name. Belgian towns stay Belgian, the others
+        are French."""
+        towns = BE_TOWNS if _pkey(name) in {_pkey(t) for t in BE_TOWNS} else FR_TOWNS
+        rng = self.rng("town", _norm(name))
+        # a town whose postcode holds digits of an original value would look like a leak: not chosen
+        allowed = [t for t in towns if not any(g in towns[t] for g in self.reserved_digits)]
+        new = self._pick(allowed, len(name), rng, {name})
+        if new is None:
+            return self.scramble(name, rng), None
+        return new, towns[new]
+
     def postal_city(self, value: str) -> str:
-        rng = self.rng("postal", value)
-        m = re.fullmatch(r"(?P<pre>(?:B-|BE-|F-)?)(?P<code>\d{4,5})(?P<sp>\s+)(?P<city>.+)", value)
+        m = re.fullmatch(r"(?P<pre>(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?)(?P<code>\d{4,5})(?P<sp>\s+)(?P<city>.+)", value)
         if not m:
-            return self.scramble(value, rng)
-        code = m.group("code")
-        new_code = self.digits(code, rng, keep_leading_zeros=False)
-        if new_code[0] == "0":
-            new_code = str(rng.randint(1, 9)) + new_code[1:]
+            return self.scramble(value, self.rng("postal", value))
         city = m.group("city")
-        new_city = self._pick(cities_for(code), len(city), rng, {_norm(city)}) or self.scramble(city, rng)
-        return f"{m.group('pre')}{new_code}{m.group('sp')}{_style_token(city.split()[0], new_city)}"
+        new_city, new_code = self.town(city)
+        code = _code_like(new_code, len(m.group("code")), self.rng("postal-code", _norm(city)))
+        return f"{m.group('pre')}{code}{m.group('sp')}{_style_token(city.split()[0], new_city)}"
 
     def birth_place(self, value: str) -> str:
         """'ROUEN (76)' -> 'BREST (29)': town from the list (same length, same case), digits changed."""
@@ -562,17 +597,13 @@ class Faker:
         if not m:
             return self.city(value)
         city = m.group("city").strip()
-        # 'RENNES (35)': a French department number -> a French town
-        pool = FR_CITIES if re.search(r"\(\s*\d{2,3}\s*\)", m.group("rest") or "") else CITIES
-        new = self._pick(pool, len(city), rng, {city}) or self.scramble(city, rng)
+        new = self.town(city)[0]
         new = new.upper() if city.isupper() else _style_token(city, new)
         rest = self.digits(m.group("rest"), rng) if m.group("rest") else ""
         return new + rest
 
     def city(self, value: str) -> str:
-        rng = self.rng("city", value)
-        new = self._pick(CITIES, len(value), rng, {_norm(value)}) or self.scramble(value, rng)
-        return _style_token(value, new)
+        return _style_token(value, self.town(value)[0])
 
     def generic_text(self, value: str, kind: str = "text") -> str:
         return self.scramble(value, self.rng(kind, value))
@@ -580,6 +611,8 @@ class Faker:
     # ---------- dispatcher ----------
     def suggest(self, typ: str, value: str) -> str:
         value = " ".join(value.split())
+        if typ in TOWN_TYPES:                 # a town has one fake, whatever form it is written in (see town)
+            return self._suggest_once(typ, value)
         try:
             for variant in range(6):
                 self._variant = variant      # collision: next attempt uses another deterministic variant

@@ -205,12 +205,15 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 
 ## 7. Detection (`pii.py`, `fields.py`)
 
-- Types: IBAN (mod-97), BIC (after its label, or just after an IBAN: a bare word such as 'MONSIEUR' is no BIC),
+- Types: IBAN (mod-97), BIC (any country code; after its label such as 'BIC/SWIFT', or just after an IBAN: a bare
+  word such as 'MONSIEUR' is no BIC),
   EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), CARD_NUMBER (masked `6703 **** **** 4471`,
   `Carte x4412`), BE_NATIONAL_NUMBER, BE_VAT, VAT_NUMBER (Swiss `CHE-123.456.789`, masks kept, or after a TVA / BTW /
   VAT / MWST label, 8+ digits), BE_STRUCTURED_COMM, SEPA_CREDITOR_ID (checksum, or after a label),
-  STREET_ADDRESS, POSTAL_CITY (postcode + city in Title case or CAPITALS, prefixes B-, F-, CH-, L-, NL-, D-, I-, A-),
-  ACCOUNT_NUMBER (after "N° de compte" / "Numéro client", French RIB, long digit runs, apostrophe-grouped digits
+  STREET_ADDRESS (a street keyword, a name of up to 3 words in any case, then the number; the address can be written on
+  two lines, the number ends it and is never the first digits of a postcode), POSTAL_CITY (postcode + city in Title
+  case or CAPITALS, prefixes B-, F-, CH-, L-, NL-, D-, I-, A-),
+  ACCOUNT_NUMBER (after "N° de compte" / "Numéro client", with spaces, '-', '.' or '/' as separators, French RIB, long digit runs, apostrophe-grouped digits
   `86'123'456'789'012` with masks, at least 3 groups so amounts `1'240.00` are not caught),
   BANK_CODE ("Code banque / guichet", "Clé RIB"), CONTRACT_REF ("police", "contrat", "dossier"), DOC_NUMBER,
   BIRTH_PLACE, DATE (`/ . -` or spaces `14 05 1992`), PERSON, NER ORG / LOCATION (always commented out).
@@ -239,6 +242,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - Deterministic for a key: `HMAC-SHA256(key, variant|kind|normalized value)`. The 256-bit key is created once per PC
   (`%APPDATA%\anonymizePDF\secret.key`, `ANON_SECRET_FILE` overrides, `O_EXCL` creation, corrupt file → error, never
   silently replaced). Same key → same fakes in every folder. A constant salt allowed a dictionary attack (fixed).
+- Towns (`fake.town`): one fake town per town name, whatever form it is written in ('PARIS', '75017 PARIS', 'PARIS'
+  in a sentence: the same town); its postcode belongs to it (`FR_TOWNS` / `BE_TOWNS` hold a real postcode per town).
+  A town of the document is a LOCATION term in the config (`scan_folder`), so the same town written alone is replaced
+  like the town of a postcode. A capitalised town is never a person ('Sophie PARIS' is no name).
 - Names: FR/BE/NL lists by length and **gender** (`gender_of`: lists, then the title, then French endings; the
   `Sexe` field wins on ID documents). Keys without case / accents (`_pkey`: `Élodie` = `elodie`, used in e-mails).
   `Faker.names` memory keeps consistency: initials follow the replaced first name (`initial`, preferring first names
@@ -248,7 +255,8 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   e-mail keeps common domains; streets from lists (article + noun replaced together, people-like names for long
   ones), towns matching the postcode's country; dates shift (same fake whatever the separator); BE national number
   uses the fake birth date of the same person + valid check digits; SEPA creditor id valid; doc numbers keep their
-  letter / digit pattern; masks (`****`, `x`) kept. A fake never contains a group of 4+ digits of an original value
+  letter / digit pattern; masks (`****`, `x`) kept. A town is not picked through the 'no two values share a fake' rule
+  (it depends on the town name only, see Towns). A fake never contains a group of 4+ digits of an original value
   (`Faker.reserved_digits`, filled by `reserve`): a fake card or account number holding '4471' would look like a leak.
 - `match_case` (engine) applies UPPER / lower / Title case of the matched text.
 
@@ -344,6 +352,9 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   format, lengths, check digits, fake surname inside.
 - Expectations per file are in `EXPECT` (sensitive values written by the generators, mode, box kinds, MRZ formats).
   A new test document needs an entry there.
+- Towns and postcodes (`town_tests`): one fake town per name, the postcode belongs to the fake town, a Swiss postcode
+  keeps its length. Detector tests: a BIC of any country after its label, an account with a slash, an address on two
+  lines, a postcode that is not the street number.
 - Secret key and fake values: key creation / reuse / corrupt file, determinism, gender, initials, e-mails, OCR
   misreadings, never the original without accents, a wrong key does not single out the true name.
 - Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements,

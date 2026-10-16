@@ -42,6 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from anonymizer import configmodel, engine, fields, ocr, pii, secret, verify  # noqa: E402
+from anonymizer.fake import Faker  # noqa: E402
 from anonymizer.fake import FEMALE_NAMES, LAST_NAMES, MALE_NAMES, Faker, _pkey  # noqa: E402
 from anonymizer.pii import digital_words, fitz, load_ner, words_to_text  # noqa: E402
 
@@ -52,6 +53,10 @@ STATEMENT_0 = ["Thomas", "MARCHAND", "Isabelle", "ROUX", "Julien", "Sophie", "DU
 # values of the poor ID card copy (Dossier Test 9): the labels are not read, the values are found by their shape
 SENSITIVE_9 = ["MARTINEAU", "Julie", "Anne", "X4RTBPFW4", "03 11 1987", "11 06 2033", "12 06 2023", "RENNES",
                "TILLEULS", "35000"]
+# values of the letter (Dossier Test 10): an address on two lines, a town in capitals, a BIC with another country,
+# an account number with a slash
+SENSITIVE_10 = ["Sophie", "Wouters", "75017", "PARIS", "Genève", "1204", "SWEDSESS", "BE68 5390 0754 7034",
+                "51/234519", "234519", "Rhône", "contact@lumen-atelier.example"]
 # values of the invoice (Dossier Test 8)
 SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 3000 6000 0112 3456 7890 189",
                "BNPAFRPP", "GEBABEBB", "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
@@ -59,6 +64,7 @@ SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 300
 # values that must stay readable in a digital output (no over-redaction): folder -> {file: [values]}
 KEEP = {
     "Dossier Test 8": {"facture_suisse_fr.pdf": ["MONSIEUR", "Banque Exemple", "Lumen Services SA"]},
+    "Dossier Test 10": {"courrier_adresses.pdf": ["Lieu de la signature", "Bonjour Madame", "Atelier Lumen SPRL"]},
 }
 
 # folder -> (sensitive values, {file: (mode, black box kinds, MRZ formats)})
@@ -100,6 +106,12 @@ EXPECT = {
     # the ghost portrait and the signature (their labels are not read either): not expected here
     "Dossier Test 9": (SENSITIVE_9, {
         "carte_identite_faible_qualite.pdf": ("scan", ["photo", "qr code"], ["TD1"]),
+    }),
+    # cases reported on real files: a letter with an address on two lines, a town in capitals and the same town alone,
+    # a BIC with any country code, an account number with a slash
+    "Dossier Test 10": (SENSITIVE_10, {
+        "courrier_adresses.pdf": ("digital", [], []),
+        "courrier_adresses_scan.pdf": ("scan", [], []),
     }),
     # cases reported on real files: 'MONSIEUR' is no BIC, capitalised cities after a postcode, Swiss VAT numbers,
     # apostrophe-grouped references; the same invoice as a digital PDF and as a scan
@@ -392,6 +404,15 @@ def detector_tests():
     check("masked apostrophe-grouped reference", any(t == "ACCOUNT_NUMBER" for t, _ in found("86'***'***'***'***")))
     check("an amount with apostrophes is no reference", not any(t == "ACCOUNT_NUMBER" for t, _ in found("Total 1'240.00 CHF")))
     check("'Code SWIFT' is not accepted as a name", not engine.accept_person("Code SWIFT", False, False))
+    check("BIC after its label, any country code", ("BIC", "SWEDSESS") in found("BIC/SWIFT SWEDSESS XXX"))
+    check("account number with a slash after its label", ("ACCOUNT_NUMBER", "51/234519") in found("Numéro de compte : 51/234519"))
+    check("a date after an account label is no account number",
+          not any(t == "ACCOUNT_NUMBER" for t, _ in found("Numéro de compte 07/09/2024")))
+    check("address written on two lines", ("STREET_ADDRESS", "SQUARE\nSophie Wouters 8") in found("SQUARE\nSophie Wouters 8"))
+    check("address with a lower-case name word", ("STREET_ADDRESS", "8 square sophie wouters") in found("8 square sophie wouters, 75017 PARIS"))
+    check("the postcode is not read as the number of the street",
+          not any(t == "STREET_ADDRESS" and "7501" in v for t, v in found("8 square sophie wouters, 75017 PARIS")))
+    check("a number before a postcode ends the address", ("STREET_ADDRESS", "8 rue de la Loi") in found("8 rue de la Loi\n1000 Bruxelles"))
     # words as OCR gives them: one line each, with a box (fields.lines_of needs both)
     texts = ["MARTINEAU", "Julie,", "SPECIMEN", "RÉPUBLIQUE", "X4RTBPFW4", "RENNES", "FRA", "1,64"]
     shape = fields.identity_shape([{"text": t, "box": (10, 30 * i, 10 + 8 * len(t), 30 * i + 20), "line": ("t", i),
@@ -399,6 +420,20 @@ def detector_tests():
     check("identity by shape: surname, given name and document number", ("PERSON", "MARTINEAU") in shape
           and ("PERSON", "Julie") in shape and ("DOC_NUMBER", "X4RTBPFW4") in shape)
     check("identity by shape: no boilerplate", not any(v in ("SPECIMEN", "RÉPUBLIQUE", "FRA") for _, v in shape))
+
+
+def town_tests():
+    """A town has one fake, whatever form it is written in, and the postcode of the fake belongs to the fake town."""
+    print("\n== towns and postcodes")
+    from anonymizer.fake import BE_TOWNS, FR_TOWNS
+    f = Faker(b"t" * 32)
+    city = f.city("PARIS")
+    check("'PARIS' and '75017 PARIS' get the same fake town", f.postal_city("75017 PARIS").split(" ", 1)[1] == city)
+    check("the same town with another postcode: same fake town", f.postal_city("75001 PARIS").split(" ", 1)[1] == city)
+    code, name = f.postal_city("75017 PARIS").split(" ", 1)
+    towns = {k.upper(): v for k, v in {**FR_TOWNS, **BE_TOWNS}.items()}          # the fake town may be in capitals
+    check("the fake postcode belongs to the fake town", towns.get(name.upper()) == code, f"{code} {name}")
+    check("a Swiss postcode keeps its length and its town", len(f.postal_city("1204 Genève").split(" ", 1)[0]) == 4)
 
 
 def speedup_tests():
@@ -517,6 +552,7 @@ def main():
     t0 = time.time()
     try:
         detector_tests()
+        town_tests()
         speedup_tests()
         key_and_fake_tests(tmp)
         for k in range(1 if args.quick else args.keys):
