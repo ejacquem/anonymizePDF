@@ -204,6 +204,9 @@ class Faker:
         # become 'Julien', the real first name of someone else in the same document)
         self.reserved: set[str] = set()
         self.first_of_last: dict[str, list[str]] = {}       # last-name key -> first-name keys seen with it
+        # spellings of one name in the documents ('REYES', 'REYE', 'REYS'): key -> the key of the spelling they share
+        # the replacement of (see engine.name_aliases)
+        self.aliases: dict[str, str] = {}
 
     # ---------- primitives ----------
     def rng(self, kind: str, value: str, attempt: int = 0) -> random.Random:
@@ -302,7 +305,7 @@ class Faker:
                 done.add(_norm(new))
                 parts.append(new)
             return "-".join(parts)
-        key = _pkey(token)
+        key = self.aliases.get(_pkey(token), _pkey(token))
         known = self.names.get((kind, key)) or self._similar_name(kind, key)
         if known:
             return _style_token(token, known)
@@ -322,7 +325,7 @@ class Faker:
         return _style_token(token, new)
 
     def _similar_name(self, kind: str, key: str) -> str | None:
-        if len(key) < 6:
+        if len(key) < 4:                                  # 'REYS' and 'REYE' are close to 'REYES' (0.89)
             return None
         best, score = None, 0.8 if len(key) >= 7 else 0.85
         for (k, other), new in self.names.items():
@@ -350,18 +353,28 @@ class Faker:
         they are (handles 'MARCHAND Thomas'); otherwise the first token is the first name."""
         kinds = []
         known = [_pkey(t) in _FIRST_SET for t in parts]
+        # capitals are a surname next to a capitalised first name: 'Océane Zaïra REY', 'Merve REYES'
+        upper = [bool(re.fullmatch(r"[^\W\d_]{2,}", t)) and t.isupper() for t in parts]   # 'É.' is no surname
         for i, tok in enumerate(parts):
             if tok.casefold() in _PARTICLES:
                 kinds.append("particle")
+            elif known[i]:
+                kinds.append("first")
+            elif upper[i] and not all(upper):
+                kinds.append("last")
+            elif any(upper) and not all(upper):          # 'Océane Zaïra REY': the capitalised words are first names
+                kinds.append("first")
             elif any(known):
-                kinds.append("first" if known[i] else "last")
+                kinds.append("last")
             else:
                 kinds.append("first" if i == 0 and len(parts) > 1 else "last")
         return kinds
 
-    def person(self, value: str, gender: str | None = None, kind: str | None = None) -> str:
-        """kind: 'first' / 'last' forces every token (values under a 'Prénoms' / 'Nom' label).
-        Punctuation around tokens is kept: 'Camille, Hélène' -> 'Sophie, Nadia'."""
+    def person(self, value: str, gender: str | None = None, kind: str | None = None,
+               kinds: list[str] | None = None) -> str:
+        """kind: 'first' / 'last' forces every token (values under a 'Prénoms' / 'Nom' label). kinds: the kind of each
+        token when the caller knows it better (the other names of the documents). Punctuation around tokens is kept:
+        'Camille, Hélène' -> 'Sophie, Nadia'."""
         pieces = [re.fullmatch(r"([^\w]*)(.*?)([,;.]*)", t).groups() for t in value.split()]
         if kind and len(pieces) > 0:
             core = [p[1] for p in pieces]
@@ -373,7 +386,7 @@ class Faker:
                     self.first_of_last.setdefault("", []).append(k)
             return " ".join(outs)
         parts = value.split()
-        kinds = self.name_kinds(parts)
+        kinds = kinds or self.name_kinds(parts)
         last_keys = [_pkey(t) for t, k in zip(parts, kinds) if k == "last"]
         out = []
         for tok, kind in zip(parts, kinds):     # full first names first, so initials can reuse them
@@ -422,6 +435,18 @@ class Faker:
         so '05871' is replaced the same way in '05871 00001234567 02' and in '30002 / 05871'."""
         return re.sub(r"\d+", lambda m: self.digits(m.group(), self.rng("grp", m.group()), keep_leading_zeros=True),
                       value)
+
+    def reference(self, value: str) -> str:
+        """A reference with letters and digits ('BT187536HE8O43', '5483651240000XA3'): digit groups and letter groups
+        are both changed, same length and case. A mask of 4 or more X / stars ('XXXXXX') is kept."""
+        def change(m):
+            tok = m.group()
+            if re.fullmatch(r"[xX*•]{4,}", tok):
+                return tok
+            if tok.isdigit():
+                return self.digits(tok, self.rng("grp", tok), keep_leading_zeros=True)
+            return self.scramble(tok, self.rng("ref", tok))
+        return re.sub(r"[xX*•]{4,}|[^\W\d_]+|\d+", change, value)
 
     def iban(self, value: str) -> str:
         compact = value.replace(" ", "")
@@ -540,16 +565,17 @@ class Faker:
             name = m.group("name").strip()
             art = m.group("art") or ""
             pre = self.digits(m.group("pre"), rng, keep_leading_zeros=False) if m.group("pre") else ""
-            post = self.digits(m.group("post"), rng) if m.group("post") else ""
+            post = self._address_tail(m.group("post"), rng) if m.group("post") else ""
             if art:
                 # 'de la Station' -> 'de la Fontaine' / 'du Moulin': article and noun replaced together,
                 # so they always agree ('de la Jardins' cannot happen)
                 old = art + name
-                new_name = self._pick(FRENCH_STREET_PHRASES, len(old), rng, {_norm(old)}) or (art + name)
+                phrases = [x for x in FRENCH_STREET_PHRASES if not any(_pkey(w) in self.reserved for w in x.split())]
+                new_name = self._pick(phrases, len(old), rng, {_norm(old)}) or (art + name)
                 return f"{pre}{m.group('kw')}{m.group('sp')}{new_name}{post}"
             words = name.split()
             if len(words) == 1:
-                new_name = self._pick(FRENCH_STREETS + LAST_NAMES, len(name), rng, {_norm(name)}) \
+                new_name = self._pick(FRENCH_STREETS + LAST_NAMES, len(name), rng, {_norm(name)} | self.reserved) \
                     or self.scramble(name, rng)
                 new_name = _style_token(name, new_name)
             else:
@@ -566,7 +592,22 @@ class Faker:
         m = re.fullmatch(r"(?P<name>.+?)(?P<post>\s+\d.*)", value)
         if m:
             return self.scramble(m.group("name"), rng) + self.digits(m.group("post"), rng)
+        # English, number first: '04 Library place' -> '51 Dubreuil Morel place' (people-like names, as above)
+        m = re.fullmatch(r"(?P<pre>\d{1,4}\s+)(?P<name>.+?)\s+(?P<kw>(?i:street|road|lane|place|avenue|drive|way|close))",
+                         value)
+        if m:
+            words = m.group("name").split()
+            names = " ".join(self.name_token(w, "last") for w in words)
+            return f"{self.digits(m.group('pre'), rng)}{names} {m.group('kw')}"
         return self.scramble(value, rng)
+
+    def _address_tail(self, tail: str, rng: random.Random) -> str:
+        """', 30900 NÎMES' -> the digits of the number, and the postcode and town as the town term gives them (the
+        same fake town as elsewhere in the documents)."""
+        pm = re.search(r"((?:[A-Z]{1,2}-)?\d{4,5}\s+[^\d,]+?)\s*$", tail)
+        if not pm:
+            return self.digits(tail, rng)
+        return self.digits(tail[:pm.start(1)], rng) + self.postal_city(pm.group(1))
 
     def town(self, name: str) -> tuple[str, str | None]:
         """(fake town, its postcode) for a town name. The same name gives the same town whatever form it is written
@@ -638,6 +679,8 @@ class Faker:
             return self.phone(value)
         if typ == "CREDIT_CARD":
             return self.credit_card(value)
+        if typ == "CONTRACT_REF" and re.search(r"[^\W\d_]", re.sub(r"[xX*•]{4,}", "", value)):
+            return self.reference(value)             # letters and digits: the letters change too
         if typ in ("ACCOUNT_NUMBER", "BANK_CODE", "CARD_NUMBER", "CONTRACT_REF"):
             return self.digit_groups(value)          # masks ('****', 'x') and separators are kept
         if typ == "SEPA_CREDITOR_ID":

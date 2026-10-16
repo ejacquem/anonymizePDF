@@ -68,11 +68,17 @@ sample_data/Dossier Test 8/   invoice (digital + scan): 'MONSIEUR' heading (no B
                               'CHE-123.456.789 TVA', 'N° TVA BE ...', a reference '86'123'456'789'012', BIC after an IBAN
 sample_data/Dossier Test 9/   ID card, poor copy (150 dpi, faded, blurred, noisy, JPEG 38, turned 1.2 degrees): labels
                               not read, values found by shape; TD1 MRZ; known misses: ghost portrait, signature
+sample_data/Dossier Test 2/   statement with transfers (digital with embedded subset Arial + scan): many accounts and cards,
+                              names in another order or cut ('BRU', 'MAUREL GAËLLE'), addresses (two lines, English
+                              'Rue : 04 Library place', 'bis'), transfer labels (VIRT RECU, PRLV SEPA REF, ACHAT-DEBIT)
+sample_data/Dossier Test 11/  the reported cases, each line as written (digital + scan): masked cards with X, REF, BT id,
+                              REYES / REYS / REYE spellings, 'MLE' in capitals, 'numero du compte' far right
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
                        make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
                        Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 8);
-                       make_test_idcard.py also writes the poor copy (Dossier Test 9); check_all.py (section 12);
+                       make_test_idcard.py also writes the poor copy (Dossier Test 9); make_test_transfers.py (Dossier
+                       Test 2 and 11); check_all.py (section 12);
                        snapshot_results.py (before / after comparison of the results, section 11b)
 ```
 (There is no "Dossier Test 2".) The original numbered CLI scripts were removed long ago.
@@ -207,15 +213,18 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 
 - Types: IBAN (mod-97), BIC (any country code; after its label such as 'BIC/SWIFT', or just after an IBAN: a bare
   word such as 'MONSIEUR' is no BIC),
-  EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), CARD_NUMBER (masked `6703 **** **** 4471`,
-  `Carte x4412`), BE_NATIONAL_NUMBER, BE_VAT, VAT_NUMBER (Swiss `CHE-123.456.789`, masks kept, or after a TVA / BTW /
+  EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), CARD_NUMBER (masked `6703 **** **** 4471`, any run of stars or X
+  `495321XXXXXX7425`, `Carte x4412`), BE_NATIONAL_NUMBER, BE_VAT, VAT_NUMBER (Swiss `CHE-123.456.789`, masks kept, or after a TVA / BTW /
   VAT / MWST label, 8+ digits), BE_STRUCTURED_COMM, SEPA_CREDITOR_ID (checksum, or after a label),
   STREET_ADDRESS (a street keyword, a name of up to 3 words in any case, then the number; the address can be written on
-  two lines, the number ends it and is never the first digits of a postcode), POSTAL_CITY (postcode + city in Title
-  case or CAPITALS, prefixes B-, F-, CH-, L-, NL-, D-, I-, A-),
+  two lines, the number ends it and is never the first digits of a postcode; on one line, a street name does not run
+  on to the next line; the address after a label to the end of the line: 'Rue : 04 Library place'; English number
+  first: '04 Library place'), POSTAL_CITY (postcode + city in Title case or CAPITALS, prefixes B-, F-, CH-, L-, NL-,
+  D-, I-, A-; not 'Code' / 'Banque' / 'Guichet'...), the town at the end of an address is a POSTAL_CITY too,
   ACCOUNT_NUMBER (after "N° de compte" / "Numéro client", with spaces, '-', '.' or '/' as separators, French RIB, long digit runs, apostrophe-grouped digits
   `86'123'456'789'012` with masks, at least 3 groups so amounts `1'240.00` are not caught),
-  BANK_CODE ("Code banque / guichet", "Clé RIB"), CONTRACT_REF ("police", "contrat", "dossier"), DOC_NUMBER,
+  BANK_CODE ("Code banque / guichet", "Clé RIB"), CONTRACT_REF ("police", "contrat", "dossier", "REF" with letters and
+  digits, and an identifier written alone 'BT187536HE8O43': lowest priority), DOC_NUMBER,
   BIRTH_PLACE, DATE (`/ . -` or spaces `14 05 1992`), PERSON, NER ORG / LOCATION (always commented out).
 - Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid. A real
   PDF used U+2010 inside a national number and hid it from every detector.
@@ -225,7 +234,12 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - Bank operation labels (`pii.OPERATION_WORDS`: VIRT, RECU, PRLV, SEPA, REF, RET, DAB, FR, ACHAT-DEBIT, ...) are taken
   out of PERSON / ORG / LOCATION candidates (`strip_operations`, in `_detect_words` and the second check): 'VIRT RECU
   MARION' is the name 'MARION', and a label alone is dropped. Add a label to the list when a statement shows one.
-- PERSON: after a title, `Prénom NOM`, `NOM Prénom`, spaCy PERSON; active only if after a title, contains a known
+- PERSON: titles in any case ('MLE', 'Mle', 'Mme'); `Prénom NOM` with up to two middle names and a surname cut to 2+
+  letters ('Merve Chantal Gaëlle REYES', 'Chantal Gaëlle RE'); capitals only ('REYES MERVE') are candidates, and a
+  capitals run that holds another value ('BIC BNPAFRPP') is no name (`detect_structured`, CAPS_NAME_RANK). Candidates
+  sharing a word with an active name are active ('REYES MERVE' after 'MLE MERVE REYS'), and the other spellings of a
+  name word in the documents are its variants ('REYS', 'REYE' for 'REYES', `engine.name_aliases`, 85 % alike).
+  Active PERSON: after a title, contains a known
   first name, spaCy Title Case, or found under a label. `_STOP` words (including label words such as signature, nom,
   nationalité, adresse) are never names.
 - Identity by shape (`fields.identity_shape`, identity documents only, see `is_id_document`): when the labels are not
@@ -254,6 +268,11 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   `Faker.names` memory keeps consistency: initials follow the replaced first name (`initial`, preferring first names
   seen with the same surname), names ≥ 80–85 % similar (OCR misreading) reuse the replacement (`_similar_name`).
   A replacement can never be the original without accents (`Inès` ≠ `Ines`).
+  Spellings of one name share one replacement (`Faker.aliases`, from `engine.name_aliases`: 'REYES', 'REYE', 'REYS').
+  Kinds of the words of a name (`Faker.name_kinds`, `engine.folder_kinds`): a known first name is 'first'; capitals next
+  to a capitalised word are the surname ('Océane Zaïra REY'); a word known from another active name keeps its kind.
+  A street name never reuses a word of the documents (`Faker.reserved`). English streets: people-like names.
+  The town of an address is replaced like the town of a postcode (`Faker._address_tail`).
 - Other types: phone keeps format + first 2 digits; IBAN country / grouping, valid checksum; BIC keeps country;
   e-mail keeps common domains; streets from lists (article + noun replaced together, people-like names for long
   ones), towns matching the postcode's country; dates shift (same fake whatever the separator); BE national number
@@ -275,10 +294,13 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 
 ## 10. Rendering
 
-- Digital (`insert_replacement`): font = the embedded font if it has every glyph, else the same font installed on
+- Digital (`insert_replacement`): font = the embedded font if it is a subset that carries every character the document
+  writes with it (`FontBook.chars`: a subset may still report glyphs it does not have, which drew 'Î' and 'Y' as gaps),
+  else the same font installed on
   the PC (Windows registry HKLM + HKCU, no admin: e.g. Consolas → consola.ttf), else the closest base-14. Same size,
   colour, baseline; may extend up to +35 % into free space (`free_right`), else shrunk. `digital_fill: none` keeps
-  the page background (redaction with `fill=False`).
+  the page background (redaction with `fill=False`). A value on several lines gets its replacement cut across the same
+  lines (`engine._cut_lines`, digital and scan), each line with its own baseline.
 - Scans: text sized from the ink height of the original (tight OCR boxes), same baseline, ink colour sampled, paper
   colour sampled for the patch. Bold (`BoldMeter`): median horizontal ink run / estimated font size vs the page
   median, bold if > 1.4× (calibrated against Test 1's digital twin). Fails on ID documents (mostly bold text, no
@@ -355,6 +377,10 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   format, lengths, check digits, fake surname inside.
 - Expectations per file are in `EXPECT` (sensitive values written by the generators, mode, box kinds, MRZ formats).
   A new test document needs an entry there.
+- Reported cases (`reported_cases_tests`): masked cards with X, REF / BT identifiers, 'numero du compte', 'Rue :',
+  'MLE', names in another order and cut, 'bis', BIC in capitals, '30002 Code banque', two-line addresses, name
+  kinds and spellings, the two-line cut. Dossier Test 2 and 11 are in EXPECT (digital and scan), KEEP holds the
+  operation labels of Test 2 ('VIRT RECU', 'PRLV SEPA', 'ACHAT-DEBIT').
 - Towns and postcodes (`town_tests`): one fake town per name, the postcode belongs to the fake town, a Swiss postcode
   keeps its length. Detector tests: a BIC of any country after its label, an account with a slash, an address on two
   lines, a postcode that is not the street number.

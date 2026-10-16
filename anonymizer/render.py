@@ -123,6 +123,7 @@ class FontBook:
         self.system: dict[tuple, "fitz.Font | None"] = {}
         self.builtin: dict[str, "fitz.Font"] = {}
         self.used: dict[str, int] = {}                     # 'embedded' / 'system' / 'standard' -> count
+        self.chars = _document_chars(doc)                  # read before the document is changed (see font_for)
 
     # ----- lookups -----
     def _embedded(self, xref: int):
@@ -172,19 +173,36 @@ class FontBook:
         return self.builtin[code]
 
     def font_for(self, style: dict, text: str):
-        needed = {ord(c) for c in text if not c.isspace()}
+        needed = {c for c in text if not c.isspace()}
+        # an embedded font is a subset: it only carries the characters the document wrote with it, and has_glyph may
+        # still say yes for the others (their glyphs are empty, so 'Î' or 'Y' would be drawn as a gap). Only these
+        # characters are written with the embedded font; the rest falls back to the same font from this PC.
+        carried = self.chars.get(style["font"], set())
 
-        def covers(f):
-            return f is not None and all(f.has_glyph(c) for c in needed)
+        def covers(f, embedded=False):
+            if f is None or (embedded and not needed <= carried):
+                return False
+            return all(f.has_glyph(ord(c)) for c in needed)
 
         bold, italic = span_style(style["font"], style["flags"])
         for kind, f in (("embedded", self._embedded(style["xref"]) if style.get("xref") else None),
                         ("system", self._system(style["font"], bold, italic))):
-            if covers(f):
+            if covers(f, embedded=kind == "embedded"):
                 self.used[kind] = self.used.get(kind, 0) + 1
                 return f
         self.used["standard"] = self.used.get("standard", 0) + 1
         return self._builtin(_base14_for(style["font"], style["flags"]))
+
+
+def _document_chars(doc) -> dict[str, set[str]]:
+    """Per font name (as page_spans gives it), the characters the document writes with that font."""
+    chars: dict[str, set[str]] = {}
+    for page in doc:
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for s in line["spans"]:
+                    chars.setdefault(_clean_font_name(s["font"]), set()).update(s["text"])
+    return chars
 
 
 def page_spans(page) -> list[dict]:

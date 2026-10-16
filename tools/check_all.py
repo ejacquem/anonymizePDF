@@ -57,6 +57,17 @@ SENSITIVE_9 = ["MARTINEAU", "Julie", "Anne", "X4RTBPFW4", "03 11 1987", "11 06 2
 # an account number with a slash
 SENSITIVE_10 = ["Sophie", "Wouters", "75017", "PARIS", "Genève", "1204", "SWEDSESS", "BE68 5390 0754 7034",
                 "51/234519", "234519", "Rhône", "contact@lumen-atelier.example"]
+# values of the statement with transfers (Dossier Test 2, invented names): many accounts and cards, names in another order
+# or cut ('BRU', 'MAUREL GAËLLE', 'Noémie Clarisse LEFOL'), addresses (two lines, English, 'bis'), transfer references
+SENSITIVE_2 = ["Ylona", "YLONA", "Océane", "Zaïra", "BRUNEAU", "BRUNE", "MAUREL", "Gaëlle", "GAËLLE", "Clarisse", "LEFOL",
+               "Noémie", "Wouters", "Sophie", "Tilleuls", "Victor Hugo", "Library", "Lamartine", "Florissant", "NÎMES",
+               "0048213976", "15878645", "51/234519", "FR76 3000 6000 0112 3456 7890 189", "BNPAFRPP",
+               "BE68 5390 0754 7034", "SWEDSESS", "00001234567", "05871", "30002", "495321XXXXXX7425",
+               "157851XXXXXX1568", "5483651240000XA3", "BT187536HE8O43", "86'123'456'789'012", "0004521",
+               "45.118.902", "CH-1206", "Genève"]
+# the cases of the report, as written on the real statement (Dossier Test 11, invented names)
+SENSITIVE_11 = ["Ylona", "YLONA", "Océane", "Zaïra", "REYES", "REYS", "REYE", "Victor Hugo", "Library", "Lamartine",
+                "495321XXXXXX7425", "157851XXXXXX1568", "5483651240000XA3", "BT187536HE8O43", "15878645", "NÎMES"]
 # values of the invoice (Dossier Test 8)
 SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 3000 6000 0112 3456 7890 189",
                "BNPAFRPP", "GEBABEBB", "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
@@ -65,6 +76,9 @@ SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 300
 KEEP = {
     "Dossier Test 8": {"facture_suisse_fr.pdf": ["MONSIEUR", "Banque Exemple", "Lumen Services SA"]},
     "Dossier Test 10": {"courrier_adresses.pdf": ["Lieu de la signature", "Bonjour Madame", "Atelier Lumen SPRL"]},
+    # the operation labels are no name: 'VIRT RECU', 'PRLV SEPA', 'RET DAB FR', 'ACHAT-DEBIT' stay (and the company)
+    "Dossier Test 2": {"releve_virements.pdf": ["VIRT RECU", "PRLV SEPA", "RET DAB FR", "ACHAT-DEBIT", "BOULANGERIE",
+                                                "Banque Mosane", "Assurance MAIF"]},
 }
 
 # folder -> (sensitive values, {file: (mode, black box kinds, MRZ formats)})
@@ -118,6 +132,17 @@ EXPECT = {
     "Dossier Test 8": (SENSITIVE_8, {
         "facture_suisse_fr.pdf": ("digital", [], []),
         "facture_suisse_fr_scan.pdf": ("scan", [], []),
+    }),
+    # traditional statement with transfers, many accounts and names in several forms: digital (embedded subset fonts)
+    # and scan (tools/make_test_transfers.py)
+    "Dossier Test 2": (SENSITIVE_2, {
+        "releve_virements.pdf": ("digital", [], []),
+        "releve_virements_scan.pdf": ("scan", [], []),
+    }),
+    # the reported cases, each line as written on the real files (digital and scan)
+    "Dossier Test 11": (SENSITIVE_11, {
+        "cas_signales.pdf": ("digital", [], []),
+        "cas_signales_scan.pdf": ("scan", [], []),
     }),
     "Dossier Test 5": (STATEMENT_0, {
         "contrat_image_collee.pdf": ("mixed", [], []),
@@ -426,6 +451,49 @@ def detector_tests():
     check("identity by shape: no boilerplate", not any(v in ("SPECIMEN", "RÉPUBLIQUE", "FRA") for _, v in shape))
 
 
+def reported_cases_tests():
+    """The strings of the reported cases (fast, no OCR): cards with X masks, references, unlabelled identifiers, account
+    after 'numero du compte', address after 'Rue :', titles in capitals, names in another order, 'bis', BIC in capitals."""
+    print("\n== reported cases")
+    from anonymizer import fake as fake_module
+    from anonymizer.fake import Faker
+    found = lambda t: [(m.type, m.value) for m in pii.detect_all(t)]   # noqa: E731
+    check("masked card with X after its number", ("CARD_NUMBER", "495321XXXXXX7425") in found("CARTE N°495321XXXXXX7425"))
+    check("masked card with X after its label", ("CARD_NUMBER", "157851XXXXXX1568") in found("CARTE 157851XXXXXX1568"))
+    check("reference with letters after REF", ("CONTRACT_REF", "5483651240000XA3") in found("REF : 5483651240000XA3"))
+    check("identifier written alone (letters and digits)", ("CONTRACT_REF", "BT187536HE8O43") in found("BT187536HE8O43"))
+    check("account number far right after 'numero du compte'",
+          ("ACCOUNT_NUMBER", "15878645") in found("numero du compte:              15878645"))
+    check("address after 'Rue :' on the line", ("STREET_ADDRESS", "04 Library place") in found("Rue :     04 Library place"))
+    check("'bis' is part of the number of the address, never a value of its own",
+          ("STREET_ADDRESS", "12 bis rue Victor Hugo, 30900 NÎMES") in found("Adresse : 12 bis rue Victor Hugo, 30900 NÎMES")
+          and not any(v.casefold() == "bis" for _, v in found("Adresse : 12 bis rue Victor Hugo, 30900 NÎMES")))
+    check("MLE in capitals is a title", ("PERSON", "YLONA REYS") in found("MLE YLONA REYS"))
+    check("two capitalised words are a name when one is known later", ("PERSON", "REYES MERVE") in found("REYES MERVE"))
+    check("up to two middle names", ("PERSON", "Merve Chantal Gaëlle REYES") in found("Merve Chantal Gaëlle REYES"))
+    check("a surname cut to two letters", ("PERSON", "Chantal Gaëlle RE") in found("Chantal Gaëlle RE"))
+    check("BIC in capitals keeps its BIC", ("BIC", "BNPAFRPP") in found("BIC BNPAFRPP"))
+    check("a postal code before 'Code banque' is no town", not any(t == "POSTAL_CITY" for t, _ in found("30002 Code banque")))
+    two_lines = "SQUARE\nSophie Wouters 8\nRue de la Loi 16, 1000 Bruxelles"
+    check("address on two lines stays one address", ("STREET_ADDRESS", "SQUARE\nSophie Wouters 8") in found(two_lines))
+    gare = "3 avenue de la Gare\nRoute de Florissant 14"
+    check("a street does not run on to the next line", ("STREET_ADDRESS", "3 avenue de la Gare") in found(gare)
+          and not any(t == "STREET_ADDRESS" and "Route" in v and "Gare" in v for t, v in found(gare)))
+    check("operation labels are taken out of a name", pii.strip_operations("VIRT RECU MARION") == "MARION")
+    f = Faker(b"r" * 32)
+    check("a reference: letters change, masks are kept",
+          f.suggest("CONTRACT_REF", "495321XXXXXX7425")[6:12] == "XXXXXX"
+          and f.suggest("CONTRACT_REF", "BT187536HE8O43")[:2] != "BT")
+    check("name kinds: capitals are the surname", f.name_kinds(["Océane", "Zaïra", "REY"]) == ["first", "first", "last"])
+    check("name kinds: first name then surname", f.name_kinds(["Thomas", "Marchand"]) == ["first", "last"])
+    check("spellings of one name share a replacement",
+          engine.name_aliases({"REYES": 2, "REYE": 1, "REYS": 1}, []) == {"reye": "reyes", "reys": "reyes"})
+    check("a two-line replacement is cut across the lines",
+          engine._cut_lines("SQUARE Jolien Lemaire 2", [40.0, 110.0]) == ["SQUARE", "Jolien Lemaire 2"])
+    check("'Dutch' and English street keep their number first", fake_module.Faker(b"s" * 32).street("04 Library place")
+          .endswith(" place"))
+
+
 def town_tests():
     """A town has one fake, whatever form it is written in, and the postcode of the fake belongs to the fake town."""
     print("\n== towns and postcodes")
@@ -556,6 +624,7 @@ def main():
     t0 = time.time()
     try:
         detector_tests()
+        reported_cases_tests()
         town_tests()
         speedup_tests()
         key_and_fake_tests(tmp)

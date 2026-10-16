@@ -15,6 +15,7 @@ import re
 import random
 import time
 from collections import defaultdict
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import numpy as np
@@ -22,9 +23,10 @@ import yaml
 from PIL import ImageDraw
 
 from . import configmodel, faces, fields, ocr, regions, render, verify
-from .fake import Faker, is_town_name, match_case
+from .fake import Faker, _pkey, is_town_name, match_case
 from .ocr import DIGITAL_DPI, ocr_words, render_page
-from .pii import (NAME_TYPES, PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, digital_words, fitz,
+from .pii import (NAME_TYPES, PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all, detect_structured,
+                  digital_words, fitz,
                   invisible_areas, plan_page, strip_operations, visible_words, words_to_text, norm_value)
 
 CONFIG_NAME = "anon_config.yaml"
@@ -50,6 +52,7 @@ virement prélèvement prelevement retrait chèque cheque paiement facture contr
 conseillere service services monsieur madame mademoiselle bank account statement balance dear mister miss
 square rue avenue boulevard chaussée chaussee chemin allée allee impasse quai route passage villa cours
 code swift bic iban tva btw vat
+sa sprl srl bvba nv asbl gmbh ltd ag
 rekening saldo datum klant overschrijving factuur mevrouw heer
 signature handtekening unterschrift nom surname prénom prénoms prenom prenoms given names name sexe sex
 nationalité nationalite nationality naissance birth lieu place document expiry expiration délivrance delivrance
@@ -271,13 +274,19 @@ def pii_cfg(cfg: dict) -> dict:
 # 1. scan a folder -> draft config
 # ---------------------------------------------------------------------------
 
-def _detect_words(found: dict, words: list[dict], ocr_page: bool, ner, file: str, pno: int):
-    """Detections of one set of words (a page's text layer, its OCR, or the OCR of its images) into `found`."""
+def _detect_words(found: dict, tokens: dict, words: list[dict], ocr_page: bool, ner, file: str, pno: int):
+    """Detections of one set of words (a page's text layer, its OCR, or the OCR of its images) into `found`.
+    `tokens` counts the words of 4 letters or more as written (the name variants are looked for among them)."""
     text, _ = words_to_text(words)
     id_page = fields.is_id_document(words)
     if ocr_page:
         text = ocr.fix_digits(text)           # '04 72 OO 11 22' -> '04 72 00 11 22' (same length)
-    for m in detect_all(text, ner):
+    for w in re.findall(r"[^\W\d_]{4,}", text):
+        tokens[w] = tokens.get(w, 0) + 1
+    matches = detect_all(text, ner)
+    # the town at the end of an address is a town of its own: '30900 NÎMES' in 'Adresse : 12 bis rue ..., 30900 NÎMES'
+    matches += [pc for m in matches if m.type == "STREET_ADDRESS" for pc in detect_structured(m.value, {"POSTAL_CITY"})]
+    for m in matches:
         value = " ".join(m.value.split())
         if m.type == "PERSON":
             value = _HONORIFIC_START.sub("", value.split(" - ")[0]).strip(" ,.;:")
@@ -322,6 +331,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     if can_ocr:
         log(f"OCR engine for scanned pages: {ocr.describe(default_ocr_lang)}")
     found: dict = {}
+    tokens: dict[str, int] = {}
     for fi, pdf in enumerate(pdfs, start=1):
         doc = open_source(pdf)
         layouts = [page_layout(p) for p in doc]
@@ -334,19 +344,20 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                     continue
                 words = ocr_words(render_page(page, 300), default_ocr_lang)
                 log(f"   page {pno}: OCR ({len(words)} words)")
-                _detect_words(found, words, True, ner, pdf.name, pno)
+                _detect_words(found, tokens, words, True, ner, pdf.name, pno)
                 if lay["words"]:                       # a scanner's invisible OCR layer: read it too
-                    _detect_words(found, lay["words"], False, ner, pdf.name, pno)
+                    _detect_words(found, tokens, lay["words"], False, ner, pdf.name, pno)
                 continue
-            _detect_words(found, lay["words"], False, ner, pdf.name, pno)
+            _detect_words(found, tokens, lay["words"], False, ner, pdf.name, pno)
             if lay["pixels"] and can_ocr:                # text that only exists as pixels (images)
                 _, pw = _pixel_words(page, lay["visible"], default_ocr_lang)
                 if pw:
                     log(f"   page {pno}: OCR of the images ({len(pw)} words)")
-                    _detect_words(found, pw, True, ner, pdf.name, pno)
+                    _detect_words(found, tokens, pw, True, ner, pdf.name, pno)
 
     faker = Faker(secret_key)        # None: this computer's secret key (anonymizer.secret)
     faker.reserve(e["value"] for e in found.values())
+    faker.aliases = name_aliases(tokens, [e["value"] for e in found.values() if e["type"] == "PERSON"])
     active: list[dict] = []
     off: list[dict] = []
     tokens_added: set[str] = set()
@@ -368,27 +379,74 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     def has_initial(e):
         return any(re.fullmatch(r"[^\W\d_]\.?", t) for t in e["value"].split())
 
+    kind_of: dict[str, str] = {}      # a name word -> 'first' / 'last', as the active names of the folder read it
+
+    def folder_kinds(toks: list[str]) -> list[str]:
+        """The kind of each word of a name. A word known from another active name keeps its kind ('REYES' is a surname
+        in 'MLE YLONA REYS'), the other words take the opposite kind; else Faker decides from the first names."""
+        known = [kind_of.get(_pkey(t)) for t in toks]
+        base = faker.name_kinds(toks)
+        out = []
+        for k, b in zip(known, base):
+            if b == "particle" or (k is None and not (len(toks) == 2 and any(known))):
+                out.append(b)                             # no word of the name is known, or a longer name
+            elif k is None:                                # two words, one known: the other one is the other kind
+                out.append("last" if "first" in known else "first")
+            else:
+                out.append(k)
+        return out
+
+    def activate(e, note=""):
+        """A full name is active: its replacement, and each of its parts (>= 4 letters) is replaced alone too."""
+        g = gender(e)
+        toks = e["value"].split()
+        kinds = [e["kind"]] * len(toks) if e.get("kind") else folder_kinds(toks)
+        for t, k in zip(toks, kinds):
+            if k in ("first", "last"):
+                kind_of.setdefault(_pkey(t), k)
+        active.append({**e, "replace": faker.person(e["value"], g, e.get("kind"), kinds=kinds),
+                       "note": "under a label" if e.get("labeled") else note})
+        tokens_added.add(norm_value(e["value"]))
+        for tok, kind in zip(toks if len(toks) > 1 else [], kinds):
+            clean = tok.strip(",.;:")
+            if len(clean) < 4 or clean.casefold() in _STOP or is_town_name(clean) or kind == "particle":
+                continue
+            if norm_value(clean) in tokens_added:
+                continue
+            tokens_added.add(norm_value(clean))
+            active.append({"type": "PERSON", "value": clean, "count": 0, "files": set(), "pages": set(),
+                           "replace": faker.name_token(clean, kind, gender=g),
+                           "note": f"part of '{e['value']}'"})
+
+    rejected = []
     for e in sorted(persons, key=lambda e: (has_initial(e), -e["count"])):
         if e.get("labeled") or accept_person(e["value"], e["honorific"], e["ner"]):
-            g = gender(e)
-            active.append({**e, "replace": faker.person(e["value"], g, e.get("kind")),
-                           "note": "under a label" if e.get("labeled") else ""})
-            toks = e["value"].split()
-            tokens_added.add(norm_value(e["value"]))
-            kinds = [e["kind"]] * len(toks) if e.get("kind") else faker.name_kinds(toks)
-            for tok, kind in zip(toks if len(toks) > 1 else [], kinds):
-                clean = tok.strip(",.;:")
-                if len(clean) < 4 or clean.casefold() in _STOP or is_town_name(clean) or kind == "particle":
-                    continue
-                if norm_value(clean) in tokens_added:
-                    continue
-                tokens_added.add(norm_value(clean))
-                active.append({"type": "PERSON", "value": clean, "count": 0, "files": set(), "pages": set(),
-                               "replace": faker.name_token(clean, kind, gender=g),
-                               "note": f"part of '{e['value']}'"})
-    shown = {norm_value(a["value"]) for a in active if a["type"] == "PERSON"}
-    for e in persons:
-        if norm_value(e["value"]) not in shown:
+            activate(e)
+        else:
+            rejected.append(e)
+    # the words of the active names: 'MLE MERVE REYS' is active, so 'REYES MERVE' is the same person
+    known_words = {_pkey(t) for a in active if a["type"] == "PERSON" for t in a["value"].split() if len(_pkey(t)) >= 4}
+    for e in list(rejected):
+        if len(e["value"].split()) >= 2 and any(_pkey(t) in known_words for t in e["value"].split()):
+            rejected.remove(e)
+            activate(e, "shares a name word with an active name")
+    # misspelt or shortened forms of a known name word, written elsewhere in the documents: 'REYS' and 'REYE' for
+    # 'REYES' (the same replacement, through the name memory of the faker)
+    for word in tokens:
+        key = _pkey(word)
+        if key in known_words or norm_value(word) in tokens_added or not word[:1].isupper():
+            continue
+        ratio, best = max(((SequenceMatcher(None, key, k).ratio(), k) for k in known_words
+                           if abs(len(k) - len(key)) <= 2), default=(0.0, ""))
+        if ratio < 0.85:
+            continue
+        tokens_added.add(norm_value(word))
+        active.append({"type": "PERSON", "value": word, "count": 0, "files": set(), "pages": set(),
+                       "replace": faker.name_token(word, kind_of.get(best, "last")),
+                       "note": "close to a known name word"})
+    for e in rejected:
+        # capitals alone are headings and company names ('BANQUE MOSANE'): only suggested with a known name word
+        if not e["value"].isupper():
             off.append({**e, "replace": faker.person(e["value"], gender(e)), "note": "uncertain name - check it"})
 
     numbers_added = {norm_value(e["value"]) for e in found.values() if e["type"] in SPLIT_TYPES}
@@ -434,6 +492,43 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     log(f"Done: {len(active)} active replacement(s), {len(off)} suggestion(s) left commented out "
         f"({stats['seconds']}s)")
     return {"config": text, "stats": stats}
+
+
+def name_aliases(tokens: dict[str, int], names: list[str]) -> dict[str, str]:
+    """The spellings of one name that the documents write differently ('REYES', 'REYE', 'REYS') are grouped (two
+    spellings at least 85 % alike, chained); each spelling maps to the key of the most written one of its group, so all
+    of them get the same replacement. Only capitalised words of 4 letters or more are grouped."""
+    counts = {}
+    for w, n in tokens.items():
+        if len(w) >= 4 and w[:1].isupper():
+            counts[w] = counts.get(w, 0) + n
+    for name in names:                                  # the parts of the names, even when read once
+        for w in name.split():
+            if len(w) >= 4 and w[:1].isupper():
+                counts[w] = max(counts.get(w, 0), 1)
+    parent = {w: w for w in counts}
+
+    def find(w):
+        while parent[w] != w:
+            parent[w] = parent[parent[w]]
+            w = parent[w]
+        return w
+
+    keys = sorted(counts, key=_pkey)
+    for i, a in enumerate(keys):
+        ka = _pkey(a)
+        for b in keys[i + 1:]:
+            kb = _pkey(b)
+            if len(kb) - len(ka) > 2:
+                break
+            if SequenceMatcher(None, ka, kb).ratio() >= 0.85:
+                parent[find(a)] = find(b)
+    best: dict[str, str] = {}
+    for w in counts:
+        root = find(w)
+        if root not in best or (counts[w], len(w)) > (counts[best[root]], len(best[root])):
+            best[root] = w
+    return {_pkey(w): _pkey(best[find(w)]) for w in counts if _pkey(best[find(w)]) != _pkey(w)}
 
 
 def _align_contained_numbers(active: list[dict]):
@@ -668,8 +763,28 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
     render.apply_redactions(page)
     if not blackbox:
         for (m, boxes), style, limit in zip(plan, styles, limits):
-            if m.replacement and not _inside(boxes[0], hidden):
-                render.insert_replacement(page, boxes[0], m.replacement, style, fonts, limit)
+            if not m.replacement or _inside(boxes[0], hidden):
+                continue
+            # a value on several lines gets its replacement on the same lines, each line cut in proportion to its width
+            parts = _cut_lines(m.replacement, [b[2] - b[0] for b in boxes]) if len(boxes) > 1 else [m.replacement]
+            for b, part in zip(boxes, parts):
+                if part:                                   # each line keeps its own baseline
+                    line_style = (render.style_at(spans, b) or style) if len(boxes) > 1 else style
+                    render.insert_replacement(page, b, part, line_style, fonts, limit)
+
+
+def _cut_lines(text: str, widths: list[float]) -> list[str]:
+    """Cuts a replacement into as many lines as the original value had, at word boundaries, each line getting about
+    the share of the width the original line had ('SQUARE' / 'Sophie Wouters 8' -> 'SQUARE' / 'Jolien Lemaire 2')."""
+    spaces = [i for i, c in enumerate(text) if c == " "]
+    if not spaces:
+        return [text] + [""] * (len(widths) - 1)
+    total, cuts, done = sum(widths) or 1, [], 0.0
+    for w in widths[:-1]:
+        done += w
+        cuts.append(min(spaces, key=lambda i: abs(i - len(text) * done / total)))
+    bounds = [0, *cuts, len(text)]
+    return [text[a:b].strip() for a, b in zip(bounds, bounds[1:])]
 
 
 def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, log):
@@ -932,22 +1047,25 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                             "box": _pt_box(boxes)})
             continue
         changed = []
+        # a value on several lines: its replacement is cut across the same lines (see _digital_replace)
+        parts = _cut_lines(m.replacement or "", [b[2] - b[0] for b in boxes]) if len(boxes) > 1 \
+            else [m.replacement or ""]
         for i, b in enumerate(boxes):
+            part = "" if blackbox else parts[i] if i < len(parts) else ""
             angle = _angle_at(angles, b)
             if abs(angle) >= TILT_MIN:             # a slanted word: written and erased in its own frame
-                new = m.replacement if (not blackbox and i == 0 and m.replacement) else ""
-                changed.append(render.paint_tilted(img, b, angle, m.value, new, ink, is_bold, blackbox))
+                changed.append(render.paint_tilted(img, b, angle, m.value, part, ink, is_bold, blackbox))
                 continue
             box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
             fill = (0, 0, 0) if blackbox else render.background_color(img, box)
             draw.rectangle(box, fill=fill)
             changed.append(box)
-            if not blackbox and i == 0 and m.replacement:
-                font, xy = render.scan_text_layout(m.value, m.replacement, b, limit, is_bold)
+            if part:
+                font, xy = render.scan_text_layout(m.value, part, b, limit, is_bold)
                 lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
                 ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
                 color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
-                draw.text(xy, m.replacement, font=font, anchor="ls", fill=color)
+                draw.text(xy, part, font=font, anchor="ls", fill=color)
         records.append({"page": pno, "original": m.value, "replacement": m.replacement,
                         "box": _pt_box(changed)})
     if mrz:

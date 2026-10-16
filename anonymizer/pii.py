@@ -124,13 +124,14 @@ def _v_labeled(m):
     return m.start(1), m.end(1)
 
 
-_HONORIFIC = (r"(?:M\.|Mme\.?|Mlle\.?|Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Monsieur|Madame|Mademoiselle|Docteur|"
-              r"Ma\u00eetre|Heer|Mevrouw|Mevr\.?|Dhr\.?)")
+_HONORIFIC = (r"(?i:M\.|Mme\.?|Mlle\.?|Mle\.?|Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Monsieur|Madame|Mademoiselle|Docteur|"
+              r"Ma\u00eetre|Heer|Mevrouw|Mevr\.?|Dhr\.?)")       # 'MLE MERVE' in capitals is a title too
 _UP = r"[A-Z\u00c0-\u00dd]"
 
 _CITY_STOPLIST = {"euro", "eur", "euros", "keer", "maal", "fois", "times",
                    "bic", "iban", "swift", "tva", "btw", "vat", "tel", "gsm", "fax", "rib",
-                   "mme", "mlle", "mr", "mrs", "dr", "me", "m"}
+                   "mme", "mlle", "mr", "mrs", "dr", "me", "m", "code", "guichet", "banque", "clé", "cle", "compte",
+                   "numero", "numéro", "client", "carte", "page", "ref", "réf", "rib"}
 
 
 _BIC_LABEL = re.compile(r"(?i:\bbic|swift)\b")
@@ -154,6 +155,23 @@ def _v_account_labeled(m):
     if _DATE_LIKE.fullmatch(m.group(1)):
         return None
     return _v_labeled(m)
+
+
+def _v_reference(m):
+    """A reference written after its label ('REF : 5483651240000XA3'): at least 4 digits."""
+    return (m.start(1), m.end(1)) if sum(c.isdigit() for c in m.group(1)) >= 4 else None
+
+
+def _v_mixed_id(m):
+    """An identifier written alone ('BT187536HE8O43'): letters and digits, at least 2 letters and 4 digits."""
+    value = m.group()
+    return (m.start(), m.end()) if sum(c.isalpha() for c in value) >= 2 and sum(c.isdigit() for c in value) >= 4 else None
+
+
+def _v_street_label(m):
+    """The address after its label ('Rue : 04 Library place'): what follows on the line, at least 4 characters."""
+    value = m.group(1).rstrip()
+    return (m.start(1), m.start(1) + len(value)) if len(value.strip()) >= 4 else None
 
 
 def _v_vat_group(m):
@@ -198,6 +216,7 @@ _NOT_UNIT = r"(?!(?i:appartement|appt|apt|bâtiment|batiment|bât|bat|étage|eta
 _SPACE = r"[ \t\n]"
 _STREET_WORD = r"(?!(?i:et|le|la|les|de|du|des|pour|avec|sur|dans|au|en|par|est)\b)" + _NOT_UNIT + r"[A-Za-zÀ-ÿ'’\-]+"
 _STREET_NAME = rf"{_STREET_WORD}(?:{_SPACE}+{_STREET_WORD}){{0,2}}"
+_STREET_NAME_LINE = rf"{_STREET_WORD}(?:[ 	]+{_STREET_WORD}){{0,2}}"
 _NL_STREET = (
     "straat|laan|weg|steenweg|dreef|lei|baan|kaai|gracht|dijk|singel|plein|markt|hof|pad|park"
 )
@@ -207,8 +226,13 @@ DETECTORS = [
     ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban),
     ("CREDIT_CARD", re.compile(r"(?<!\d)(?:\d[ \-]?){13,19}(?!\d)"), _v_card),
     # masked card number: '6703 **** **** 4471', '4975 XXXX XXXX 1234', 'Carte x4412'
-    ("CARD_NUMBER", re.compile(r"(?<![\w*])\d{4,6}(?:[ \-]?(?:\*{4}|[xX]{4}|•{4})){1,3}[ \-]?\d{4}(?!\d)"), None),
-    ("CARD_NUMBER", re.compile(r"(?i:carte|card|kaart)(?:\s+n[°o]\.?)?\s+((?:[xX*•]{1,12}[ ]?)\d{4})(?!\d)"), _v_group1),
+    # the mask may be any run of stars or X ('495321XXXXXX7425' is a card as well as '6703 **** 4471')
+    ("CARD_NUMBER", re.compile(r"(?<![\w*])\d{4,6}(?:[ \-]?[xX*•]{4,}){1,3}[ \-]?\d{4}(?!\d)"), None),
+    ("CARD_NUMBER", re.compile(r"(?i:carte|card|kaart)(?:\s*n[°o]\.?)?\s*[:\-]?\s*((?:[xX*•]{1,12}[ ]?)\d{4})(?!\d)"),
+     _v_group1),
+    # a reference with letters and digits after its label: 'REF : 5483651240000XA3'
+    ("CONTRACT_REF", re.compile(r"(?<!\w)(?i:r[ée]f(?:[ée]rence)?|ref)\.?\s*(?:n[°o]\.?\s*)?[:\-]?\s*"
+                                r"([A-Z0-9][A-Z0-9\-/]{5,}[A-Z0-9])(?![\w])"), _v_reference),
     # SEPA creditor identifier (direct debit): 'BE79ZZZ0404484654', 'FR12ZZZ123456'
     ("SEPA_CREDITOR_ID", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28}(?![A-Za-z0-9])"),
      _v_sepa_creditor),
@@ -233,11 +257,18 @@ DETECTORS = [
     # Street addresses (heuristic): "Kerkstraat 12", "Grote Markt 5", "Rue de la Loi 16"
     ("STREET_ADDRESS", re.compile(rf"(?<!\w){_CAP}{_WORD}*?(?i:{_NL_STREET})[ ]+{_NR}"), None),
     ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?:{_CAP}{_WORD}+[ ]){{1,2}}(?:Markt|Plein|Kaai|Dreef|Laan)[ ]+{_NR}"), None),
-    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])\d{{1,4}}(?:[ ]?(?i:bis|ter))?,?{_SPACE}+(?i:{_FR_STREET}){_SPACE}+"
-                                  rf"(?:(?i:de la|du|des|de l'|de|d'){_SPACE}*)?{_STREET_NAME}"), None),
+    # on one line: a street name does not run on to the next line ('3 avenue de la Gare' / 'Route de ...')
+    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])\d{{1,4}}(?:[ ]?(?i:bis|ter))?,?[ 	]+(?i:{_FR_STREET})[ 	]+"
+                                  rf"(?:(?i:de la|du|des|de l'|de|d')[ 	]*)?{_STREET_NAME_LINE}"), None),
     # the number ends the address: not the first digits of a postcode ('7501', '1000 Bruxelles' on the next line)
     ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET}){_SPACE}+(?:(?i:de la|du|des|de l'|de|d'){_SPACE}*)?"
-                                  rf"{_STREET_NAME},?{_SPACE}+{_NR}(?!\d)(?!{_SPACE}+[A-ZÀ-Þ][A-Za-zÀ-ÿ]{{2,}})"), None),
+                                  rf"{_STREET_NAME},?{_SPACE}+{_NR}(?!\d)(?![ 	]+[A-ZÀ-Þ][A-Za-zÀ-ÿ]{{2,}})"), None),
+    # an address after its label, to the end of the line: 'Rue : 04 Library place', 'Adresse : 12 bis rue ...'
+    ("STREET_ADDRESS", re.compile(r"(?<!\w)(?i:rue|adresse|address|adres|straat|street)\s*:\s*"
+                                  r"(\d{1,4}[^\n:]*?|[A-ZÀ-Þ][^\n:]*?)(?=\s{3,}|\s*\n|\Z)"), _v_street_label),
+    # an English address written number first: '04 Library place', '12 Main Street'
+    ("STREET_ADDRESS", re.compile(r"(?<![\w/])\d{1,4}[ ]+[A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]+(?:[ ][A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]+){0,2}"
+                                  r"[ ]+(?i:street|road|lane|place|avenue|drive|way|close)\b"), None),
     # Belgian-style postcode + city: "9000 Gent", "B-1000 Bruxelles"
     ("POSTAL_CITY", re.compile(rf"(?<![\w/.\-])(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?[1-9]\d{{3,4}}[ ]+"
                                rf"(?:{_CAP}[A-ZÀ-Þ'’\-]{{2,}}|{_CAP}[a-zà-ÿ'’]+)(?:-{_CAP}?[a-zà-ÿ'’]+)*"
@@ -247,7 +278,8 @@ DETECTORS = [
     ("BANK_CODE", re.compile(r"(?i:code\s+banque(?:\s*/\s*(?:code\s+)?guichet)?|code\s+guichet|banque\s*/\s*guichet|"
                              r"cl[ée]\s+rib|bank\s*code|sort\s*code|bankcode)\s*[:\-]?\s*"
                              r"(\d{2,}(?:[ ]?/[ ]?\d{2,}|[ ]\d{2,})*)(?![\w,])"), _v_labeled),
-    ("ACCOUNT_NUMBER", re.compile(r"(?i:num[ée]ro\s+de\s+compte|n[°o]\s*de\s+compte|compte\s+n[°o]|account\s+n(?:umber|o\.?)|"
+    ("ACCOUNT_NUMBER", re.compile(r"(?i:num[ée]ro\s+(?:(?:de|du)\s+)?compte|n[°o]\s*(?:de|du)\s+compte|compte\s+n[°o]|"
+                                  r"account\s+n(?:umber|o\.?)|"
                                   r"rekeningnummer|rekening\s+nr\.?|num[ée]ro\s+client|n[°o]\s+client|klantnummer)"
                                   r"\s*[:\-]?\s*(\d+(?:[ ./\-]\d+){0,5})(?![\w,])"), _v_account_labeled),
     # insurance policy / contract / file number after its label: 'police 45.118.902', 'contrat n° 2024-118'
@@ -261,11 +293,19 @@ DETECTORS = [
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w'’.,])\d{2}(?:['’](?:\d{3}|\*{3})){3,}(?![\w'’]|[.,]\d)"), None),
     # Person names (heuristics; the config review step is where you confirm them)
     ("PERSON", re.compile(rf"(?<!\w){_HONORIFIC}[ ]+({_CAP}{_WORD}+(?:[ ]{_CAP}{_WORD}+){{0,2}})"), _v_group1),
-    ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_CAP}[a-z\u00e0-\u00ff'\u2019\-]+(?:[ ]{_CAP}[a-z\u00e0-\u00ff'\u2019\-]+)?[ ]+{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+)(?!\w)"), _v_group1),  # Prenom NOM
+    # 'Pr\u00e9nom NOM': up to two middle names ('Merve Chantal Ga\u00eblle REYES'), a surname that may be cut ('REY', 'RE')
+    ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_CAP}[a-z\u00e0-\u00ff'\u2019\-]+(?:[ ]{_CAP}[a-z\u00e0-\u00ff'\u2019\-]+){{0,2}}"
+                          rf"[ ]+{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]*)(?!\w)"), _v_group1),  # Prenom NOM
     ("PERSON", re.compile(rf"(?<!\w)({_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+[ ]+{_CAP}[a-z\u00e0-\u00ff'\u2019\-]+)(?!\w)"), _v_group1),  # NOM Prenom
+    # capitals only: 'REYES MERVE'. Kept only when a word is a known name (see engine.scan_folder)
+    ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+(?:[ ]{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+){{1,2}})(?!\w)"),
+     _v_group1),
+    # an identifier written alone, letters and digits: 'BT187536HE8O43' (lowest priority: other detectors win)
+    ("CONTRACT_REF", re.compile(r"(?<![\w/])[A-Z][A-Z0-9]{9,23}(?![\w])"), _v_mixed_id),
 ]
 # ranks of the PERSON heuristics, in order: honorific (M. Dupont), 'Prenom NOM', 'NOM Prenom'
 PERSON_RANKS = [i for i, (t, _, _) in enumerate(DETECTORS) if t == "PERSON"]
+CAPS_NAME_RANK = PERSON_RANKS[-1]     # the capitals-only pattern, the last PERSON heuristic (see detect_structured)
 STRUCTURED_TYPES = list(dict.fromkeys(t for t, _, _ in DETECTORS))
 
 
@@ -278,7 +318,10 @@ def detect_structured(text: str, types: set[str] | None = None) -> list[Match]:
             span = validator(m) if validator else (m.start(), m.end())
             if span:
                 out.append(Match(span[0], span[1], typ, text[span[0]:span[1]], rank=rank))
-    return out
+    # a run of capitals is a name only if no other value sits in it: 'BIC BNPAFRPP' keeps its BIC
+    others = [m for m in out if m.rank != CAPS_NAME_RANK]
+    return [m for m in out if m.rank != CAPS_NAME_RANK
+            or not any(o.start < m.end and m.start < o.end for o in others)]
 
 
 # --------------------------------------------------------------------------
@@ -507,8 +550,9 @@ def digital_words(page) -> list[dict]:
 
 
 # typographic dashes / minus signs -> '-' (one character for one, so spans stay valid). PDFs often use them
-# inside numbers ('85.07.30‐142.16'), which would otherwise hide the value from every detector.
-_DASHES = str.maketrans({c: "-" for c in "‐‑‒–—―−﹣－"})
+# inside numbers ('85.07.30‐142.16'), which would otherwise hide the value from every detector. The soft hyphen
+# (U+00AD) is read for the hyphen of some fonts ('CH-1206' in a subset Arial): it is a '-' too.
+_DASHES = str.maketrans({c: "-" for c in "‐‑‒–—―−﹣－­"})
 
 
 def words_to_text(words: list[dict]):
