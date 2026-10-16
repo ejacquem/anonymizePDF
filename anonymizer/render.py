@@ -205,6 +205,128 @@ def _document_chars(doc) -> dict[str, set[str]]:
     return chars
 
 
+def glyphs(page) -> list[dict]:
+    """Every visible-or-not character of the page with its box, origin, font style and colour (read from rawdict).
+    Read BEFORE a redaction: a redaction removes the characters whose box touches it, the ones of the value and the
+    neighbours alike, and `restore_collateral` needs to know what was there."""
+    xref_of: dict = {}
+    for xref, _ext, _typ, basefont, _name, _enc in page.get_fonts():
+        xref_of.setdefault(_clean_font_name(basefont), xref)
+    out = []
+    for n, line in enumerate(b for block in page.get_text("rawdict")["blocks"] for b in block.get("lines", [])):
+        d = tuple(line.get("dir", (1, 0)))
+        for sp in line["spans"]:
+            name = _clean_font_name(sp["font"])
+            style = {"font": name, "flags": sp["flags"], "xref": xref_of.get(name), "size": sp["size"],
+                     "color": sp["color"], "baseline": sp["origin"][1], "dir": d}
+            for c in sp.get("chars", []):
+                if c["c"].isspace():
+                    continue
+                out.append({"c": c["c"], "bbox": tuple(c["bbox"]), "origin": tuple(c["origin"]), "dir": d,
+                            "size": sp["size"], "color": sp["color"], "style": style, "line": n})
+    return out
+
+
+def exact_box(glyph_list: list[dict], value: str, box):
+    """The box of `value` as its own characters draw it, on one line (read from `glyphs` before the redaction): the
+    union of the boxes of its glyphs, narrowed by a fraction of a point on each side so that the glyphs next to it,
+    whose boxes only touch, are not taken. None when the value is not found on one line next to `box`."""
+    from .pii import _DASHES
+    target = "".join(value.split()).translate(_DASHES)
+    if not target:
+        return None
+    bx = fitz.Rect(box)
+    lines: dict = {}
+    for g in glyph_list:
+        lines.setdefault(g["line"], []).append(g)
+    for chars in lines.values():
+        text = "".join(g["c"] for g in chars).translate(_DASHES)
+        i = text.find(target)
+        while i >= 0:
+            seg = chars[i:i + len(target)]
+            if fitz.Rect(seg[0]["bbox"]).intersects(bx) or fitz.Rect(seg[-1]["bbox"]).intersects(bx):
+                x0 = min(g["bbox"][0] for g in seg) + 0.3
+                x1 = max(g["bbox"][2] for g in seg) - 0.3
+                return (x0, min(g["bbox"][1] for g in seg), x1, max(g["bbox"][3] for g in seg))
+            i = text.find(target, i + 1)
+    return None
+
+
+def _glyph_key(g: dict) -> tuple:
+    return (round(g["origin"][0]), round(g["origin"][1]), g["c"])
+
+
+def _present(after: dict, g: dict) -> bool:
+    """Is the glyph still on the page? Origins are compared with a tolerance of a point, over the neighbouring cells of
+    the index (a glyph can fall on either side of a cell border)."""
+    x, y = g["origin"]
+    bx, by = round(x), round(y)
+    return any(abs(ox - x) < 0.6 and abs(oy - y) < 0.6 and c == g["c"]
+               for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+               for ox, oy, c in after.get((bx + dx, by + dy), []))
+
+
+def _index(glyph_list: list[dict]) -> dict:
+    idx: dict = {}
+    for g in glyph_list:
+        ox, oy = g["origin"]
+        idx.setdefault((round(ox), round(oy)), []).append((ox, oy, g["c"]))
+    return idx
+
+
+def _restore_font(fonts: "FontBook", style: dict, ch: str):
+    """The font to write a glyph again with: its embedded font when that font draws the glyph, else the standard symbol
+    font for a symbol font (a checkbox written in ZapfDingbats, a Symbol character), else the usual choice."""
+    emb = fonts._embedded(style["xref"]) if style.get("xref") else None
+    if emb is not None and emb.has_glyph(ord(ch)) and ch in fonts.chars.get(style["font"], set()):
+        return emb
+    name = style["font"].lower()
+    if "dingbat" in name:
+        return fitz.Font("zadb")
+    if "symbol" in name:
+        return fitz.Font("symb")
+    return fonts.font_for(style, ch)
+
+
+def restore_collateral(page, before: list[dict], intended: list, fonts: "FontBook", invisible: dict) -> list[dict]:
+    """After a redaction: the characters it removed are listed (the debug trace), and those that are NOT inside an
+    intended area are written again, at their origin, with their own font, size, colour and direction. A character is
+    'intended' when its centre lies in the box of the value (`intended`). Invisible characters (the OCR layer of a scan)
+    are never written again: they were not visible. Returns one note per kind of loss: the value's characters together
+    (matched), and each neighbouring character (restored, or not restorable)."""
+    from .pii import is_invisible_word
+    after = _index(glyphs(page))
+    notes, matched = [], []
+    for g in before:
+        if _present(after, g):
+            continue
+        cx, cy = (g["bbox"][0] + g["bbox"][2]) / 2, (g["bbox"][1] + g["bbox"][3]) / 2
+        if any(r[0] <= cx <= r[2] and r[1] <= cy <= r[3] for r in intended):
+            matched.append(g)
+            continue
+        if is_invisible_word(g["bbox"], invisible):
+            continue                                   # invisible text: nothing was visible, nothing to write back
+        dx, dy = g["dir"]
+        origin = fitz.Point(*g["origin"])
+        font = _restore_font(fonts, g["style"], g["c"])
+        col = g["color"]
+        color = (((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255)
+        tw = fitz.TextWriter(page.rect, color=color)
+        tw.append((origin.x, origin.y), g["c"], font=font, fontsize=g["size"])
+        if abs(dy) < 1e-3 and dx > 0:
+            tw.write_text(page)
+        else:
+            tw.write_text(page, morph=(origin, fitz.Matrix(dx, -dy, dy, dx, 0, 0)))
+        notes.append({"box": g["bbox"], "text": g["c"], "kind": "glyph restored (taken by a neighbouring redaction)"})
+    if matched:
+        x0 = min(g["bbox"][0] for g in matched)
+        y0 = min(g["bbox"][1] for g in matched)
+        x1 = max(g["bbox"][2] for g in matched)
+        y1 = max(g["bbox"][3] for g in matched)
+        notes.insert(0, {"box": (x0, y0, x1, y1), "text": "".join(g["c"] for g in matched), "kind": "glyphs removed (value)"})
+    return notes
+
+
 def page_spans(page) -> list[dict]:
     """Text spans of the page with their font/size/colour/baseline. Call it BEFORE applying redactions."""
     fonts = {}

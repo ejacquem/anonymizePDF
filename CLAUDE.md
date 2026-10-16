@@ -117,6 +117,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   hover for the rule, the value and its replacement. It reads the report's `trace` (`_note` in engine.py: kinds
   'match' / 'invisible match' / 'turned match' (replaced or removed), 'pixel match', 'scan match', 'black box (...)',
   'MRZ zone erased ...'). Reports made before this feature have no trace: anonymize the file again.
+- Trace also lists the glyphs each redaction removed: 'glyphs removed (value)' (the characters of the values) and
+  'glyph restored (taken by a neighbouring redaction)' (characters next to a value that the redaction took and that
+  were written again). Black boxes and pixel redactions do the same. Invisible characters are never written again.
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Anonymize file** (either file of the pair; the
   report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).
@@ -330,7 +333,11 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   colour, baseline; may extend up to +35 % into free space (`free_right`), else shrunk. `digital_fill: none` keeps
   the page background (redaction with `fill=False`). A value on several lines gets its replacement cut across the same
   lines (`engine._cut_lines`, digital and scan), each line with its own baseline.
-  A digital line that is not horizontal (vertical, skewed: its span `dir` is not (1, 0)) is handled as a whole:
+  A value on one horizontal line is redacted and placed at its own glyphs (`render.exact_box`: the union of the glyph
+  boxes of the value, narrowed by 0.3 pt so that the neighbours which only touch are not taken), not at the word box
+  cut in proportion to the characters (wrong for proportional fonts and spaced text). Whatever a redaction still takes
+  beside a value is written again (`render.glyphs` before, `restore_collateral` after, for the digital matches, the
+  black boxes and the pixel pass). A digital line that is not horizontal (vertical, skewed: its span `dir` is not (1, 0)) is handled as a whole:
   `render.rotated_extent` reads the exact glyph positions of the value from the characters (a word box of a slanted
   word overlaps its neighbours), `rotated_quad` is the area redacted, `insert_rotated` writes the replacement on the
   baseline, turned with the line (`morph` matrix (dx, -dy, dy, dx): PyMuPDF's y axis points down). PyMuPDF removes the

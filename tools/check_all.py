@@ -584,6 +584,47 @@ def rotated_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def text_loss_tests():
+    """A value's redaction takes the glyphs that touch its box: the text next to the value is written again (the
+    'COURANT N' and 'en euros' lost on a real statement), and a symbol font glyph beside a value stays a symbol."""
+    print("\n== text next to a redacted value")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_loss_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((60, 100), "COMPTE COURANT N°00012345678 en euros (GD)", fontname="helv", fontsize=10)
+        page.insert_text((60, 120), "CCM PARIS 8 EUROPE", fontname="helv", fontsize=10)
+        page.insert_text((60, 140), "CREDIT MUTUEL PARIS 8 EUROPE. Société", fontname="helv", fontsize=10)
+        page.insert_text((60, 160), "n", fontname="zadb", fontsize=10)                   # a box symbol (ZapfDingbats)
+        page.insert_text((70, 160), "Date : 14/03/2025", fontname="helv", fontsize=10)
+        doc.save(tmp / "lignes.pdf", garbage=4)
+        cfg = "\n".join([
+            'ocr_lang: "fra+eng"', "case_sensitive: false", "match_case: true",
+            "style: {mode: replace, digital_fill: none}",
+            "blackout: {photos: false, photos_only_on_id_documents: false, signatures: false, qr_codes: false}",
+            "mrz: regenerate", "replacements:",
+            '  - {find: "00012345678", replace: "0011419306", type: ACCOUNT_NUMBER}',
+            '  - {find: "PARIS", replace: "NÎMES", type: LOCATION}',
+            '  - {find: "14/03/2025", replace: "02/05/2026", type: DATE}',
+            "regex: []"])
+        rep_out = engine.run_anonymize(tmp, "lignes", cfg, "fra+eng", False, lambda m: None)
+        out = fitz.open(tmp / "lignes_anonymized.pdf")[0]
+        text = out.get_text().replace(" ", " ")
+        check("the words beside a redacted number stay: 'COURANT N' and 'en euros (GD)'",
+              "COURANT N°" in text and "en euros (GD)" in text, repr(text[:120]))
+        check("the words beside a redacted town stay: 'CCM' and '8 EUROPE' (both lines)",
+              text.count("CCM") == 1 and text.count("8 EUROPE") == 2, repr(text[:200]))
+        check("'Société' is not cut", "Société" in text, repr(text[:200]))
+        symbols = [c["c"] for b in out.get_text("rawdict")["blocks"] for l in b.get("lines", []) for sp in l["spans"]
+                   if "Dingbat" in sp["font"] for c in sp.get("chars", [])]
+        check("the box symbol next to the date is still there", symbols == ["n"], repr(symbols))
+        check("the removed glyphs are in the trace (value and neighbours)",
+              any(t["kind"].startswith("glyphs removed") for t in rep_out["files"][0]["trace"]),
+              repr(rep_out["files"][0]["trace"])[:200])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def names_tests():
     """Names of several words in the forms a folder writes them in: the full name under a title (up to five words),
     the cut forms (a cut word gets the cut replacement of the full word), the first names of the middle, the
@@ -650,7 +691,10 @@ def invisible_copy_tests():
         check("the replacement is written once", text.count("ZELLIES") == 1, repr(text[:80]))
         trace = rep["files"][0].get("trace", [])
         check("the debug trace lists each redacted area with its rule",
-              len(trace) == 2 and all(t["kind"] and t["box"] for t in trace), repr(trace)[:200])
+              any(t["kind"].startswith("match") for t in trace)
+              and any(t["kind"].startswith("invisible match") for t in trace)
+              and any(t["kind"].startswith("glyphs removed") for t in trace)
+              and all(t["kind"] and t["box"] for t in trace), repr(trace)[:200])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -787,6 +831,7 @@ def main():
         detector_tests()
         reported_cases_tests()
         invisible_copy_tests()
+        text_loss_tests()
         names_tests()
         rotated_tests()
         town_tests()

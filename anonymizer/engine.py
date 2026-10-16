@@ -835,9 +835,13 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         if plan:
             _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, extras)
         if lay["pixels"]:
-            _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, [r for _, r in black], log)
+            _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, [r for _, r in black], log, fonts)
         if black:
+            before_black = render.glyphs(page)
+            hidden_black = invisible_chars(page)
             render.black_out_digital(page, [r for _, r in black])
+            for n in render.restore_collateral(page, before_black, [tuple(r) for _, r in black], fonts, hidden_black):
+                _note(extras, pno, n["box"], n["kind"], n["text"])
             extras["blackouts"] += [{"page": pno, "kind": k, "box": [round(v, 1) for v in r]} for k, r in black]
             for k, r in black:
                 _note(extras, pno, r, f"black box ({k})")
@@ -862,7 +866,16 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
     OCR layer) is removed without writing a fake on top: the pixel pass handles what is visible. Its redaction may
     also take the drawn text it overlaps; a drawn match always gets its replacement."""
     spans = render.page_spans(page)            # read fonts before the text is removed
+    before = render.glyphs(page)               # every character, to tell what the redactions take besides the values
+    hidden_chars = invisible_chars(page)
     styles = [render.style_at(spans, boxes[0]) for _, boxes in plan]
+    # a value on one horizontal line is redacted and placed at its own glyphs (its box is an approximation: a word box
+    # cut in proportion to the characters is wrong for proportional fonts and for spaced text)
+    exact = []
+    for (m, boxes), style in zip(plan, styles):
+        ex = render.exact_box(before, m.value, boxes[0]) if len(boxes) == 1 and style and             render._is_horizontal(style["dir"]) else None
+        exact.append([ex] if ex else boxes)
+    plan = [(m, bx) for (m, _), bx in zip(plan, exact)]
     limits = [render.free_right(words, boxes[0], page.rect.width) for _, boxes in plan]
     # a line that is not horizontal: the removed glyphs are taken from the characters (a word box of a slanted word
     # overlaps its neighbours), and the replacement is turned with the line
@@ -874,15 +887,19 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
     # (keyed by the origin of the line: the indices are only unique inside one line)
     taken_chars = {(ext["origin"], i) for ext in turned if ext for i in range(ext["first"], ext["last"] + 1)}
     quads = {}
+    intended: list = []                                   # the boxes of the values: what a redaction is meant to take
     for (m, boxes), ext in zip(plan, turned):
         m.replacement = _adjust(cfg, m)
-        kind = ("invisible match" if m.invisible else "turned match" if ext else "match") +             (" (replaced)" if m.replacement and not blackbox and not m.invisible else " (removed)")
+        kind = ("invisible match" if m.invisible else "turned match" if ext else "match")
+        kind += " (replaced)" if m.replacement and not blackbox and not m.invisible else " (removed)"
         if ext:
             quads[id(ext)] = render.rotated_quad(ext)
+            intended.append(tuple(quads[id(ext)].rect))
             page.add_redact_annot(quads[id(ext)], fill=False if m.invisible else fill)
             _note(extras, pno, quads[id(ext)].rect, kind, m.value, m.replacement)
         else:
             for b in boxes:
+                intended.append(tuple(b))
                 page.add_redact_annot(fitz.Rect(b), fill=False if m.invisible else fill)
                 _note(extras, pno, b, kind, m.value, m.replacement)
         records.append({"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes),
@@ -890,6 +907,9 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
     neighbours = [render.neighbour_glyphs(ext, quads[id(ext)], taken_chars) if ext and not m.invisible else []
                   for (m, _), ext in zip(plan, turned)]
     render.apply_redactions(page)
+    # the redactions also took the glyphs next to the values (their boxes touch): they are written again
+    for n in render.restore_collateral(page, before, intended, fonts, hidden_chars):
+        _note(extras, pno, n["box"], n["kind"], n["text"])
     for (m, _), style, glyphs in zip(plan, styles, neighbours):
         render.redraw_missing(page, glyphs, style, fonts)
     if not blackbox:
@@ -921,7 +941,7 @@ def _cut_lines(text: str, widths: list[float]) -> list[str]:
     return [text[a:b].strip() for a, b in zip(bounds, bounds[1:])]
 
 
-def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, log):
+def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, log, fonts):
     """Digital page with images: replace what only exists as pixels (OCR minus the visible text layer). The image
     pixels under each value are overwritten (redaction) and the fake is written on top as real text."""
     dpi = 300
@@ -929,6 +949,9 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
     img, words = _pixel_words(page, visible_words(page), ocr_lang, dpi)
     if not words:
         return
+    before = render.glyphs(page)                       # the drawn text, to restore what the redaction takes beside it
+    hidden_chars = invisible_chars(page)
+    intended = []
     blackbox = cfg["style"]["mode"] == "blackbox"
     gray = np.asarray(img.convert("L"))
     mrz = fields.find_mrz(words, gray) if cfg["mrz"] != "keep" else None
@@ -953,6 +976,7 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
             _note(extras, pno, [v * k for v in b], "pixel match (" + ("replaced" if m.replacement and not blackbox
                                                                     else "removed") + ")", m.value, m.replacement)
         todo.append((m, boxes[0], ink))
+        intended += [tuple(v * k for v in b) for b in boxes]
     if zone:
         page.add_redact_annot(fitz.Rect(*(v * k for v in zone)),
                               fill=tuple(c / 255 for c in render.background_color(img, zone)))
@@ -960,6 +984,10 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
     if not todo and not zone:
         return
     page.apply_redactions(images=2, graphics=1, text=0)    # image pixels under the values are overwritten
+    if zone:
+        intended.append(tuple(v * k for v in zone))
+    for n in render.restore_collateral(page, before, intended, fonts, hidden_chars):
+        _note(extras, pno, n["box"], n["kind"].replace("neighbouring redaction", "neighbouring pixel redaction"), n["text"])
     for m, b, ink in todo:
         if blackbox or not m.replacement:
             continue
