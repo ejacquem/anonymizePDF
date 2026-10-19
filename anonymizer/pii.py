@@ -9,6 +9,7 @@ PII detection and text/box helpers. Everything runs locally.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -645,9 +646,31 @@ def words_to_text(words: list[dict]):
     return "".join(parts), spans
 
 
+@lru_cache(maxsize=1)
+def _metric_font():
+    """Arial (or a metric twin) to measure the characters: a colon is narrow, a digit is wide. None when not installed."""
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    for name in ("arial.ttf", "Arial.ttf", "LiberationSans-Regular.ttf"):
+        try:
+            return ImageFont.truetype(name, 100)
+        except OSError:
+            continue
+    return None
+
+
+def _advance(text: str):
+    """Width of a text in the metric font (None when there is no metric font)."""
+    f = _metric_font()
+    return f.getlength(text) if f is not None and text else None
+
+
 def match_boxes(words, spans, ms: int, me: int) -> list[tuple]:
-    """Boxes (one per text line) covering text[ms:me]. Partially covered
-    words are trimmed proportionally to the characters matched."""
+    """Boxes (one per text line) covering text[ms:me]. A word only partly covered is cut where its characters are:
+    by the widths of the characters in Arial (so a colon before a value is not cut into), or, without Arial,
+    in proportion to the number of characters."""
     per_line: dict = {}
     for w, (ws, we) in zip(words, spans):
         if we <= ms or ws >= me:
@@ -657,9 +680,20 @@ def match_boxes(words, spans, ms: int, me: int) -> list[tuple]:
         a, b = max(ms, ws) - ws, min(me, we) - ws
         width = x1 - x0
         cw = width / n  # approx. width of one character
-        # proportional trim; widen by half a char on partially covered sides so no sliver of the match survives
-        left = x0 if a == 0 else max(x0, x0 + cw * a - cw * 0.5)
-        right = x1 if b == n else min(x1, x0 + cw * b + cw * 0.5)
+        left, right = x0, x1
+        if a or b != n:
+            text = w["text"].translate(_DASHES)
+            total = _advance(text)
+            if total:
+                # the widths of the characters before and after the match, in the font's own proportions
+                pre = (_advance(text[:a]) or 0.0) / total
+                post = (_advance(text[b:]) or 0.0) / total
+                left = x0 + width * pre if a else x0
+                right = x1 - width * post if b != n else x1
+            else:
+                # no metric font: proportional trim, widened by half a char on partially covered sides
+                left = x0 if a == 0 else max(x0, x0 + cw * a - cw * 0.5)
+                right = x1 if b == n else min(x1, x0 + cw * b + cw * 0.5)
         box = (left, y0, right, y1)
         if w["line"] in per_line:
             o = per_line[w["line"]]

@@ -1288,6 +1288,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             if abs(angle) >= TILT_MIN:             # a slanted word: written and erased in its own frame
                 changed.append(render.paint_tilted(img, b, angle, m.value, part, ink, is_bold, blackbox))
                 continue
+            b = (render.ink_start(img, b), b[1], b[2], b[3])        # the value starts at its first glyph, not a colon
             box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
             fill = (0, 0, 0) if blackbox else render.background_color(img, box)
             draw.rectangle(box, fill=fill)

@@ -914,6 +914,34 @@ def text_ink(img, box, default=(0, 0, 0)):
     return tuple(int(v) for v in np.median(ink, axis=0)) if len(ink) >= 3 else default
 
 
+def ink_start(img, box) -> float:
+    """Where the value really starts inside a scanned word box: the first glyph of the value. An OCR box can start a few
+    pixels before it, on a colon (':AB123'). A colon covers only part of the height of the text, a letter or a digit
+    covers all of it: the start is the first column whose ink reaches most of the height. Never moves to the left."""
+    x0, y0, x1, y1 = box
+    W, H = img.size
+    xa, xb = max(int(x0), 0), min(int(x1), W)
+    ya, yb = max(int(y0) + 1, 0), min(int(y1) - 1, H)
+    if xb - xa < 4 or yb - ya < 4:
+        return x0
+    paper = sum(background_color(img, box)) / 3.0
+    strip = np.asarray(img.convert("L").crop((xa, ya, xb, yb))).astype(float)
+    dark = np.clip(paper - strip, 0, None)
+    peak = dark.max()
+    if peak < 8:
+        return x0
+    ink = dark >= 0.35 * peak                               # the strokes of the text, not the faint paper
+    rows = np.nonzero(ink.any(axis=1))[0]
+    if not len(rows):
+        return x0
+    text_h = rows[-1] - rows[0] + 1                         # the height of the text in this box
+    column_h = ink.sum(axis=0)                              # how many rows of ink each column has
+    tall = np.nonzero(column_h >= 0.45 * text_h)[0]
+    if not len(tall):
+        return x0
+    return max(x0, xa + tall[0] - 1.0)
+
+
 def background_color(img, box):
     """Median colour of a thin ring around the box = local paper colour."""
     W, H = img.size

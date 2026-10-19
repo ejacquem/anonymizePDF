@@ -390,6 +390,11 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - Typed texts (`render.paint_text_box_pdf`, `paint_text_box`): the box is removed (redaction filled with the paper
   colour, then a rectangle of the same colour for the lines), the text is written with its height filled by the box and
   its width stretched to the box (`morph`, or a mask resized on scans). Scans: `stretch_layout` / `write_text`.
+- Scans, the value's box: a word only partly covered is cut by the Arial widths of its characters (`pii._advance`,
+  `match_boxes`), and the replacement starts at the first glyph of the value (`render.ink_start`: the first column whose ink
+  covers 45 % of the text height, so a colon before the value is not counted). The paint does not widen to the left of
+  the value. Test: `colon_tests` (Dossier Test 16: a good and a poor scan with colons, `colon_truth.json`, compared by the shape
+  of the ink down each colon).
 - Scans: text sized from the ink height of the original (tight OCR boxes), same baseline, ink colour sampled, paper
   colour sampled for the patch. Bold (`BoldMeter`): median horizontal ink run / estimated font size vs the page
   median, bold if > 1.4× (calibrated against Test 1's digital twin). Fails on ID documents (mostly bold text, no
@@ -496,6 +501,8 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
 
 - Scans depend on OCR quality; names are heuristic (review step). Leftover check only knows the config's values; the
   second check (`leak_suspects`) is the net for the rest, and it only reports (warning), it does not replace.
+- Poor copies: a very faint colon can touch the first letter of the value; then a faint fragment of the letter may stay
+  beside the replacement (privacy first: the letter is covered, the colon is not guaranteed).
 - Poor ID copies: the signature (its label is not read) and a ghost portrait are missed (Dossier Test 9). Masked
   postcodes as they appear after manual masking ('7***7 Paris') are not read; the digits must be on the page.
 - Identity by shape can over-redact: a Capitalised word on an identity document is replaced as a name (even a town

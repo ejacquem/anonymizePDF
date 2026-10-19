@@ -115,6 +115,8 @@ KEEP = {
                                                 "Banque Mosane", "Assurance MAIF"]},
 }
 
+# notarial and bank values written right after a colon (':123456789'): good and poor scan (Dossier Test 16)
+SENSITIVE_16 = ["123456789", "0077436639", "AB12345678", "0612345678", "FR7630006000011234567890189", "987654321"]
 # folder -> (sensitive values, {file: (mode, black box kinds, MRZ formats)})
 EXPECT = {
     "Dossier Test 0": (STATEMENT_0, {
@@ -178,6 +180,10 @@ EXPECT = {
         "tableau_labels.pdf": ("digital", [], []),
     }),
     # notarial statement and table full of titles and labels written with capitals (tools/make_test_notary.py)
+    "Dossier Test 16": (SENSITIVE_16, {
+        "colon_scan.pdf": ("scan", [], []),
+        "colon_scan_faible.pdf": ("scan", [], []),
+    }),
     "Dossier Test 15": (SENSITIVE_15, {
         "dossier_notaire.pdf": ("digital", [], []),
         "tableau_comptes.pdf": ("digital", [], []),
@@ -926,6 +932,46 @@ def split_word_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def colon_tests():
+    """A colon right before a value (':123456789') stays on the page when the value is replaced, on a good scan and on a
+    poor copy (Dossier Test 16, tools/make_test_colon.py). colon_truth.json gives the box of every colon: its shape (the
+    ink down the middle of the colon) must be the same in the output as in the original. A replacement written over the
+    colon changes that shape, a colon painted out loses it."""
+    print("\n== colons before a replaced value")
+    src = ROOT / "sample_data" / "Dossier Test 16"
+    if not (src / "colon_truth.json").exists():
+        print("  (no Dossier Test 16: skipped)")
+        return
+    truth = json.loads((src / "colon_truth.json").read_text(encoding="utf-8"))
+    tmp = Path(tempfile.mkdtemp(prefix="anon_colon_"))
+    try:
+        for name in truth:
+            shutil.copy(src / name, tmp / name)
+        cfg = engine.scan_folder(tmp, "colon", None, "fra+eng", lambda m: None)["config"]
+        engine.run_anonymize(tmp, "colon", cfg, "fra+eng", False, lambda m: None)
+
+        def shape(doc, box):
+            x0, y0, x1, y1 = box
+            cx = (x0 + x1) / 2
+            pix = doc[0].get_pixmap(clip=fitz.Rect(cx - 0.6, y0, cx + 0.6, y1), dpi=600, alpha=False)
+            g = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)[:, :, 0].astype(float)
+            return np.clip(np.median(g) - g, 0, None).max(axis=1)
+
+        def same(p, q):
+            if p.std() < 3 and q.std() < 3:
+                return True                       # no colon in the original box: nothing to keep
+            return p.std() > 0 and q.std() > 0 and float(np.corrcoef(p, q)[0, 1]) >= 0.7
+
+        for name, items in truth.items():
+            orig = fitz.open(src / name)
+            out = fitz.open(tmp / (Path(name).stem + "_anonymized.pdf"))
+            for it in items:
+                check(f"{name}: the colon before '{it['label']}' is still on the page",
+                      same(shape(orig, it["box"]), shape(out, it["box"])))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def bank_identifier_tests():
     """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
     European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
@@ -1187,6 +1233,7 @@ def main():
         config_edit_tests()
         review_skip_tests()
         split_word_tests()
+        colon_tests()
         manual_text_tests()
         rotated_tests()
         town_tests()
