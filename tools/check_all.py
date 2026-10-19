@@ -972,6 +972,54 @@ def colon_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def street_name_tests():
+    """A street keeps its kind ('Rue de', 'avenue du') and its number changes, and its NAME always changes: with or
+    without a number, named after a date ('avenue du 11 novembre'), or a name of one word or more. Ordinary sentences
+    give no street, and a street on one line is not swallowed by the number of the line after it."""
+    print("\n== street names change")
+    found = lambda t: [m.value for m in pii.detect_all(t) if m.type == "STREET_ADDRESS"]   # noqa: E731
+    for text in ["Rue de Paris", "rue de la république", "Rue de l'Est", "avenue du 11 novembre", "8 avenue du 11 novembre",
+                 "rue du 8 mai 12", "Rue Victor Hugo", "3 rue de l'Est, 57000 Metz"]:
+        check(f"a street is found: {text!r}", bool(found(text)), repr(found(text)))
+    check("an ordinary sentence gives no street", not found("La rue principale est fermée ce matin"),
+          repr(found("La rue principale est fermée ce matin")))
+    check("a street on one line is kept after a line with a number",
+          "Rue de Paris" in found("Rue de Paris\n3 rue de l'Est, 57000 Metz"), repr(found("Rue de Paris\n3 rue de l'Est")))
+    # the fake: the name changes, the kind of street and the article stay, the number changes
+    secret = b"s" * 32
+    cases = [("12 rue de Paris", "Paris"), ("3 rue de l'Est", "Est"), ("5 rue de la république", "république"),
+             ("8 avenue du 11 novembre", "11 novembre"), ("Rue de Paris", "Paris"), ("rue du 8 mai 12", "8 mai"),
+             ("14 rue de Stade", "Stade"), ("rue de Moulin", "Moulin"), ("avenue du Marché", "Marché")]
+    for value, name in cases:
+        fake = Faker(secret).street(value)
+        def name_words(s):                       # the words of the name: no number, no kind of street, no article
+            s = re.sub(r"^(\d+\s*(?i:bis|ter)?,?\s*)?", "", s)
+            s = re.sub(r"^(?i:rue|avenue|boulevard|place)\s+(?:(?i:de la|du|des|de l'|de|d')\s*)?", "", s)
+            return [_pkey(w) for w in re.findall(r"[^\W\d_][\w'’\-]*", s)]
+        check(f"the fake of {value!r} has another name", name_words(fake) != name_words(value),
+              f"{fake!r}")
+        kind = re.search(r"(?i)\b(rue|avenue|boulevard|place)\b", value).group(1).lower()
+        check(f"the fake of {value!r} keeps the kind of street ({kind})", kind in fake.lower(), repr(fake))
+    # the whole pipeline on a digital page: none of the names is left
+    tmp = Path(tempfile.mkdtemp(prefix="anon_street_"))
+    try:
+        lines = ["Rue de Paris", "3 rue de l'Est, 57000 Metz", "Adresse : 5 rue de la république",
+                 "avenue du 11 novembre", "Siège : 14 Rue de Paris", "Fin du releve"]
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        for i, t in enumerate(lines):
+            page.insert_text((60, 100 + 16 * i), t, fontname="helv", fontsize=10)
+        doc.save(tmp / "rues.pdf", garbage=4)
+        cfg = engine.scan_folder(tmp, "rues", None, "fra+eng", lambda m: None)["config"]
+        engine.run_anonymize(tmp, "rues", cfg, "fra+eng", False, lambda m: None)
+        out = " ".join(fitz.open(tmp / "rues_anonymized.pdf")[0].get_text().split())
+        left = [w for w in ["Paris", "publique", "novembre", "Est"] if re.search(rf"\b{w}\b", out)]
+        check("the names of the streets are not left in the output", not left, repr(out))
+        check("the lines that are not an address stay as they are", "Fin du releve" in out, repr(out))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def bank_identifier_tests():
     """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
     European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
@@ -1234,6 +1282,7 @@ def main():
         review_skip_tests()
         split_word_tests()
         colon_tests()
+        street_name_tests()
         manual_text_tests()
         rotated_tests()
         town_tests()

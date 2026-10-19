@@ -225,6 +225,10 @@ _MONTHS = (
     "janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre|"
     "january|february|march|may|june|july|august"
 )
+# a word of a street name, without the words that follow it in a sentence ('dans la rue de la gare il pleut')
+_NAME_WORD = (r"(?!(?i:et|le|la|les|de|du|des|pour|avec|sur|sous|dans|au|aux|en|par|il|elle|on|ils|elles|nous|vous|est|"
+              r"sont|a|ont|pas|qui|que|se|ne|ou|mais|donc|à|un|une|ce|cet|cette|ces|son|sa|ses|leur|leurs)\b)"
+              r"[^\W\d_][\w'’\-]*")
 _FR_STREET = "rue|avenue|boulevard|chaussée|chaussee|place|allée|allee|impasse|chemin|quai|square|cours|route|passage|villa"
 _NOT_UNIT = r"(?!(?i:appartement|appt|apt|bâtiment|batiment|bât|bat|étage|etage|escalier|bte|bp|résidence|residence)\b)"
 # an address can be written on two lines ('SQUARE' / 'Sophie Wouters 8'), and its name can have small words
@@ -275,6 +279,21 @@ DETECTORS = [
     # on one line: a street name does not run on to the next line ('3 avenue de la Gare' / 'Route de ...')
     ("STREET_ADDRESS", re.compile(rf"(?<![\w/])\d{{1,4}}(?:[ ]?(?i:bis|ter))?,?[ 	]+(?i:{_FR_STREET})[ 	]+"
                                   rf"(?:(?i:de la|du|des|de l'|de|d')[ 	]*)?{_STREET_NAME_LINE}"), None),
+    # a street named after a date: 'avenue du 11 novembre', 'rue du 8 mai 12', '12 rue du 14 juillet' (number before or after)
+    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])\d{{1,4}}(?:[ ]?(?i:bis|ter))?,?[ \t]+(?i:{_FR_STREET})[ \t]+"
+                                  rf"(?:(?i:de la|du|des|de l'|de|d'|le|la)[ \t]*)?"
+                                  rf"(?:\d{{1,2}}(?:er|e)?[ \t]+)?(?i:{_MONTHS})(?![\w])"), None),
+    ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET})[ \t]+(?:(?i:de la|du|des|de l'|de|d'|le|la)[ \t]*)?"
+                                  rf"(?:\d{{1,2}}(?:er|e)?[ \t]+)?(?i:{_MONTHS})(?![\w])[ \t,]+{_NR}(?!\d)"), None),
+    # a street without its number: 'Rue de Paris', 'rue de la république', 'avenue du 11 novembre', 'Rue Victor Hugo'
+    # (the keyword, an article and the name, or a name written in capitals; the name stays on the same line)
+    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])(?i:{_FR_STREET})[ \t]+(?i:de la|du|des|de l'|de|d')[ \t]*"
+                                  rf"{_NAME_WORD}(?:[ \t]+{_NAME_WORD}){{0,2}}(?![\w'’\-])"), None),
+    # a street named after a date, without its number: 'avenue du 11 novembre', 'rue du 8 mai'
+    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])(?i:{_FR_STREET})[ \t]+(?i:de la|du|des|de l'|de|d')[ \t]*"
+                                  rf"(?:\d{{1,2}}(?:er|e)?[ \t]+)?(?i:{_MONTHS})(?![\w])"), None),
+    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])(?i:{_FR_STREET})[ \t]+{_CAP}{_WORD}+(?:[ \t]+{_CAP}{_WORD}+){{0,2}}"
+                                  rf"(?![\w'’\-])"), None),
     # the number ends the address: not the first digits of a postcode ('7501', '1000 Bruxelles' on the next line)
     ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?i:{_FR_STREET}){_SPACE}+(?:(?i:de la|du|des|de l'|de|d'){_SPACE}*)?"
                                   rf"{_STREET_NAME},?{_SPACE}+{_NR}(?!\d)(?![ 	]+[A-ZÀ-Þ][A-Za-zÀ-ÿ]{{2,}})"), None),
@@ -437,9 +456,12 @@ def resolve(matches: list[Match]) -> list[Match]:
     wins (e.g. an e-mail containing a name), unless the longer one is a noisy NER guess.
     Otherwise priority is: source (terms > regex > auto), then rank, then length."""
     def swallowed(m):
+        # a street on two lines ('Rue de Paris' / '3 ...': the number of the next line) does not swallow the street
+        # written on one line: that street is kept
         return any(o is not m and o.start <= m.start and m.end <= o.end
                    and (o.end - o.start) > (m.end - m.start)
                    and not (o.source == 2 and o.rank >= 100)
+                   and not (m.type == "STREET_ADDRESS" and o.type == "STREET_ADDRESS" and "\n" in o.value)
                    for o in matches)
 
     ordered = sorted((m for m in matches if not swallowed(m)),

@@ -69,6 +69,10 @@ Marronniers Vignes Prairies Écoles Jardins Remparts Lavandes Bruyères Pins Orm
 Genêts Mimosas Églantiers Charmes Noyers Orchidées Bleuets Pâquerettes Champs Vergers Bouleaux Saules
 """.split()
 
+# the months, for a street named after a date ('avenue du 11 novembre')
+FR_MONTHS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
+             "octobre", "novembre", "décembre"]
+
 # article + noun, for 'rue de la Station' style names (replaced together so they agree)
 FRENCH_STREET_PHRASES = [
     "des Lilas", "des Tilleuls", "des Chênes", "des Roses", "des Acacias", "du Moulin", "de la Fontaine",
@@ -568,8 +572,37 @@ class Faker:
             return f"{day_like(d)}{er or ''}{s1}{month}{s2}{shift_year(y)}"
         return self.digits(value, rng)
 
+    def _date_street(self, value: str, rng: random.Random):
+        """A street named after a date ('avenue du 11 novembre', 'rue du 8 mai 12', '12 rue du 14 juillet'): the day and
+        the month are both replaced by another day and another month, the street word, the article and the number stay.
+        None when the value is not such a street."""
+        month_rx = r"janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre"
+        m = re.fullmatch(rf"(?P<pre>\d{{1,4}}(?:\s?(?i:bis|ter))?,?\s+)?(?P<kw>(?i:rue|avenue|boulevard|chaussée|chaussee|"
+                         rf"place|allée|allee|impasse|chemin|quai|square|cours|route|passage|villa))(?P<sp>\s+)"
+                         rf"(?P<art>(?i:de la|du|des|de l'|de|d'|le|la)\s*)?"
+                         rf"(?P<day>\d{{1,2}})?(?P<suf>er|e)?(?P<dsp>\s+)?(?P<month>(?i:{month_rx}))"
+                         rf"(?P<post>(?:,?\s+\d.*)?)", value)
+        if not m:
+            return None
+        if m.group("day"):
+            new_day = str(rng.randint(1, 9)) if len(m.group("day")) == 1 else str(rng.randint(10, 28))
+            if new_day == m.group("day"):
+                new_day = str((int(new_day) % 9) + 1)
+            day = f"{new_day}{m.group('suf') or ''}{m.group('dsp') or ' '}"
+        else:
+            day = ""
+        choices = [x for x in FR_MONTHS if _pkey(x) != _pkey(m.group("month"))
+                   and _pkey(x) not in self.reserved]
+        new_month = _style_token(m.group("month"), choices[rng.randrange(len(choices))]) if choices else m.group("month")
+        pre = self.digits(m.group("pre"), rng, keep_leading_zeros=False) if m.group("pre") else ""
+        post = self._address_tail(m.group("post"), rng) if m.group("post") else ""
+        return f"{pre}{m.group('kw')}{m.group('sp')}{m.group('art') or ''}{day}{new_month}{post}"
+
     def street(self, value: str) -> str:
         rng = self.rng("street", value)
+        dated = self._date_street(value, rng)          # 'avenue du 11 novembre' -> another day and month
+        if dated is not None:
+            return dated
         fr_kw = r"rue|avenue|boulevard|chaussée|chaussee|place|allée|allee|impasse|chemin|quai|square|cours|route|passage|villa"
         nl_kw = r"straat|laan|weg|steenweg|dreef|lei|baan|kaai|gracht|dijk|singel|plein|markt|hof|pad|park"
         # French style: [12 ]rue [de la ]Name[ 12]
@@ -584,8 +617,10 @@ class Faker:
                 # 'de la Station' -> 'de la Fontaine' / 'du Moulin': article and noun replaced together,
                 # so they always agree ('de la Jardins' cannot happen)
                 old = art + name
-                phrases = [x for x in FRENCH_STREET_PHRASES if not any(_pkey(w) in self.reserved for w in x.split())]
-                new_name = self._pick(phrases, len(old), rng, {_norm(old)}) or (art + name)
+                # never the same noun back: 'de Stade' is not 'du Stade'; the noun of the document is no choice either
+                phrases = [x for x in FRENCH_STREET_PHRASES if not any(_pkey(w) in self.reserved for w in x.split())
+                           and _pkey(name) not in _pkey(x) and _pkey(x) not in _pkey(name)]
+                new_name = self._pick(phrases, len(old), rng, {_norm(old)}) or (art + self.scramble(name, rng))
                 return f"{pre}{m.group('kw')}{m.group('sp')}{new_name}{post}"
             words = name.split()
             if len(words) == 1:

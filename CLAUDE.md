@@ -267,6 +267,12 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), CARD_NUMBER (masked `6703 **** **** 4471`, any run of stars or X
   `495321XXXXXX7425`, `Carte x4412`), BE_NATIONAL_NUMBER, BE_VAT, VAT_NUMBER (Swiss `CHE-123.456.789`, masks kept, or after a TVA / BTW /
   VAT / MWST label, 8+ digits), BE_STRUCTURED_COMM, SEPA_CREDITOR_ID (checksum, or after a label),
+  STREET_ADDRESS also without its number ('Rue de Paris', 'rue de la république': keyword, article, name of up to 3
+  words, on one line; 'Rue Victor Hugo': capitalised name) and when the street is named after a date ('avenue du 11
+  novembre', 'rue du 8 mai 12', number before or after; `_NAME_WORD` stops a name at the words of a sentence). A street
+  on one line is not swallowed by a two-line address whose number is on the next line (`pii.resolve`). Fakes
+  (`fake.street`): the kind (rue, avenue) and the article stay, the NAME always changes (`_date_street` for dates,
+  the phrase list never gives back the same noun). Test: `street_name_tests`.
   STREET_ADDRESS (a street keyword, a name of up to 3 words in any case, then the number; the address can be written on
   two lines, the number ends it and is never the first digits of a postcode; on one line, a street name does not run
   on to the next line; the address after a label to the end of the line: 'Rue : 04 Library place'; English number
