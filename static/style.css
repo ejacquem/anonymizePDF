@@ -39,6 +39,10 @@ header #btnApp { margin-left: auto; align-self: center; }
 .appmenu[hidden] { display: none; }
 .appmenu-title { font-weight: 600; }
 .appnum { width: 56px; }
+.appmenu input[type=range] { height: 4px; width: 150px; accent-color: var(--accent); }
+.appmenu-sub { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.appmenu-sub select { font: inherit; }
+.appmodels { display: flex; flex-direction: column; gap: 2px; }
 .env { margin-left: auto; font-size: 12px; }
 .env .ok { color: var(--ok); } .env .bad { color: var(--bad); }
 .muted { color: var(--muted); } .small { font-size: 12px; }

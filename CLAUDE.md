@@ -141,7 +141,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   removed boxes is sent with the run, `removed`; the next run detects them again). Moving one adds a `manual_blackouts`
   entry with `origin` and `replaces` (the detected box): that box is skipped on every run.
 - Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format.
-- Header: OCR engine in use and spaCy models.
+- The OCR engine and the names models are chosen in ⚙ Settings (`POST /api/settings`, sent again at each start from
+  localStorage). The top bar shows no OCR or model text. `STATE["spacy_models"]`: None = every installed model, [] = rules only.
+- The Text tool is switched off when an anonymization finishes (`runJob`), not when it starts.
 - App settings (⚙ Settings in the header, kept in localStorage `anonymizePDF.app`): pop-up messages on/off and their
   duration (`notify` / `toast`, top centre, 3 s by default; off = the status line), the border width of the Changes frames
   (`--chg-w`), and the OCR second pass (same value as the OCR check of Config › Settings).

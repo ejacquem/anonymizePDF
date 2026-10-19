@@ -64,18 +64,48 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
-@app.get("/api/info")
-def info():
-    models = []
+def installed_models() -> list[str]:
+    """The spaCy models of the names detection that are installed on this PC."""
     try:
         from spacy.util import is_package
         from anonymizer.pii import _PREFERRED_MODELS
-        models = [m for m in _PREFERRED_MODELS if is_package(m)]
+        return [m for m in _PREFERRED_MODELS if is_package(m)]
     except Exception:  # noqa: BLE001
-        pass
+        return []
+
+
+@app.get("/api/info")
+def info():
+    models = installed_models()
+    win = ocr.windows_languages()
+    engines = [{"id": "tesseract", "label": "Tesseract", "available": ocr.tesseract_available()},
+               {"id": "windows", "label": "Windows OCR" + (" (" + ", ".join(win) + ")" if win else ""),
+                "available": bool(win)}]
     return jsonify({"root": str(STATE["root"]), "ocr": ocr.available(), "ocr_engine": ocr.describe(STATE["ocr_lang"]),
-                    "ocr_lang": STATE["ocr_lang"],
+                    "ocr_lang": STATE["ocr_lang"], "ocr_choice": ocr.choice(), "ocr_engines": engines,
+                    # the names models in use: None = every installed one, [] = none (rules only)
+                    "ner_installed": models, "ner_active": STATE["spacy_models"],
                     "spacy_models": models})
+
+
+@app.post("/api/settings")
+def save_settings():
+    """The choice of the OCR engine and of the names models (kept by the browser, sent again at each start)."""
+    data = request.get_json(force=True)
+    engine_id = data.get("ocr_engine") or "auto"
+    if engine_id not in ocr.ENGINES:
+        return bad("unknown OCR engine")
+    models = data.get("ner_models")
+    if models is not None:
+        installed = installed_models()
+        models = [m for m in models if m in installed]
+    try:
+        ocr.set_engine(engine_id)
+    except ValueError as e:
+        return bad(str(e))
+    STATE["spacy_models"] = models
+    STATE["ner"] = None                    # loaded again with the new choice, on the next scan
+    return info()
 
 
 def build_tree(d: Path) -> dict | None:
@@ -454,6 +484,8 @@ def job_progress(job) -> dict:
 
 
 def get_ner(log):
+    if STATE["spacy_models"] == []:        # the user chose no names model: rules only
+        return []
     if STATE["ner"] is None:
         log("Loading name-detection model (first time only)...")
         STATE["ner"] = load_ner(STATE["spacy_models"], quiet=True)

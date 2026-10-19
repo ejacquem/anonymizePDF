@@ -89,6 +89,11 @@ def available() -> bool:
     return engine() is not None
 
 
+def choice() -> str:
+    """The engine the user asked for: 'auto', 'tesseract' or 'windows'."""
+    return _choice
+
+
 def describe(lang: str = "fra+eng") -> str:
     e = engine()
     if e == "tesseract":

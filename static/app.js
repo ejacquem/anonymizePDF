@@ -50,8 +50,33 @@ function syncAppMenu() {
   $("#appPopup").checked = state.app.popup;
   $("#appPopupSeconds").value = state.app.popupSeconds;
   $("#appChangesWidth").value = state.app.changesWidth;
-  $("#appChangesWidthVal").textContent = state.app.changesWidth + " px";
+  $("#appChangesWidthVal").textContent = state.app.changesWidth.toFixed(1) + " px";
   $("#appOcr").checked = state.ocrVerify;
+  renderEngineChoices();
+}
+
+// the OCR engine and the names models: the available ones are offered, the others are greyed out
+let lastInfo = null;
+function renderEngineChoices() {
+  const info = lastInfo;
+  if (!info) return;
+  const cur = state.app.ocrEngine || info.ocr_choice || "auto";
+  const opts = [["auto", "automatic (Tesseract if installed, else Windows OCR)", true]]
+    .concat(info.ocr_engines.map((e) => [e.id, e.label, e.available]));
+  $("#appOcrEngine").innerHTML = opts.map(([v, l, ok]) =>
+    `<option value="${esc(v)}"${v === cur ? " selected" : ""}${ok ? "" : " disabled"}>${esc(l)}${ok ? "" : " (not installed)"}</option>`).join("");
+  const active = state.app.nerModels === null || state.app.nerModels === undefined ? info.ner_installed : state.app.nerModels;
+  $("#appModels").innerHTML = info.ner_installed.length
+    ? info.ner_installed.map((m) => `<label class="chk"><input type="checkbox" class="appmodel" value="${esc(m)}"${active.includes(m) ? " checked" : ""}> ${esc(m)}</label>`).join("")
+    : `<span class="muted small">No spaCy names model installed: names are found by the rules only.</span>`;
+}
+
+// the choice of the engine and of the models is sent to the server at each start (the server keeps no memory)
+async function pushServerSettings() {
+  const body = { ocr_engine: state.app.ocrEngine || "auto",
+    ner_models: state.app.nerModels === undefined ? null : state.app.nerModels };
+  try { lastInfo = await post("/api/settings", body); } catch (e) { /* keep the server defaults */ }
+  renderEngineChoices();
 }
 $("#btnApp").onclick = () => {
   const menu = $("#appMenu");
@@ -72,11 +97,24 @@ $("#appPopupSeconds").onchange = (e) => {
   saveApp();
 };
 $("#appChangesWidth").oninput = (e) => {
-  state.app.changesWidth = +e.target.value;
-  $("#appChangesWidthVal").textContent = state.app.changesWidth + " px";
+  state.app.changesWidth = Math.round(+e.target.value * 10) / 10;
+  $("#appChangesWidthVal").textContent = state.app.changesWidth.toFixed(1) + " px";
   applyAppSettings();
   saveApp();
 };
+$("#appOcrEngine").onchange = async (e) => {
+  state.app.ocrEngine = e.target.value;
+  saveApp();
+  await pushServerSettings();
+  setStatus("OCR engine: " + (lastInfo.ocr_engine || "none"), lastInfo.ocr ? "ok" : "err");
+};
+document.addEventListener("change", async (e) => {
+  if (!e.target.classList || !e.target.classList.contains("appmodel")) return;
+  const picked = [...document.querySelectorAll(".appmodel:checked")].map((c) => c.value);
+  state.app.nerModels = picked;
+  saveApp();
+  await pushServerSettings();
+});
 $("#appOcr").onchange = (e) => {
   state.ocrVerify = e.target.checked;
   try { localStorage.setItem(OCR_KEY, state.ocrVerify ? "1" : "0"); } catch (err) { /* ignore */ }
@@ -999,7 +1037,6 @@ async function applyBoxes() {
   const cur = currentOriginalNode();
   if (!cur || !state.hasConfig || state.running || !isPending(cur.name)) return;
   if (state.dirty && !(await saveConfig())) return;
-  if (boxes.textTool) setTextTool(false);                  // the applied file is shown as it will be: no text boxes
   const box = viewers.anon.box;
   const scroll = { x: box.scrollLeft, y: box.scrollTop };
   const r = await runJob("anonymize", "/api/anonymize",
@@ -1630,6 +1667,7 @@ async function runJob(kind, url, body, label, opts = {}) {
   if (last) showProgress(last.progress);
   if (last && last.status === "done") setStatus(label + ": done", "ok");
   else setStatus(label + ": failed", "err");
+  if (last && last.status === "done" && /\/api\/(anonymize|batch)$/.test(url) && boxes.textTool) setTextTool(false);   // finished: the text boxes are hidden
   updateToolbar();
   return last;
 }
@@ -1887,11 +1925,9 @@ async function init() {
   try {
     const info = await api("/api/info");
     $("#root").textContent = info.root;
-    $("#env").innerHTML =
-      (info.ocr
-        ? `<span class="ok">OCR: ${esc(info.ocr_engine)}</span> · `
-        : `<span class="bad" title="No OCR engine, scanned PDFs cannot be processed.&#10;Without admin rights: pip install -r requirements.txt (Windows built-in OCR).&#10;Or install the Tesseract program (winget install UB-Mannheim.TesseractOCR).">OCR missing (hover for help)</span> · `) +
-      `<span class="${info.spacy_models.length ? "ok" : "bad"}">names model: ${info.spacy_models.length ? esc(info.spacy_models.join(", ")) : "none (rules only)"}</span>`;
+    $("#env").textContent = "";
+    lastInfo = info;
+    await pushServerSettings();
     await loadTree();
     renderRecap();
     await restoreSession();
