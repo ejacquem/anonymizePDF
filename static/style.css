@@ -100,6 +100,12 @@ main:not(.native) .viewer .pages { cursor: grab; user-select: none; }
 /* black boxes drawn by hand (Anonymized pane) */
 .bbox { position: absolute; background: #000; box-sizing: border-box; cursor: move; z-index: 2; }
 .bbox.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* a typed text: white box with its text stretched inside, outlined in violet */
+.bbox.text { background: #fff; color: #000; outline: 1px solid #6d4fd0; outline-offset: -1px; overflow: hidden;
+  font: 600 12px/1 Arial, Helvetica, sans-serif; white-space: nowrap; display: flex; align-items: center; justify-content: center; }
+.bbox.text.sel { outline: 2px solid var(--accent); }
+.btextinput { position: absolute; z-index: 3; font: 600 12px Arial, Helvetica, sans-serif; color: #000; background: #fff;
+  border: 1px solid #6d4fd0; padding: 0 4px; box-sizing: border-box; }
 .bbox.draft { background: rgba(0, 0, 0, .35); outline: 1px dashed #fff; cursor: crosshair; pointer-events: none; }
 .bhandle { position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px; background: #fff; border: 1px solid #333; box-sizing: border-box; }
 .bhandle.h-nw { left: 0; top: 0; cursor: nwse-resize; } .bhandle.h-se { left: 100%; top: 100%; cursor: nwse-resize; }

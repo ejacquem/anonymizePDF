@@ -683,10 +683,61 @@ def scan_text_layout(original: str, new: str, box, bold: bool = False):
     return font, (x0, y1 - descent), sx
 
 
+def stretch_layout(text: str, box, bold: bool = False):
+    """Scan: font, baseline and horizontal scale so that `text` fills the box (a hand-typed text: the box is the size of
+    the text, the text stretches to it). Height: the ink fills the box, with a small margin."""
+    x0, y0, x1, y1 = box
+    h = max(y1 - y0, 4)
+    pad = max(h * 0.06, 1.0)
+    asc, desc = load_font(100, bold).getmetrics()
+    size = max(int(100 * (h - 2 * pad) / max(asc + desc, 1)), 6)
+    font = load_font(size, bold)
+    asc, _ = font.getmetrics()
+    sx = max(x1 - x0 - 2 * pad, 1) / max(font.getlength(text), 1)
+    return font, (x0 + pad, y0 + pad + asc), sx
+
+
+def paint_text_box(img, box, text: str, bold: bool = False):
+    """Scan: the box is painted with the paper colour around it, then the typed text is written in it, stretched."""
+    x = [int(round(v)) for v in box]
+    ImageDraw.Draw(img).rectangle(x, fill=background_color(img, x))
+    font, xy, sx = stretch_layout(text, box, bold)
+    write_text(img, xy, text, font, (0, 0, 0), sx)
+
+
+def paper_color_pdf(page, box) -> tuple:
+    """Digital: the colour of the page around a box (median of a thin ring), 0..1 per channel."""
+    pix = page.get_pixmap(clip=fitz.Rect(box), dpi=150, alpha=False)
+    a = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)[:, :, :3]
+    if min(a.shape[:2]) < 3:
+        return (1, 1, 1)
+    ring = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]]).reshape(-1, 3)
+    return tuple(float(v) / 255 for v in np.median(ring, axis=0))
+
+
+def paint_text_box_pdf(page, box, text: str):
+    """Digital: what is under the box is removed (its text, its pixels; the lines it crosses are covered by the paper
+    colour), then the typed text is written in the box, stretched to its width and height."""
+    rect = fitz.Rect(box)
+    paper = paper_color_pdf(page, box)
+    page.add_redact_annot(rect, fill=paper)
+    apply_redactions(page)                       # the text (and the pixels) under the box are removed
+    page.draw_rect(rect, color=None, fill=paper, width=0, overlay=True)     # and the lines it crosses too
+    font = fitz.Font("helv")
+    x0, y0, x1, y1 = box
+    pad = max((y1 - y0) * 0.06, 1.0)
+    size = max((y1 - y0 - 2 * pad) / max(font.ascender - font.descender, 0.1), 4)
+    baseline = y0 + pad + font.ascender * size
+    sx = max(x1 - x0 - 2 * pad, 1) / max(font.text_length(text, fontsize=size), 1)
+    tw = fitz.TextWriter(page.rect, color=(0, 0, 0))
+    tw.append((x0 + pad, baseline), text, font=font, fontsize=size)
+    tw.write_text(page, morph=(fitz.Point(x0 + pad, baseline), fitz.Matrix(sx, 0, 0, 1, 0, 0)))
+
+
 def write_text(img, xy, text: str, font, fill, sx: float = 1.0):
     """Paint `text` on a PIL image with its baseline at xy[1] and its left at xy[0]; squeezed sideways by `sx`
     (a text mask, resized, then pasted with the colour)."""
-    if sx >= 0.999:
+    if abs(sx - 1.0) < 0.001:
         ImageDraw.Draw(img).text(xy, text, font=font, anchor="ls", fill=fill)
         return
     pad = max(font.size // 2, 2)

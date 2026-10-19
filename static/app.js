@@ -102,7 +102,7 @@ const viewers = {
 const VIEWERS = ["orig", "anon"];
 let pageObserver = null;
 // black boxes (state, see the section below)
-const boxes = { tool: false, selKey: null, drag: null, preview: null };
+const boxes = { tool: false, textTool: false, selKey: null, drag: null, preview: null };
 const BOXES_OPEN_KEY = "anonymizePDF.boxesOpen";
 // black boxes changed and not applied yet (Apply button), per folder and file: { removed: [{page, kind, box}] } = the
 // automatic boxes the user removed, sent with the next run and never written to the config
@@ -538,6 +538,10 @@ function boxEntries() {
       kind: b.origin || "manual",
       label: b.origin ? `${BOX_KIND_LABEL[b.origin] || b.origin} · edited` : BOX_KIND_LABEL.manual });
   });
+  (man.texts || []).forEach((t, i) => {
+    if (t.file !== name) return;
+    out.push({ key: "t|" + i, type: "text", idx: i, page: t.page, box: t.box, kind: "text", label: "Text", text: t.text });
+  });
   const rep = state.report && (state.report.files || []).find((f) => f.file === name);
   (rep ? rep.blackouts || [] : []).forEach((b) => {
     if (b.kind === "manual") return;
@@ -560,9 +564,11 @@ function drawBoxes() {
       const bx = boxes.preview && boxes.preview.key === e.key ? boxes.preview.box : e.box;
       const d = document.createElement("div");
       const resizing = boxes.drag && boxes.drag.ent && boxes.drag.ent.key === e.key && boxes.drag.mode !== "move";
-      d.className = "bbox" + (e.type === "auto" ? " auto" : "") + (boxes.selKey === e.key ? " sel" : "")
+      d.className = "bbox" + (e.type === "auto" ? " auto" : "") + (e.type === "text" ? " text" : "")
+        + (boxes.selKey === e.key ? " sel" : "")
         + (resizing ? " resizing" : "");                       // see-through while a side or corner is dragged
       d.dataset.bkey = e.key;
+      if (e.type === "text") d.textContent = e.text;
       d.style.left = bx[0] * k + "px";
       d.style.top = bx[1] * k + "px";
       d.style.width = (bx[2] - bx[0]) * k + "px";
@@ -579,7 +585,8 @@ function drawBoxes() {
     });
   });
   $("#btnBox").classList.toggle("on", boxes.tool);
-  v.box.classList.toggle("boxtool", boxes.tool);
+  $("#btnText").classList.toggle("on", boxes.textTool);
+  v.box.classList.toggle("boxtool", boxes.tool || boxes.textTool);
   renderBoxList();
 }
 
@@ -590,7 +597,7 @@ function boxListInner() {
   if (!entries.length) {
     return `<div class="muted small">No black box on ${esc(name)}. Draw one with ▭ Black box, or Anonymize the file to see the automatic ones.</div>`;
   }
-  return entries.map((e) => {
+  return entries.filter((e) => e.type !== "text").map((e) => {
     const w = Math.round(e.box[2] - e.box[0]), h = Math.round(e.box[3] - e.box[1]);
     return `<div class="brow${boxes.selKey === e.key ? " sel" : ""}" data-bkey="${esc(e.key)}" title="Click to select it on the page">
       <span class="btag k-${BOX_KIND_CLASS[e.kind] || "hand"}">${esc(e.label)}</span>
@@ -609,6 +616,33 @@ function boxPanelHtml() {
 function renderBoxList() {
   const el = document.getElementById("boxList");
   if (el) el.innerHTML = boxListInner();
+  const tl = document.getElementById("textList");
+  if (tl) tl.innerHTML = textListInner();
+}
+
+// the texts typed by hand on the selected file: kept in the config (manual_texts), listed below the black boxes
+const TEXTS_OPEN_KEY = "anonymizePDF.textsOpen";
+function textListInner() {
+  const name = currentFileName();
+  if (!name) return `<div class="muted small">Select a file to see its typed texts.</div>`;
+  const rows = boxEntries().filter((e) => e.type === "text");
+  if (!rows.length) {
+    return `<div class="muted small">No typed text on ${esc(name)}. Draw one with ▤ Text, for what the OCR cannot read.</div>`;
+  }
+  return rows.map((e) => {
+    const w = Math.round(e.box[2] - e.box[0]), h = Math.round(e.box[3] - e.box[1]);
+    return `<div class="brow${boxes.selKey === e.key ? " sel" : ""}" data-bkey="${esc(e.key)}" title="Click to select it on the page">
+      <span class="btag k-text">${esc(e.text)}</span>
+      <span class="bname">p.${e.page} · ${w}×${h} pt</span>
+      <button class="mdel" data-bdel="${esc(e.key)}" title="Remove this text">✕</button></div>`;
+  }).join("");
+}
+
+function textPanelHtml() {
+  let open = true;
+  try { open = localStorage.getItem(TEXTS_OPEN_KEY) !== "0"; } catch (e) { /* ignore */ }
+  return `<details class="boxpanel textpanel"${open ? " open" : ""}><summary>Typed texts <span class="muted small">of the selected file</span></summary>
+    <div id="textList">${textListInner()}</div></details>`;
 }
 
 function selectBox(key) {
@@ -618,6 +652,14 @@ function selectBox(key) {
 
 function setBoxTool(on) {
   boxes.tool = on;
+  if (on) boxes.textTool = false;
+  boxes.selKey = null;
+  drawBoxes();
+}
+
+function setTextTool(on) {
+  boxes.textTool = on;
+  if (on) boxes.tool = false;
   boxes.selKey = null;
   drawBoxes();
 }
@@ -672,6 +714,10 @@ function deleteBox(key) {
   const e = boxEntries().find((x) => x.key === key);
   if (!e) return;
   boxes.selKey = null;
+  if (e.type === "text") {
+    state.model.manual.texts.splice(e.idx, 1);
+    return saveBoxes("Typed text removed");
+  }
   if (e.type === "manual") {
     state.model.manual.blackouts.splice(e.idx, 1);
     return saveBoxes("Black box removed");
@@ -681,6 +727,40 @@ function deleteBox(key) {
   drawBoxes();
   updateToolbar();
   setStatus("Automatic black box removed · press Apply to update the anonymized file", "ok");
+}
+
+$("#btnText").onclick = async () => {
+  if (!state.model || $("#btnText").disabled) return;
+  if (!boxes.textTool && state.cfgView !== "table") await switchView("table");
+  setTextTool(!boxes.textTool);
+};
+
+// the text typed in a new box: written over the page when it is validated (Enter, or a click elsewhere); Escape cancels
+function openTextEditor(pageEl, r, onDone) {
+  const k = pageScale();
+  const input = document.createElement("input");
+  input.className = "btextinput";
+  input.placeholder = "Text to write in this box";
+  input.spellcheck = false;
+  Object.assign(input.style, { left: r[0] * k + "px", top: r[1] * k + "px", width: (r[2] - r[0]) * k + "px",
+    height: Math.max((r[3] - r[1]) * k, 24) + "px" });
+  let done = false;
+  const finish = (ok) => {
+    if (done) return;
+    done = true;
+    const value = input.value.trim();
+    input.remove();
+    if (ok && value) onDone(value);
+    else setStatus("Text cancelled", "");
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") finish(true);
+    else if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
+  pageEl.appendChild(input);
+  input.focus();
 }
 
 $("#btnBox").onclick = async () => {
@@ -724,7 +804,8 @@ viewers.anon.list.addEventListener("pointerdown", (e) => {
   if (!pageEl) return;
   const handle = e.target.closest(".bhandle"), box = e.target.closest(".bbox");
   const page = +pageEl.dataset.page;
-  if (box || boxes.tool) {
+  if (e.target.closest(".btextinput")) return;                 // typing in a new text box: no pan, no new box
+  if (box || boxes.tool || boxes.textTool) {
     e.preventDefault();
     e.stopPropagation();                                        // no pan while a box is drawn or edited
     const [x, y] = pagePoint(pageEl, e);
@@ -741,7 +822,7 @@ viewers.anon.list.addEventListener("pointerdown", (e) => {
       const draft = document.createElement("div");
       draft.className = "bbox draft";
       pageEl.appendChild(draft);
-      boxes.drag = { mode: "create", page, pageEl, x0: x, y0: y, draft };
+      boxes.drag = { mode: "create", page, pageEl, x0: x, y0: y, draft, text: boxes.textTool };
     }
   } else if (boxes.selKey) {
     boxes.selKey = null;                                        // a click on the paper: deselect, the pan goes on
@@ -792,6 +873,13 @@ document.addEventListener("pointerup", async () => {
     const r = d.result;
     if (!r || r[2] - r[0] < 2 || r[3] - r[1] < 2) return;
     const b = { file: currentFileName(), page: d.page, box: r.map((v) => Math.round(v * 10) / 10) };
+    if (d.text) {
+      return openTextEditor(d.pageEl, r, (text) => {
+        state.model.manual.texts.push({ file: b.file, page: b.page, box: b.box, text });
+        boxes.selKey = "t|" + (state.model.manual.texts.length - 1);
+        return saveBoxes("Text saved");
+      });
+    }
     state.model.manual.blackouts.push(b);
     boxes.selKey = "m|" + (state.model.manual.blackouts.length - 1);
     return saveBoxes("Black box saved");
@@ -800,6 +888,11 @@ document.addEventListener("pointerup", async () => {
   boxes.preview = null;
   if (!pv || sameBox(pv.box, d.orig)) return drawBoxes();          // a click: only the selection
   const nb = pv.box.map((v) => Math.round(v * 10) / 10);
+  if (d.ent.type === "text") {
+    state.model.manual.texts[d.ent.idx].box = nb;
+    boxes.selKey = d.ent.key;
+    return saveBoxes("Text moved");
+  }
   if (d.ent.type === "manual") {
     state.model.manual.blackouts[d.ent.idx].box = nb;
     boxes.selKey = d.ent.key;
@@ -820,7 +913,8 @@ document.addEventListener("keydown", (e) => {
     return deleteBox(boxes.selKey);
   }
   if (e.key === "Escape") {
-    if (boxes.tool) setBoxTool(false);
+    if (boxes.textTool) setTextTool(false);
+    else if (boxes.tool) setBoxTool(false);
     else if (boxes.selKey) { boxes.selKey = null; drawBoxes(); }
   }
 });
@@ -1014,7 +1108,8 @@ function autoFlag(e) {
 function renderTable() {
   const box = $("#cfgTable");
   const m = state.model;
-  if (m && !m.manual) m.manual = { replacements: [], blackouts: [] };
+  if (m && !m.manual) m.manual = { replacements: [], blackouts: [], texts: [] };
+  if (m && m.manual && !m.manual.texts) m.manual.texts = [];
   if (!m) {
     const node = state.nodes[state.folder];
     box.innerHTML = !node ? "" : hasSubfolders(node) && !node.pdf_count
@@ -1032,7 +1127,8 @@ function renderTable() {
     groups.get(e.type).push(i);
   });
   const types = [...groups.keys()].sort((a, b) => (TYPE_ORDER.indexOf(a) + 1 || 99) - (TYPE_ORDER.indexOf(b) + 1 || 99));
-  let h = settingsHtml(m.settings) + manualHtml(m.manual || { replacements: [], blackouts: [] }) + boxPanelHtml();
+  let h = settingsHtml(m.settings) + manualHtml(m.manual || { replacements: [], blackouts: [] }) + boxPanelHtml()
+    + textPanelHtml();
   const nAct = m.entries.filter((e) => e.active && !e.removed).length;
   const nRem = m.entries.filter((e) => e.removed).length;
   h += `<div class="cfgsum muted small">${nAct} value(s) replaced · ${m.entries.length - nAct - nRem} suggestion(s) not active${nRem ? ` · ${nRem} removed` : ""}
@@ -1235,6 +1331,7 @@ function updateToolbar() {
     ? `Frame the ${changes.replaced.length} replaced field(s) (orange) and the ${changes.removed.length} removed area(s) (purple, dashed) of this file, in both panes`
     : "No replaced field recorded for this file: anonymize it to see them";
   $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig);
+  $("#btnText").disabled = $("#btnBox").disabled;
 }
 
 // ---------- jobs ----------

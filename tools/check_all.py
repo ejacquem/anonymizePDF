@@ -779,6 +779,38 @@ def config_edit_tests():
           active.get("Jean Dupont") == "Zoé Martin" and "Lyon" not in active and "Marc Dubois" not in active)
 
 
+def manual_text_tests():
+    """A text typed by hand over the page: the box is covered (what was under it is removed, a line it crosses is
+    covered by the paper colour) and the text is stretched to the box, on a digital page."""
+    print("\n== text typed by hand")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_text_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((60, 100), "Ancienne valeur oubliee", fontname="helv", fontsize=10)
+        page.draw_line((40, 103), (560, 103), color=(0, 0, 0), width=0.8)           # a line across the text
+        doc.save(tmp / "texte.pdf", garbage=4)
+        box = [56.0, 90.0, 260.0, 110.0]
+        cfg = "\n".join(["ocr_lang: \"fra+eng\"", "case_sensitive: false", "match_case: true",
+                         "style: {mode: replace, digital_fill: none}",
+                         "blackout: {photos: false, photos_only_on_id_documents: false, signatures: false, qr_codes: false}",
+                         "mrz: regenerate", "replacements:", "  - {find: \"Jamais\", replace: \"Jamais\", type: TERM}",
+                         "regex: []", "manual_texts:",
+                         f'  - {{file: "texte.pdf", page: 1, box: [{", ".join(str(v) for v in box)}], text: "Jean Dupont"}}'])
+        engine.run_anonymize(tmp, "texte", cfg, "fra+eng", False, lambda m: None)
+        out = fitz.open(tmp / "texte_anonymized.pdf")[0]
+        text = out.get_text()
+        check("the typed text is written, the text under it is gone",
+              "Jean Dupont" in text and "Ancienne" not in text, repr(text[:80]))
+        ends = [c["bbox"][2] for b in out.get_text("rawdict")["blocks"] for l in b.get("lines", [])
+                for sp in l["spans"] for c in sp["chars"] if c["c"].strip() and c["bbox"][0] >= box[0] - 1
+                and c["bbox"][2] <= box[2] + 30]
+        check("the typed text is stretched to the box width",
+              bool(ends) and abs(max(ends) - box[2]) < 6.0, f"right edge {max(ends) if ends else None} box {box[2]}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def bank_identifier_tests():
     """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
     European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
@@ -1038,6 +1070,7 @@ def main():
         text_overlap_tests()
         bank_identifier_tests()
         config_edit_tests()
+        manual_text_tests()
         rotated_tests()
         town_tests()
         speedup_tests()

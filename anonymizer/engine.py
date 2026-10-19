@@ -282,6 +282,17 @@ def parse_config(text: str) -> dict:
             out["replaces"] = [float(v) for v in item["replaces"]]                    # a moved automatic box:
             out["origin"] = str(item["origin"])                                         # its kind and detected box
         manual_boxes.append(out)
+    texts = []
+    for i, item in enumerate(data.get("manual_texts") or [], start=1):
+        box = item.get("box") if isinstance(item, dict) else None
+        if not isinstance(item, dict) or not item.get("file") or not isinstance(box, list) or len(box) != 4:
+            raise ValueError(f"manual_texts item #{i} must look like: - {{file: \"x.pdf\", page: 1, box: [x0, y0, x1, y1], "
+                             f"text: \"...\"}}")
+        x0, y0, x1, y1 = (float(v) for v in box)
+        if x1 <= x0 or y1 <= y0:
+            raise ValueError(f"manual_texts item #{i}: the box needs x1 > x0 and y1 > y0")
+        texts.append({"file": str(item["file"]), "page": int(item.get("page") or 1), "box": [x0, y0, x1, y1],
+                      "text": "" if item.get("text") is None else str(item["text"])})
     regex = data.get("regex") or []
     for r in regex:
         re.compile(r["pattern"])
@@ -312,6 +323,7 @@ def parse_config(text: str) -> dict:
         "mrz": mrz,
         "match_case": bool(data.get("match_case", True)),
         "manual_blackouts": manual_boxes,
+        "manual_texts": texts,
     }
 
 
@@ -890,6 +902,9 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
             extras["blackouts"] += [{"page": pno, "kind": k, "box": [round(v, 1) for v in r]} for k, r in black]
             for k, r in black:
                 _note(extras, pno, r, f"black box ({k})")
+        for box, text in cfg.get("manual_texts", {}).get(pno, []):       # typed by hand, after the boxes
+            render.paint_text_box_pdf(page, box, text)
+            _note(extras, pno, box, "typed text (manual)", "", text)
     if fonts.used:
         log("   fonts: " + ", ".join(f"{n} {k}" for k, n in sorted(fonts.used.items()))
             + "  (embedded = same font as the PDF, system = same font from this PC, standard = closest PDF font)")
@@ -1236,6 +1251,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     photo_area = [(b[0] - 0.5 * (b[2] - b[0]), b[1] - 0.5 * (b[3] - b[1]), b[2] + 0.5 * (b[2] - b[0]),
                    b[3] + 0.5 * (b[3] - b[1])) for b in found_photos]
     manual = [tuple(v * 300 / 72 for v in b) for b in cfg.get("manual_boxes", {}).get(pno, [])]   # pt -> px
+    typed = [(tuple(v * 300 / 72 for v in b), t) for b, t in cfg.get("manual_texts", {}).get(pno, [])]
     not_ink = ([zone] if zone else []) + codes + photo_area + manual
     signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
     removed = cfg.get("removed_boxes", {}).get(pno, [])     # automatic boxes the user removed: not painted
@@ -1297,6 +1313,8 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     if photos or codes or signs or manual:
         log(f"   page {pno}: blacked out {len(photos)} photo(s), {len(codes)} QR code(s), {len(signs)} signature(s), "
             f"{len(manual)} box(es) drawn by hand")
+    for box, text in typed:                                             # typed by hand: painted over the page
+        render.paint_text_box(img, box, text)
     log(f"   page {pno}/{n_pages} (scan): OCR {len(words)} words, {len(plan)} replacement(s)"
         f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
     return img
@@ -1335,6 +1353,15 @@ def _clear_review(folder: Path, name: str):
             f.write_text(json.dumps(reviews, indent=2, ensure_ascii=False), encoding="utf-8")
     except (OSError, ValueError):
         pass
+
+
+def _manual_texts(cfg: dict, name: str) -> dict:
+    """{page: [(box in PDF points, text)]} of the texts typed by hand on one file."""
+    out: dict = {}
+    for t in cfg.get("manual_texts") or []:
+        if t["file"] == name and t["text"].strip():
+            out.setdefault(int(t["page"]), []).append((tuple(t["box"]), t["text"].strip()))
+    return out
 
 
 def _manual_boxes(cfg: dict, name: str) -> dict:
@@ -1393,7 +1420,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
     t_all = time.time()
     cfg = parse_config(config_text)
     session = _session_removed(removed)
-    if not cfg["terms"] and not cfg["regex"] and not cfg["manual_blackouts"]:
+    if not cfg["terms"] and not cfg["regex"] and not cfg["manual_blackouts"] and not cfg["manual_texts"]:
         raise ValueError("The config has no active replacement")
     ocr_lang = cfg.get("ocr_lang") or default_ocr_lang
     pdfs = list_sources(folder)
@@ -1424,7 +1451,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 if not ocr.available():
                     raise RuntimeError("scanned pages / images but no OCR engine is available (Tesseract or Windows OCR)")
                 log(f"   OCR engine: {ocr.describe(ocr_lang)}")
-            fcfg = {**cfg, "manual_boxes": _manual_boxes(cfg, pdf.name), "removed_boxes": _removed_boxes(cfg, session, pdf.name)}
+            fcfg = {**cfg, "manual_boxes": _manual_boxes(cfg, pdf.name), "removed_boxes": _removed_boxes(cfg, session, pdf.name),
+                    "manual_texts": _manual_texts(cfg, pdf.name)}
             if mode == "scan":
                 records, extras = _scan_source(pdf, out, fcfg, ocr_lang, log)
             else:

@@ -102,9 +102,12 @@ def to_model(text: str) -> dict:
             e["active"], e["replace"] = False, orig["replace"]
     for e in entries:
         e["flag"] = auto_flag(e)
+    manual_texts = [{"file": str(i["file"]), "page": int(i.get("page") or 1), "box": [float(v) for v in i["box"]],
+                     "text": "" if i.get("text") is None else str(i["text"])}
+                    for i in data.get("manual_texts") or [] if isinstance(i, dict) and i.get("file") and "box" in i]
     return {"settings": s, "entries": entries, "regex": data.get("regex") or [], "extra": extra,
             "folder": _folder_of(text),
-            "manual": {"replacements": manual_repl, "blackouts": manual_boxes}}
+            "manual": {"replacements": manual_repl, "blackouts": manual_boxes, "texts": manual_texts}}
 
 
 def auto_flag(e: dict) -> str:
@@ -123,7 +126,7 @@ def auto_flag(e: dict) -> str:
 
 
 def has_manual(manual: dict | None) -> bool:
-    return bool(manual and (manual.get("replacements") or manual.get("blackouts")))
+    return bool(manual and (manual.get("replacements") or manual.get("blackouts") or manual.get("texts")))
 
 
 def keep_edits(new_text: str, old_text: str) -> str:
@@ -251,6 +254,13 @@ def to_yaml(model: dict, folder: str = "") -> str:
             if b.get("replaces") and b.get("origin"):
                 origin += ", replaces: [" + ", ".join(f"{float(v):.1f}" for v in b["replaces"]) + "]"
             L.append(f"  - {{file: {_q(b['file'])}, page: {int(b['page'])}, box: [{box}]{origin}}}")
+        L.append("")
+    if manual.get("texts"):
+        L += ["# Text typed by hand over the page (a box, the text stretched to it). The paper colour is taken around the box.",
+              "manual_texts:"]
+        for t in manual["texts"]:
+            box = ", ".join(f"{float(v):.1f}" for v in t["box"])
+            L.append(f"  - {{file: {_q(t['file'])}, page: {int(t['page'])}, box: [{box}], text: {_q(t['text'])}}}")
         L.append("")
     regex = model.get("regex") or []
     if regex:
