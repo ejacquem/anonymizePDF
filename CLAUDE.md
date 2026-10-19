@@ -277,7 +277,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   BANK_CODE ("Code banque / guichet", "Clé RIB"), CONTRACT_REF ("police", "contrat", "dossier", "REF" with letters and
   digits, and an identifier written alone 'BT187536HE8O43': lowest priority), DOC_NUMBER,
   BIRTH_PLACE, DATE (`/ . -` or spaces `14 05 1992`), PERSON, NER ORG / LOCATION (always commented out).
-- Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid. A real
+- Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid.
+- A word cut across two lines ('JACQUEM' / 'IN LUCAS') is joined in the page text (`pii._cut_words`, used by
+  `words_to_text`) only when the joined word (6 letters or more, letters only) is written whole elsewhere on the same page
+  ('JACQUEMIN LUCAS'). Without that evidence the lines stay apart. Tests: `split_word_tests`. A real
   PDF used U+2010 inside a national number and hid it from every detector.
 - Split types: groups of ≥ 5 digits of ACCOUNT_NUMBER / BANK_CODE and ≥ 4 digits of masked CARD_NUMBER are also
   separate entries (OCR may drop the stars); digit groups get the same fake everywhere (`Faker.digit_groups`).

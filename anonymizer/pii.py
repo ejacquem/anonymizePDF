@@ -606,15 +606,38 @@ def digital_words(page) -> list[dict]:
 _DASHES = str.maketrans({c: "-" for c in "‐‑‒–—―−﹣－­"})
 
 
+_LETTERS = re.compile(r"[^\W\d_]+")
+
+
+def _cut_words(words: list[dict]) -> set[int]:
+    """Indices i where the word i ends a line and the word i+1 starts the next one, and both are the two pieces of one
+    word that the line break cut: 'JACQUEM' / 'IN' when 'JACQUEMIN' is written whole on the same page. The evidence is
+    needed: without the whole word, the two lines stay apart. Pieces: letters only, 2 or more; the joined word has 6
+    letters or more."""
+    whole = {w["text"].casefold() for w in words if _LETTERS.fullmatch(w["text"]) and len(w["text"]) >= 6}
+    out = set()
+    for i in range(len(words) - 1):
+        a, b = words[i]["text"], words[i + 1]["text"]
+        if words[i]["line"] == words[i + 1]["line"] or len(a) < 2 or len(b) < 2:
+            continue
+        if not (_LETTERS.fullmatch(a) and _LETTERS.fullmatch(b)):
+            continue
+        if (a + b).casefold() in whole:
+            out.add(i)
+    return out
+
+
 def words_to_text(words: list[dict]):
     """Join words into one string (space inside a line, newline between lines)
-    and remember each word's character span. Unicode dashes are written as '-'."""
+    and remember each word's character span. Unicode dashes are written as '-'.
+    A word cut across two lines is written joined (see _cut_words): one word for the detectors."""
+    cut = _cut_words(words)
     parts, spans, pos, prev = [], [], 0, None
-    for w in words:
+    for i, w in enumerate(words):
         if prev is not None:
-            sep = " " if w["line"] == prev else "\n"
+            sep = "" if (i - 1) in cut else (" " if w["line"] == prev else "\n")
             parts.append(sep)
-            pos += 1
+            pos += len(sep)
         parts.append(w["text"].translate(_DASHES))
         spans.append((pos, pos + len(w["text"])))
         pos += len(w["text"])

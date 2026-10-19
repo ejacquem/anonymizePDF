@@ -843,6 +843,89 @@ def review_skip_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def split_word_tests():
+    """A word cut across two lines ('JACQUEM' / 'IN LUCAS') is one word for the detectors when the joined word is written
+    whole elsewhere on the page ('JACQUEMIN LUCAS'). Without that evidence the lines stay apart: no false joins."""
+    print("\n== a word cut across two lines")
+
+    def w(text, line):
+        return {"text": text, "box": (0, 0, 1, 1), "line": line}
+
+    def joined(words):
+        return pii.words_to_text(words)[0]
+
+    L1, L2, L3 = (100, 0), (110, 0), (120, 0)
+    # the example: 'JACQUEM' ends a line, 'IN LUCAS' starts the next; 'JACQUEMIN LUCAS' is written whole on a third line
+    ex = [w("Titulaire", L1), w("JACQUEM", L1), w("IN", L2), w("LUCAS", L2), w("JACQUEMIN", L3), w("LUCAS", L3)]
+    check("a word cut across lines is joined when the whole word is on the page",
+          joined(ex).split("\n")[0] == "Titulaire JACQUEMIN LUCAS", repr(joined(ex)))
+    # no evidence: the two lines stay apart (a false join would hide a line break between two real words)
+    no_ev = [w("Titulaire", L1), w("JACQUEM", L1), w("IN", L2), w("LUCAS", L2)]
+    check("without the whole word on the page, the lines stay apart",
+          joined(no_ev) == "Titulaire JACQUEM\nIN LUCAS", repr(joined(no_ev)))
+    # the joined word must be at least 6 letters: short pairs are common, never joined on a short word
+    short = [w("LA", L1), w("RUE", L2), w("LARUE", L3)]
+    check("a joined word shorter than 6 letters is never joined", joined(short).split("\n")[0] == "LA", repr(joined(short)))
+    # a normal line break between two words is kept, even when the two words are common
+    real = [w("Rue", L1), w("de", L1), w("la", L1), w("Paix", L2), w("PARIS", L3)]
+    check("a normal line break between two words is kept", joined(real).split("\n")[0] == "Rue de la",
+          repr(joined(real)))
+    # pieces with a digit or a punctuation mark are never joined
+    dig = [w("TOTO1", L1), w("ABCDEF", L2), w("ABCDEF", L3)]
+    check("pieces with digits are not joined", joined(dig).split("\n")[0] == "TOTO1", repr(joined(dig)))
+    punct = [w("JACQUEM,", L1), w("IN", L2), w("JACQUEMIN", L3)]
+    check("a piece with punctuation is not joined", joined(punct).split("\n")[0] == "JACQUEM,", repr(joined(punct)))
+    # two words on the same line are never joined
+    same = [w("JACQUEM", L1), w("IN", L1), w("JACQUEMIN", L3)]
+    check("words on one line are not joined", joined(same).split("\n")[0] == "JACQUEM IN", repr(joined(same)))
+    # the spans still give each word its own characters
+    t, spans = pii.words_to_text(ex)
+    check("the spans of the joined words still point at each word",
+          all(t[s:e] == x["text"] for (s, e), x in zip(spans, ex)), repr([t[s:e] for s, e in spans]))
+    # the detectors see the cut name as one candidate, and never 'IN LUCAS' on its own
+    found = [(m.type, m.value) for m in pii.detect_all(joined(ex))]
+    check("the cut name is one candidate: 'JACQUEMIN LUCAS' (not 'IN LUCAS')",
+          ("PERSON", "JACQUEMIN LUCAS") in found and all(v != "IN LUCAS" for _, v in found), repr(found))
+    # the whole pipeline: every place of the name is replaced, the cut ones included
+    tmp = Path(tempfile.mkdtemp(prefix="anon_split_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        for x, y, text in [(60, 100, "Titulaire : JACQUEM"), (60, 112, "IN LUCAS"), (60, 140, "Titulaire : JACQUEMIN LUCAS"),
+                           (60, 170, "Ref : JACQUEM"), (60, 182, "IN LUCAS"), (60, 210, "Fin du releve")]:
+            page.insert_text((x, y), text, fontname="helv", fontsize=10)
+        doc.save(tmp / "coupe.pdf", garbage=4)
+        cfg = engine.scan_folder(tmp, "coupe", None, "fra+eng", lambda m: None)["config"]
+        active = engine.parse_config(cfg)["terms"]
+        check("the cut fragments are not terms of their own ('IN LUCAS', 'JACQUEM')",
+              "IN LUCAS" not in active and "JACQUEM" not in active, repr(sorted(active)))
+        engine.run_anonymize(tmp, "coupe", cfg, "fra+eng", False, lambda m: None)
+        out = fitz.open(tmp / "coupe_anonymized.pdf")[0].get_text()
+        words = set(re.split(r"[^\w]+", out))
+        check("the cut name is replaced in every place: no fragment is left",
+              not words & {"JACQUEM", "JACQUEMIN", "LUCAS", "IN"}, repr(out))
+        surname = active.get("JACQUEMIN", "")
+        check("every place of the name gets the replacement of the full name (3 places)",
+              bool(surname) and " ".join(out.split()).count(surname) == 3, repr(out))
+        check("the lines that are not the name stay as they are", "Fin du releve" in out, repr(out))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    # false positives, in a folder of their own: ordinary wrapped text is not joined and gives no name
+    tmp = Path(tempfile.mkdtemp(prefix="anon_split_faux_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        for x, y, text in [(60, 100, "Compte courant de Paul"), (60, 112, "Dupont and Co"), (60, 140, "Dossier Lyon"),
+                           (60, 152, "Tel 06 12 34 56 78"), (60, 180, "Marche Lyonnais")]:
+            page.insert_text((x, y), text, fontname="helv", fontsize=10)
+        doc.save(tmp / "faux.pdf", garbage=4)
+        cfg = engine.scan_folder(tmp, "faux", None, "fra+eng", lambda m: None)["config"]
+        persons = re.findall(r'^\s*#?\s*- \{find: "([^"]+)", replace: "[^"]*", type: PERSON', cfg, re.M)
+        check("ordinary lines give no name", not persons, repr(persons))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def bank_identifier_tests():
     """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
     European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
@@ -1103,6 +1186,7 @@ def main():
         bank_identifier_tests()
         config_edit_tests()
         review_skip_tests()
+        split_word_tests()
         manual_text_tests()
         rotated_tests()
         town_tests()

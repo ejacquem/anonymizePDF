@@ -559,7 +559,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         # capitals alone are headings and company names ('BANQUE MOSANE'): only suggested with a known name word.
         # A candidate with a stop word or an ordinary word of the documents is no name at all: not suggested either.
         toks = e["value"].split()
-        if e["value"].isupper() or any(is_label_word(t) or _pkey(t) in vocab for t in toks):
+        if e["value"].isupper() or any(is_label_word(t) or is_town_name(t) or _pkey(t) in vocab for t in toks):
             continue
         # one ordinary word is a heading or a label ('Page', 'Bleue'), not a name, unless it is a known first name
         if len(toks) < 2 and _pkey(toks[0]) not in firsts:
