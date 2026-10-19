@@ -575,7 +575,8 @@ function drawBoxes() {
   const entries = boxEntries();
   [...v.list.children].forEach((el, i) => {
     el.querySelectorAll(".bbox").forEach((n) => n.remove());
-    entries.filter((e) => e.page === i + 1).forEach((e) => {
+    // the typed texts are drawn only while the Text tool is on: the anonymized file shows the real result otherwise
+    entries.filter((e) => e.page === i + 1 && (e.type !== "text" || boxes.textTool)).forEach((e) => {
       const bx = boxes.preview && boxes.preview.key === e.key ? boxes.preview.box : e.box;
       const d = document.createElement("div");
       const resizing = boxes.drag && boxes.drag.ent && boxes.drag.ent.key === e.key && boxes.drag.mode !== "move";
@@ -836,6 +837,7 @@ async function applyBoxes() {
   const cur = currentOriginalNode();
   if (!cur || !state.hasConfig || state.running || !isPending(cur.name)) return;
   if (state.dirty && !(await saveConfig())) return;
+  if (boxes.textTool) setTextTool(false);                  // the applied file is shown as it will be: no text boxes
   const box = viewers.anon.box;
   const scroll = { x: box.scrollLeft, y: box.scrollTop };
   const r = await runJob("anonymize", "/api/anonymize",
