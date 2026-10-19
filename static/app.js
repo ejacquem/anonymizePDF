@@ -529,6 +529,19 @@ function sameBox(a, b) {
   return a.length === 4 && b.length === 4 && a.every((v, i) => Math.abs(v - b[i]) < 0.15);
 }
 
+// a typed text is shown as it will be written: its height fills the box, its width is stretched to the box
+// (the same margin and the same font metrics as render.paint_text_box_pdf: Helvetica, ascent + descent = 0.925 em)
+const FIT_PAD = 0.06;
+const fitCtx = document.createElement("canvas").getContext("2d");
+function textFit(text, box, k) {
+  const wPx = (box[2] - box[0]) * k, hPx = (box[3] - box[1]) * k;
+  const pad = Math.max(hPx * FIT_PAD, 1);
+  const size = Math.max((hPx - 2 * pad) / 0.925, 4);
+  fitCtx.font = `${size}px Arial, Helvetica, sans-serif`;
+  const tw = fitCtx.measureText(text || " ").width || 1;
+  return { wPx, hPx, pad, size, sx: Math.max(wPx - 2 * pad, 1) / tw };
+}
+
 // every black box of the selected file: { key, type, idx, page, box, kind, label }
 function boxEntries() {
   const name = currentFileName();
@@ -570,7 +583,21 @@ function drawBoxes() {
         + (boxes.selKey === e.key ? " sel" : "")
         + (resizing ? " resizing" : "");                       // see-through while a side or corner is dragged
       d.dataset.bkey = e.key;
-      if (e.type === "text") d.textContent = e.text;
+      if (e.type === "text") {
+        const f = textFit(e.text, bx, k);
+        const t = document.createElement("span");
+        t.className = "ttext";
+        t.textContent = e.text;
+        Object.assign(t.style, { left: f.pad + "px", lineHeight: f.hPx + "px", fontSize: f.size + "px",
+          transform: `scaleX(${f.sx})` });
+        d.appendChild(t);
+      }
+      const cross = document.createElement("button");
+      cross.className = "bdelx";
+      cross.dataset.bdel = e.key;
+      cross.title = e.type === "text" ? "Remove this text" : "Remove this black box";
+      cross.textContent = "✕";
+      d.appendChild(cross);
       d.style.left = bx[0] * k + "px";
       d.style.top = bx[1] * k + "px";
       d.style.width = (bx[2] - bx[0]) * k + "px";
@@ -748,14 +775,22 @@ $("#btnText").onclick = async () => {
 };
 
 // the text typed in a new box: written over the page when it is validated (Enter, or a click elsewhere); Escape cancels
-function openTextEditor(pageEl, r, onDone) {
+function fitEditor(input, r, k) {
+  const f = textFit(input.value, r, k);
+  Object.assign(input.style, { fontSize: f.size + "px", transform: `scaleX(${f.sx})`,
+    width: f.wPx / f.sx + "px", paddingLeft: f.pad / f.sx + "px" });
+}
+
+function openTextEditor(pageEl, r, onDone, initial = "") {
   const k = pageScale();
   const input = document.createElement("input");
   input.className = "btextinput";
   input.placeholder = "Text to write in this box";
   input.spellcheck = false;
-  Object.assign(input.style, { left: r[0] * k + "px", top: r[1] * k + "px", width: (r[2] - r[0]) * k + "px",
-    height: Math.max((r[3] - r[1]) * k, 24) + "px" });
+  input.value = initial;
+  Object.assign(input.style, { left: r[0] * k + "px", top: r[1] * k + "px", height: (r[3] - r[1]) * k + "px" });
+  fitEditor(input, r, k);
+  input.addEventListener("input", () => fitEditor(input, r, k));
   let done = false;
   const finish = (ok) => {
     if (done) return;
@@ -774,6 +809,20 @@ function openTextEditor(pageEl, r, onDone) {
   pageEl.appendChild(input);
   input.focus();
 }
+
+viewers.anon.list.addEventListener("dblclick", (e) => {
+  const box = e.target.closest(".bbox.text");
+  const pageEl = e.target.closest(".page");
+  if (!box || !pageEl || !state.model) return;
+  const ent = boxEntries().find((x) => x.key === box.dataset.bkey);
+  if (!ent) return;
+  boxes.selKey = ent.key;
+  drawBoxes();
+  openTextEditor(pageEl, ent.box, (text) => {
+    state.model.manual.texts[ent.idx].text = text;
+    return saveBoxes("Text edited");
+  }, ent.text);
+});
 
 $("#btnBox").onclick = async () => {
   if (!state.model || $("#btnBox").disabled) return;
@@ -814,6 +863,8 @@ viewers.anon.list.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || !viewers.anon.pages.length) return;
   const pageEl = e.target.closest(".page");
   if (!pageEl) return;
+  const cross = e.target.closest(".bdelx");
+  if (cross) { e.preventDefault(); e.stopPropagation(); return deleteBox(cross.dataset.bdel); }
   const handle = e.target.closest(".bhandle"), box = e.target.closest(".bbox");
   const page = +pageEl.dataset.page;
   if (e.target.closest(".btextinput")) return;                 // typing in a new text box: no pan, no new box

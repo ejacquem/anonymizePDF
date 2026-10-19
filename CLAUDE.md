@@ -131,7 +131,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Typed texts: **▤ Text** (next to ▭ Black box) draws a box, then a field appears in it: type the text and press Enter
   (Escape cancels). The text is written over the page, stretched to the box, on a white background taken around the box
   (the lines it crosses are covered). Listed in the Config tab under Typed texts (`manual.texts`, `manual_texts:` in the
-  YAML, `engine.parse_config`, `_manual_texts`); Apply regenerates the anonymized file.
+  YAML, `engine.parse_config`, `_manual_texts`); Apply regenerates the anonymized file. A typed text is shown stretched in the
+  viewer and while it is typed (`textFit`, same metrics as the PDF); double-click a typed text to edit it; the ✕ of a box
+  removes it. The text takes the colour of the text under its box.
 - Black boxes list: Config tab, under Manual data, for the selected file. One row per box with its origin tag
   (Hand-drawn / Photo / face / QR code / Signature; "· edited" when an automatic box was moved). Click a row = select
   its box in the viewer (dashed overlay for automatic boxes), click a box = select its row; ✕ or Delete removes it.

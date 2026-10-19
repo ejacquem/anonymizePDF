@@ -101,10 +101,14 @@ main:not(.native) .viewer .pages { cursor: grab; user-select: none; }
 .bbox { position: absolute; background: #000; box-sizing: border-box; cursor: move; z-index: 2; }
 .bbox.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* a typed text: white box with its text stretched inside, outlined in violet */
-.bbox.text { background: #fff; color: #000; outline: 1px solid #6d4fd0; outline-offset: -1px; overflow: hidden;
-  font: 600 12px/1 Arial, Helvetica, sans-serif; white-space: nowrap; display: flex; align-items: center; justify-content: center; }
+.bbox.text { background: #fff; color: #000; outline: 1px solid #6d4fd0; outline-offset: -1px; }
+.bbox .ttext { position: absolute; top: 0; white-space: nowrap; transform-origin: 0 50%; font-family: Arial, Helvetica, sans-serif; }
+/* the cross of a box: shown on the selected or hovered box */
+.bdelx { position: absolute; top: -9px; right: -9px; width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  font-size: 10px; line-height: 16px; text-align: center; display: none; z-index: 4; background: var(--panel, #fff); }
+.bbox:hover .bdelx, .bbox.sel .bdelx { display: block; }
 .bbox.text.sel { outline: 2px solid var(--accent); }
-.btextinput { position: absolute; z-index: 3; font: 600 12px Arial, Helvetica, sans-serif; color: #000; background: #fff;
+.btextinput { position: absolute; z-index: 3; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; transform-origin: 0 50%; padding: 0;
   border: 1px solid #6d4fd0; padding: 0 4px; box-sizing: border-box; }
 .bbox.draft { background: rgba(0, 0, 0, .35); outline: 1px dashed #fff; cursor: crosshair; pointer-events: none; }
 .bhandle { position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px; background: #fff; border: 1px solid #333; box-sizing: border-box; }
