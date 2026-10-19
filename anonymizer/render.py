@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 from . import morph
 from .pii import fitz
@@ -659,10 +659,11 @@ def fit_font(text, max_w, h):
     return load_font(8)
 
 
-def scan_text_layout(original: str, new: str, box, limit_x: float | None = None, bold: bool = False):
-    """Font and baseline position so that `new` looks like `original` did in `box` (unpadded word box):
-    same ink height (the size is measured on the original text, so tight OCR boxes give the right size)
-    and same baseline, in bold if the original was. Shrinks only if `new` would run past `limit_x`."""
+def scan_text_layout(original: str, new: str, box, bold: bool = False):
+    """Font, baseline position and horizontal scale so that `new` looks like `original` did in `box` (unpadded word box):
+    same ink height (the size is measured on the original text, so tight OCR boxes give the right size) and same
+    baseline, in bold if the original was. Never wider than the box: a longer text is squeezed sideways a little
+    (`sx`, see write_text), then written smaller (SIZE_FLOOR), never over the next field."""
     x0, y0, x1, y1 = box
     probe = load_font(100, bold)
     _, top, _, bottom = probe.getbbox(original or new, anchor="ls")   # top < 0 (above baseline)
@@ -671,12 +672,34 @@ def scan_text_layout(original: str, new: str, box, limit_x: float | None = None,
     font = load_font(size, bold)
     descent = max(font.getbbox(original or new, anchor="ls")[3], 0)   # part of the original below the baseline
     avail = max(x1 - x0, 1)
-    if limit_x is not None:
-        avail = max(avail, min(limit_x - x0, avail * 1.35))
-    while size > 6 and font.getlength(new) > avail:
-        size -= 1
+    sx = 1.0
+    width = font.getlength(new)
+    if width > avail:
+        needed = avail / width
+        scale = min(1.0, max(needed / SQUEEZE_FLOOR, SIZE_FLOOR))
+        size = max(int(size * scale), 6)
         font = load_font(size, bold)
-    return font, (x0, y1 - descent)
+        sx = max(min(1.0, avail / max(font.getlength(new), 1)), SQUEEZE_MIN)
+    return font, (x0, y1 - descent), sx
+
+
+def write_text(img, xy, text: str, font, fill, sx: float = 1.0):
+    """Paint `text` on a PIL image with its baseline at xy[1] and its left at xy[0]; squeezed sideways by `sx`
+    (a text mask, resized, then pasted with the colour)."""
+    if sx >= 0.999:
+        ImageDraw.Draw(img).text(xy, text, font=font, anchor="ls", fill=fill)
+        return
+    pad = max(font.size // 2, 2)
+    base = int(font.size * 1.5)
+    w = int(font.getlength(text)) + 2 * pad
+    h = int(font.size * 2)
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).text((pad, base), text, font=font, anchor="ls", fill=255)
+    nw = max(1, int(round(w * sx)))
+    mask = mask.resize((nw, h), Image.BICUBIC)
+    x = int(round(xy[0] - pad * sx))
+    y = int(round(xy[1] - base))
+    img.paste(fill, (x, y, x + nw, y + h), mask)
 
 
 def _mrz_font(char_w: float):
@@ -723,10 +746,11 @@ def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: boo
         d.rectangle(t, fill=paper)
         if new:
             # never wider than the original value: a longer replacement is written smaller, not over the next field
-            font, xy = scan_text_layout(original, new, t, t[2], bold)
-            d.text(xy, new, font=font, anchor="ls", fill=ink)
+            font, xy, sx = scan_text_layout(original, new, t, bold)
+            write_text(turned, xy, new, font, ink, sx)
             l, tp, r, bt = font.getbbox(new, anchor="ls")
-            changed = (min(t[0], xy[0] + l), min(t[1], xy[1] + tp), max(t[2], xy[0] + r), max(t[3], xy[1] + bt))
+            changed = (min(t[0], xy[0] + l * sx), min(t[1], xy[1] + tp), max(t[2], xy[0] + r * sx),
+                       max(t[3], xy[1] + bt))
     mask = Image.new("L", turned.size, 0)
     ImageDraw.Draw(mask).rectangle((changed[0] - 1, changed[1] - 1, changed[2] + 1, changed[3] + 1), fill=255)
     back = turned.rotate(-angle, resample=Image.BICUBIC, center=(cx, cy), fillcolor=paper)

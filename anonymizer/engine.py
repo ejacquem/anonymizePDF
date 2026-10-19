@@ -1247,10 +1247,9 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     covered = photos + codes + signs + manual + ([zone] if zone else [])
     # measure everything before painting (ink colour, free space on the right)
     bold = render.BoldMeter(img, words)
-    looks = [(render.ink_color(img, boxes[0]), render.free_right(words, boxes[0], img.width),
-              bold.is_bold(boxes[0], m.value)) for m, boxes in plan]
-    n_bold = sum(1 for look in looks if look[2])
-    for (m, boxes), (ink, limit, is_bold) in zip(plan, looks):
+    looks = [(render.ink_color(img, boxes[0]), bold.is_bold(boxes[0], m.value)) for m, boxes in plan]
+    n_bold = sum(1 for look in looks if look[1])
+    for (m, boxes), (ink, is_bold) in zip(plan, looks):
         m.replacement = _adjust(cfg, m)
         if _inside(boxes[0], covered):             # under a black box or in the MRZ: handled below
             records.append({"page": pno, "original": m.value, "replacement": m.replacement,
@@ -1273,11 +1272,11 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                   m.value, part)
             changed.append(box)
             if part:
-                font, xy = render.scan_text_layout(m.value, part, b, limit, is_bold)
+                font, xy, sx = render.scan_text_layout(m.value, part, b, is_bold)
                 lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
                 ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
                 color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
-                draw.text(xy, part, font=font, anchor="ls", fill=color)
+                render.write_text(img, xy, part, font, color, sx)
         records.append({"page": pno, "original": m.value, "replacement": m.replacement,
                         "box": _pt_box(changed), "placed": not blackbox and any(parts)})
     if mrz:

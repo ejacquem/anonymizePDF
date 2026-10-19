@@ -358,7 +358,8 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - Scans: text sized from the ink height of the original (tight OCR boxes), same baseline, ink colour sampled, paper
   colour sampled for the patch. Bold (`BoldMeter`): median horizontal ink run / estimated font size vs the page
   median, bold if > 1.4× (calibrated against Test 1's digital twin). Fails on ID documents (mostly bold text, no
-  regular reference). Font: Arial / Arial Bold.
+  regular reference). Font: Arial / Arial Bold. A replacement wider than the OCR box is squeezed sideways (`render.write_text`, mask resized)
+  to 90 % of its width, then written smaller; never over the next field (`scan_text_layout`, same rule as digital).
 - MRZ (`draw_mrz`): OCR-B if installed, else Consolas. The character advance comes from the OCR box of the chevron
   line (`find_mrz`, not from the ink of the page: a card edge next to the MRZ made the text too wide). The old text is
   erased pixel by pixel (`_erase_ink`: dark pixels take the local paper colour), never with a flat rectangle, then the
