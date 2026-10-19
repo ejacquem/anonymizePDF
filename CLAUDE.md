@@ -233,8 +233,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 
 ## 7. Detection (`pii.py`, `fields.py`)
 
-- Types: IBAN (mod-97), BIC (any country code; after its label such as 'BIC/SWIFT', or just after an IBAN: a bare
-  word such as 'MONSIEUR' is no BIC),
+- Types: IBAN (mod-97), BIC (8 or 11 characters with a European country code at 5-6, `pii.bic_plausible`; after its
+  label such as 'BIC/SWIFT', or just after an IBAN: a bare word such as 'MONSIEUR' or 'VIREMENT' is no BIC). A BIC is the
+  bank's public identifier, not the client's: it is a suggestion (commented out), off by default (`engine.ACTIVE_TYPES`),
+  not in the active types. Account numbers after their label may end with a letter ('000012345Y'),
   EMAIL, PHONE (BE/FR/intl), CREDIT_CARD (Luhn), CARD_NUMBER (masked `6703 **** **** 4471`, any run of stars or X
   `495321XXXXXX7425`, `Carte x4412`), BE_NATIONAL_NUMBER, BE_VAT, VAT_NUMBER (Swiss `CHE-123.456.789`, masks kept, or after a TVA / BTW /
   VAT / MWST label, 8+ digits), BE_STRUCTURED_COMM, SEPA_CREDITOR_ID (checksum, or after a label),

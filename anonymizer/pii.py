@@ -139,9 +139,22 @@ _BIC_LABEL = re.compile(r"(?i:\bbic|swift)\b")
 _IBAN_BEFORE = re.compile(r"[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,}")
 
 
+# countries a BIC can carry (characters 5-6): European countries, and the ones a French or Luxembourg statement names
+_BIC_COUNTRIES = set("""AT BE BG CY CZ DE DK EE ES FI FR GR HR HU IE IT LT LU LV MT NL PL PT RO SE SI SK
+CH GB NO IS LI MC AD SM VA GI JE GG IM""".split())
+
+
+def bic_plausible(value: str) -> bool:
+    """8 or 11 letters and digits, with a country code the banks of Europe use: 'VIREMENT', 'CANALSAT', 'FRANCOIS',
+    'BOULOGNE' and 'PRESTATIONS' are capitalised words, not BICs ('ME', 'LS', 'CO', 'OG', 'TI' are no country)."""
+    return len(value) in (8, 11) and value[4:6] in _BIC_COUNTRIES
+
+
 def _v_bic(m):
     """A BIC is a label's value ('BIC : GEBABEBB', 'Code SWIFT ...') or follows an IBAN on the same line. A bare
     8-letter word that starts with a country code ('MONSIEUR': MONS + IE + UR) is no BIC."""
+    if not bic_plausible(m.group()):
+        return None
     before = m.string[max(0, m.start() - 40):m.start()]        # the label may be on the line above (two columns)
     if _BIC_LABEL.search(before) or _IBAN_BEFORE.search(before[-45:]):
         return m.start(), m.end()
@@ -282,7 +295,8 @@ DETECTORS = [
     ("ACCOUNT_NUMBER", re.compile(r"(?i:num[ée]ro\s+(?:(?:de|du)\s+)?compte|n[°o]\s*(?:de|du)\s+compte|compte\s+n[°o]|"
                                   r"account\s+n(?:umber|o\.?)|"
                                   r"rekeningnummer|rekening\s+nr\.?|num[ée]ro\s+client|n[°o]\s+client|klantnummer)"
-                                  r"\s*[:\-]?\s*(\d+(?:[ ./\-]\d+){0,5})(?![\w,])"), _v_account_labeled),
+                                  r"\s*[:\-]?\s*((?=[0-9A-Z]*\d)[0-9A-Z]+(?:[ ./\-][0-9A-Z]+){0,5})(?![\w,])"),
+     _v_account_labeled),          # a letter may follow the digits: '000012345Y' (the group is not case-insensitive)
     # insurance policy / contract / file number after its label: 'police 45.118.902', 'contrat n° 2024-118'
     ("CONTRACT_REF", re.compile(r"(?i:police|polis|n[°o]\s+de\s+police|contrat|n[°o]\s+de\s+contrat|dossier|"
                                 r"contract|policy)(?:\s+n[°o]\.?)?\s*[:\-]?\s*(\d+(?:[ .\-/]\d+){0,5})(?![\w,])"),

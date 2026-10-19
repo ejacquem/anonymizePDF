@@ -40,7 +40,7 @@ SUFFIX = "_anonymized"
 # helpers
 # ---------------------------------------------------------------------------
 
-ACTIVE_TYPES = ["IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "BE_NATIONAL_NUMBER", "BE_VAT",
+ACTIVE_TYPES = ["IBAN", "EMAIL", "PHONE", "CREDIT_CARD", "BE_NATIONAL_NUMBER", "BE_VAT",
                 "BE_STRUCTURED_COMM", "VAT_NUMBER", "STREET_ADDRESS", "POSTAL_CITY", "ACCOUNT_NUMBER", "BANK_CODE",
                 "CARD_NUMBER", "SEPA_CREDITOR_ID", "CONTRACT_REF", "DOC_NUMBER", "BIRTH_PLACE"]
 # their digit groups are also replaced alone (>= 5 digits; >= 4 for the visible ends of a masked card number,
@@ -570,6 +570,9 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                 numbers_added.add(norm_value(grp))
                 active.append({"type": t, "value": grp, "count": 0, "files": set(), "pages": set(),
                                "replace": faker.digit_groups(grp), "note": f"part of '{e['value']}'"})
+        elif t == "BIC":
+            # the bank's own identifier, public (it names the bank, not the client): a suggestion, off by default
+            off.append({**e, "replace": faker.suggest(t, e["value"]), "note": "bank identifier (public): off by default"})
         elif t == "DATE":
             row = {**e, "replace": faker.suggest(t, e["value"]), "note": "date of birth?" if e["birth"] else "date"}
             (active if e["birth"] else off).append(row)

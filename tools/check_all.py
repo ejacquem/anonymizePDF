@@ -48,7 +48,7 @@ from anonymizer.fake import FEMALE_NAMES, LAST_NAMES, MALE_NAMES, Faker, _pkey  
 from anonymizer.pii import digital_words, fitz, load_ner, words_to_text  # noqa: E402
 
 STATEMENT_0 = ["Thomas", "MARCHAND", "Isabelle", "ROUX", "Julien", "Sophie", "DUBOIS", "17/09/1988", "0048213976",
-               "06 12 34 56 78", "04 72 00 11 22", "thomas.marchand", "FR76 3000 2058 7100", "BEXMFRPP", "05871",
+               "06 12 34 56 78", "04 72 00 11 22", "thomas.marchand", "FR76 3000 2058 7100", "05871",
                "00001234567", "30002", "14 rue des Lilas", "45 cours Lafayette", "69003", "x4412"]
 
 # values of the poor ID card copy (Dossier Test 9): the labels are not read, the values are found by their shape
@@ -56,14 +56,14 @@ SENSITIVE_9 = ["MARTINEAU", "Julie", "Anne", "X4RTBPFW4", "03 11 1987", "11 06 2
                "TILLEULS", "35000"]
 # values of the letter (Dossier Test 10): an address on two lines, a town in capitals, a BIC with another country,
 # an account number with a slash
-SENSITIVE_10 = ["Sophie", "Wouters", "75017", "PARIS", "Genève", "1204", "SWEDSESS", "BE68 5390 0754 7034",
+SENSITIVE_10 = ["Sophie", "Wouters", "75017", "PARIS", "Genève", "1204", "BE68 5390 0754 7034",
                 "51/234519", "234519", "Rhône", "contact@lumen-atelier.example"]
 # values of the statement with transfers (Dossier Test 2, invented names): many accounts and cards, names in another order
 # or cut ('BRU', 'MAUREL GAËLLE', 'Noémie Clarisse LEFOL'), addresses (two lines, English, 'bis'), transfer references
 SENSITIVE_2 = ["Ylona", "YLONA", "Océane", "Zaïra", "BRUNEAU", "BRUNE", "MAUREL", "Gaëlle", "GAËLLE", "Clarisse", "LEFOL",
                "Noémie", "Wouters", "Sophie", "Tilleuls", "Victor Hugo", "Library", "Lamartine", "Florissant", "NÎMES",
-               "0048213976", "15878645", "51/234519", "FR76 3000 6000 0112 3456 7890 189", "BNPAFRPP",
-               "BE68 5390 0754 7034", "SWEDSESS", "00001234567", "05871", "30002", "495321XXXXXX7425",
+               "0048213976", "15878645", "51/234519", "FR76 3000 6000 0112 3456 7890 189",
+               "BE68 5390 0754 7034", "00001234567", "05871", "30002", "495321XXXXXX7425",
                "157851XXXXXX1568", "5483651240000XA3", "BT187536HE8O43", "86'123'456'789'012", "0004521",
                "45.118.902", "CH-1206", "Genève"]
 # the cases of the report, as written on the real statement (Dossier Test 11, invented names)
@@ -80,7 +80,7 @@ SENSITIVE_13 = ["Théo", "Aurélien", "Morin", "Clément", "Roux", "BE68 5390 07
                 "8 rue des Cerisiers", "69003 Lyon", "14 mars 1985"]
 # values of the invoice (Dossier Test 8)
 SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 3000 6000 0112 3456 7890 189",
-               "BNPAFRPP", "GEBABEBB", "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
+               "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
                "CHE-123.456.789", "Route de Florissant 14", "CH-1206", "86'123'456'789'012"]
 SENSITIVE_15 = ["Ambre Lefèvre", "Clémence Roux", "Lucas Martin", "Théo Aurélien Morin", "Paul Durand", "Jean Petit"]
 # values that must stay readable in a digital output (no over-redaction): folder -> {file: [values]}
@@ -105,7 +105,10 @@ KEEP = {
     "Dossier Test 15": HEADINGS_15,
     "Dossier Test 14": HEADINGS_14,
     "Dossier Test 15": HEADINGS_15,
-    "Dossier Test 8": {"facture_suisse_fr.pdf": ["MONSIEUR", "Banque Exemple", "Lumen Services SA"]},
+    # the bank identifiers are public: they name the bank, not the client, and stay (off by default)
+    "Dossier Test 8": {"facture_suisse_fr.pdf": ["MONSIEUR", "Banque Exemple", "Lumen Services SA", "BNPAFRPP",
+                                                 "GEBABEBB"]},
+    "Dossier Test 1": {"releve_banque_mosane.pdf": ["BMOSBE22"]},
     "Dossier Test 10": {"courrier_adresses.pdf": ["Lieu de la signature", "Bonjour Madame", "Atelier Lumen SPRL"]},
     # the operation labels are no name: 'VIRT RECU', 'PRLV SEPA', 'RET DAB FR', 'ACHAT-DEBIT' stay (and the company)
     "Dossier Test 2": {"releve_virements.pdf": ["VIRT RECU", "PRLV SEPA", "RET DAB FR", "ACHAT-DEBIT", "BOULANGERIE",
@@ -121,7 +124,7 @@ EXPECT = {
     "Dossier Test 1": ([
         "Élodie", "Elodie", "VERMEULEN", "Karim", "BENALI", "Inès", "DEWULF", "LEJEUNE", "GOFFIN", "30/07/1985",
         "85.07.30", "142.16", "417 229 654", "0478 12 34 56", "081 30 12 40", "081 30 12 47", "elodie.vermeulen",
-        "marc.lejeune", "BE64 7320 4182 6552", "BE58 0635 5271 0479", "BE67 0017 7120 9387", "BMOSBE22",
+        "marc.lejeune", "BE64 7320 4182 6552", "BE58 0635 5271 0479", "BE67 0017 7120 9387",
         "+++090/9337/55493+++", "6703", "4471", "0404484654", "45.118.902", "726-4410933-18", "Rue de la Station 47",
         "Jean Materne", "5000 Namur", "5100 Jambes", "0403.199.7"], {
         "releve_banque_mosane.pdf": ("digital", ["signature"], []),
@@ -729,6 +732,33 @@ def common_words_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def bank_identifier_tests():
+    """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
+    European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
+    BIC. An account number may end with a letter ('000012345Y')."""
+    print("\n== bank identifiers")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_bank_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        lines = ["IBAN FR76 3000 6000 0112 3456 7890 189  BIC BNPAFRPP", "Numéro de compte 000012345Y",
+                 "VIREMENT CANALSAT FRANCOIS", "BOULOGNE PRESTATIONS", "BIC VIREMENT", "BIC CANALSAT"]
+        for i, text in enumerate(lines):
+            page.insert_text((60, 100 + 16 * i), text, fontname="helv", fontsize=9)
+        doc.save(tmp / "banque.pdf", garbage=4)
+        cfg = engine.scan_folder(tmp, "banque", None, "fra+eng", lambda m: None)["config"]
+        check("the BIC is a suggestion, not an active replacement",
+              not re.search(r'^\s*-\s*\{find: "BNPAFRPP"', cfg, re.M) and
+              re.search(r'^\s*#\s*-\s*\{find: "BNPAFRPP"', cfg, re.M) is not None)
+        check("an account number ending with a letter is replaced",
+              re.search(r'^\s*-\s*\{find: "000012345Y"', cfg, re.M) is not None)
+        words = ["VIREMENT", "CANALSAT", "FRANCOIS", "BOULOGNE", "PRESTATIONS"]
+        found_bad = [w for w in words if re.search(rf'find: "(BIC )?{w}"', cfg)]
+        check("capitalised words after 'BIC' are no BIC nor name", not found_bad, repr(found_bad))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def text_overlap_tests():
     """A replacement longer than the original is squeezed or made smaller to fit its room: it never runs over the next
     word of its line (two characters of the output page never overlap). Bug seen on real files: a long name ran over
@@ -959,6 +989,7 @@ def main():
         names_tests()
         common_words_tests()
         text_overlap_tests()
+        bank_identifier_tests()
         rotated_tests()
         town_tests()
         speedup_tests()
