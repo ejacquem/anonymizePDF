@@ -8,7 +8,7 @@ red/green amounts, two account holders, a signed box with a hand-drawn signature
 and a scan that is slightly tilted, noisy and yellowed. Every person, number and company is invented;
 identifiers have valid check digits so the detectors see realistic values.
 
-Usage:  python tools/make_test_statement.py "sample_data/Dossier Test 1"
+Usage:  python tools/make_test_statement.py "sample_data/Dossier Test 01"
 Needs the Windows fonts Calibri, Georgia, Consolas, Ink Free, Segoe Script (C:\\Windows\\Fonts).
 """
 import io
@@ -355,7 +355,7 @@ def make_scan(src: Path, out: Path, dpi: int = 200):
 
 
 if __name__ == "__main__":
-    folder = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_data/Dossier Test 1")
+    folder = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_data/Dossier Test 01")
     folder.mkdir(parents=True, exist_ok=True)
     digital = folder / "releve_banque_mosane.pdf"
     make_digital(digital)

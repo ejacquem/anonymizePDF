@@ -1,4 +1,4 @@
-"""Generates sample_data/Dossier Test 7/: text written at an angle (a scanned page and a phone-like photo of a card).
+"""Generates sample_data/Dossier Test 07/: text written at an angle (a scanned page and a phone-like photo of a card).
 
   textes_inclines_scan.pdf   one scanned page: values written at -12 to +15 degrees
   permis_incline.jpg         a driving licence photographed on a table, turned 6 degrees (numbered fields)
@@ -7,7 +7,7 @@ text_truth.json lists every tilted value with its box in PDF points (the value o
 tools/check_all.py can check that no ink of an original value is left outside its replacement.
 All the values are fake.
 
-Usage:  python tools/make_test_tilt.py [folder]     (default: sample_data/Dossier Test 7)
+Usage:  python tools/make_test_tilt.py [folder]     (default: sample_data/Dossier Test 07)
 """
 import json
 import math
@@ -151,7 +151,7 @@ def make_licence(folder: Path, truth: list):
 
 
 def main():
-    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "sample_data" / "Dossier Test 7"
+    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "sample_data" / "Dossier Test 07"
     folder.mkdir(parents=True, exist_ok=True)
     truth_scan: list = []
     make_scan(folder, truth_scan)

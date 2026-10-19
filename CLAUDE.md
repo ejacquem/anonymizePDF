@@ -54,21 +54,21 @@ anonymizer/
   configmodel.py       anon_config.yaml <-> review-table model (settings, entries incl. the commented suggestions)
 static/                index.html, app.js, style.css (vanilla JS)
 docs/config.example.yaml
-sample_data/Dossier Test 0/   FR bank statement, Helvetica (digital + clean scan)
-sample_data/Dossier Test 1/   BE bank statement: Calibri/Georgia/Consolas subsetted, tinted boxes, 2 holders,
+sample_data/Dossier Test 00/   FR bank statement, Helvetica (digital + clean scan)
+sample_data/Dossier Test 01/   BE bank statement: Calibri/Georgia/Consolas subsetted, tinted boxes, 2 holders,
                               signature + stamp, valid BE identifiers (digital + tilted / yellowed / noisy scan)
-sample_data/Dossier Test 3/   FR passport, A4 flatbed scan: photo + ghost image, signature, TD3 MRZ, guilloche, SPECIMEN
-sample_data/Dossier Test 4/   FR ID card (2021 model) front + back on one scan: photo + ghost, signature, address,
+sample_data/Dossier Test 03/   FR passport, A4 flatbed scan: photo + ghost image, signature, TD3 MRZ, guilloche, SPECIMEN
+sample_data/Dossier Test 04/   FR ID card (2021 model) front + back on one scan: photo + ghost, signature, address,
                               QR-like code, TD1 MRZ (OCR reads none of the MRZ lines)
-sample_data/Dossier Test 5/   mixed PDFs built from Test 0: searchable scan (images + invisible OCR text), digital
+sample_data/Dossier Test 05/   mixed PDFs built from Test 0: searchable scan (images + invisible OCR text), digital
                               statement with a scanned page 3, contract with a pasted image of bank details (pixels only)
-sample_data/Dossier Test 6/   faces: digital page (2 portraits), scan (3 portraits + ID card + a sideways page),
+sample_data/Dossier Test 06/   faces: digital page (2 portraits), scan (3 portraits + ID card + a sideways page),
                               photo of a card on a table (rotated), a page without any face; faces_truth.json
-sample_data/Dossier Test 8/   invoice (digital + scan): 'MONSIEUR' heading (no BIC), '75017 PARIS', 'CH-1206 Genève',
+sample_data/Dossier Test 08/   invoice (digital + scan): 'MONSIEUR' heading (no BIC), '75017 PARIS', 'CH-1206 Genève',
                               'CHE-123.456.789 TVA', 'N° TVA BE ...', a reference '86'123'456'789'012', BIC after an IBAN
-sample_data/Dossier Test 9/   ID card, poor copy (150 dpi, faded, blurred, noisy, JPEG 38, turned 1.2 degrees): labels
+sample_data/Dossier Test 09/   ID card, poor copy (150 dpi, faded, blurred, noisy, JPEG 38, turned 1.2 degrees): labels
                               not read, values found by shape; TD1 MRZ; known misses: ghost portrait, signature
-sample_data/Dossier Test 2/   statement with transfers (digital with embedded subset Arial + scan): many accounts and cards,
+sample_data/Dossier Test 02/   statement with transfers (digital with embedded subset Arial + scan): many accounts and cards,
                               names in another order or cut ('BRU', 'MAUREL GAËLLE'), addresses (two lines, English
                               'Rue : 04 Library place', 'bis'), transfer labels (VIRT RECU, PRLV SEPA REF, ACHAT-DEBIT)
 sample_data/Dossier Test 12/  one person in every form a folder writes a name (full, pieces, initials, capitals, cut,
@@ -78,12 +78,12 @@ sample_data/Dossier Test 11/  the reported cases, each line as written (digital 
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
                        make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
-                       Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 8);
-                       make_test_idcard.py also writes the poor copy (Dossier Test 9); make_test_transfers.py (Dossier
+                       Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 08);
+                       make_test_idcard.py also writes the poor copy (Dossier Test 09); make_test_transfers.py (Dossier
                        Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12);
                        snapshot_results.py (before / after comparison of the results, section 11b)
 ```
-(There is no "Dossier Test 2".) The original numbered CLI scripts were removed long ago.
+The original numbered CLI scripts were removed long ago.
 
 Run: `python app.py --root <folder with client folders>` → http://127.0.0.1:5000.
 Options: `--port`, `--ocr-lang fra+eng`, `--ocr-engine auto|tesseract|windows`, `--spacy-model` (repeatable).
@@ -469,7 +469,7 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 ## 12. Test suite: `python tools/check_all.py`
 
 Run it after every change (exit code 0 = all passed; ~3 min with 2 keys, `--quick` = 1 key and no option tests,
-`--folder "Dossier Test 4"` to target, `--keep` to keep outputs). It copies `sample_data/*` to a temp dir and uses
+`--folder "Dossier Test 04"` to target, `--keep` to keep outputs). It copies `sample_data/*` to a temp dir and uses
 temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing into `sample_data/`.
 - Per output file: no error; expected mode (digital / scan / mixed); **leaks** in the text layer, a fresh OCR of every
   page and the metadata (names as whole words, numbers / multi-word values as substrings, accent-insensitive);
@@ -484,7 +484,7 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   active name, and the real names next to them are found. Dossier Test 14 and 15 keep their headings readable (KEEP).
 - Reported cases (`reported_cases_tests`): masked cards with X, REF / BT identifiers, 'numero du compte', 'Rue :',
   'MLE', names in another order and cut, 'bis', BIC in capitals, '30002 Code banque', two-line addresses, name
-  kinds and spellings, the two-line cut. Dossier Test 2 and 11 are in EXPECT (digital and scan), KEEP holds the
+  kinds and spellings, the two-line cut. Dossier Test 02 and 11 are in EXPECT (digital and scan), KEEP holds the
   operation labels of Test 2 ('VIRT RECU', 'PRLV SEPA', 'ACHAT-DEBIT').
 - Towns and postcodes (`town_tests`): one fake town per name, the postcode belongs to the fake town, a Swiss postcode
   keeps its length. Detector tests: a BIC of any country after its label, an account with a slash, an address on two
@@ -509,16 +509,16 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   second check (`leak_suspects`) is the net for the rest, and it only reports (warning), it does not replace.
 - Poor copies: a very faint colon can touch the first letter of the value; then a faint fragment of the letter may stay
   beside the replacement (privacy first: the letter is covered, the colon is not guaranteed).
-- Poor ID copies: the signature (its label is not read) and a ghost portrait are missed (Dossier Test 9). Masked
+- Poor ID copies: the signature (its label is not read) and a ghost portrait are missed (Dossier Test 09). Masked
   postcodes as they appear after manual masking ('7***7 Paris') are not read; the digits must be on the page.
 - Identity by shape can over-redact: a Capitalised word on an identity document is replaced as a name (even a town
   of birth or an OCR fragment such as 'CARO'). Privacy first, and the review step shows it.
 - Slanted text (scans, photos): OCR boxes of slanted words can be off by about a line, and Windows OCR does not read
-  lines slanted by ~15 degrees or more (`Dossier Test 7`, `known_miss`). Words of slanted lines are read again turned
+  lines slanted by ~15 degrees or more (`Dossier Test 07`, `known_miss`). Words of slanted lines are read again turned
   straight (`engine._refine_slanted`, lines of the same slant together) and painted in their own frame
   (`render.paint_tilted`, `_ink_band`); the report boxes (PDF points) are checked by `check_all.check_tilt`.
 - Faces: frontal detector (profiles may be missed), tested on public-domain portraits (tools/test_faces) and
-  generated pages (Dossier Test 6). Signatures are still ink-based: on a card photographed on a dark table or on a
+  generated pages (Dossier Test 06). Signatures are still ink-based: on a card photographed on a dark table or on a
   printed chip they can grow into a large box (over-redaction, never a leak).
 - MRZ only exact for fields read on the page (sex often `<` with Windows OCR); MRZ in a digital text layer not handled.
 - Photo / QR / MRZ detection are image heuristics tested only on generated documents.

@@ -7,7 +7,7 @@ a visible SPECIMEN mark and no official emblem or real security feature; it only
 anonymizer meets the same problems: bilingual labels, values on their own line, an identity photo, a ghost image,
 a handwritten signature, pastel guilloche background and a machine readable zone (MRZ) with valid check digits.
 
-Usage:  python tools/make_test_passport.py "sample_data/Dossier Test 3"
+Usage:  python tools/make_test_passport.py "sample_data/Dossier Test 03"
 Needs the Windows fonts Arial, Consolas, Ink Free (C:\\Windows\\Fonts).
 """
 import io
@@ -212,7 +212,7 @@ def make_scan(out: Path):
 
 
 if __name__ == "__main__":
-    folder = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_data/Dossier Test 3")
+    folder = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_data/Dossier Test 03")
     folder.mkdir(parents=True, exist_ok=True)
     out = folder / "passeport_scan.pdf"
     make_scan(out)

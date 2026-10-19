@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate FAKE mixed documents for testing (Dossier Test 5), built from the fake statement of Dossier Test 0:
+Generate FAKE mixed documents for testing (Dossier Test 05), built from the fake statement of Dossier Test 00:
 
 - releve_scan_cherchable.pdf   'searchable scan': every page is a scanned image WITH an invisible text layer on top
                                (what many scanners produce). The visible data is only in the pixels.
@@ -8,8 +8,8 @@ Generate FAKE mixed documents for testing (Dossier Test 5), built from the fake 
 - contrat_image_collee.pdf     digital page (real text) with a pasted image that contains personal data only as
                                pixels (a picture of the bank details block), like a screenshot pasted in a contract.
 
-Usage:  python tools/make_test_mixed.py "sample_data/Dossier Test 5"
-Needs sample_data/Dossier Test 0 (releve_compte_fr.pdf and releve_compte_fr_scan.pdf).
+Usage:  python tools/make_test_mixed.py "sample_data/Dossier Test 05"
+Needs sample_data/Dossier Test 00 (releve_compte_fr.pdf and releve_compte_fr_scan.pdf).
 """
 import io
 import sys
@@ -20,7 +20,7 @@ import pymupdf as fitz
 from PIL import Image, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "sample_data" / "Dossier Test 0"
+SRC = ROOT / "sample_data" / "Dossier Test 00"
 
 
 def scan_look(img: Image.Image, seed: int) -> Image.Image:
@@ -86,7 +86,7 @@ def pasted_image(out: Path):
 
 
 if __name__ == "__main__":
-    folder = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "sample_data" / "Dossier Test 5")
+    folder = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "sample_data" / "Dossier Test 05")
     folder.mkdir(parents=True, exist_ok=True)
     searchable_scan(folder / "releve_scan_cherchable.pdf")
     annex_scan(folder / "releve_annexe_scannee.pdf")

@@ -1,4 +1,4 @@
-"""Generates sample_data/Dossier Test 6/: documents with faces of people in several formats.
+"""Generates sample_data/Dossier Test 06/: documents with faces of people in several formats.
 
 The faces are public-domain portraits from Wikimedia Commons (tools/test_faces/, see faces.json for the reference
 face boxes of each portrait). The documents are fake (fake names, fake text).
@@ -11,7 +11,7 @@ face boxes of each portrait). The documents are fake (fake names, fake text).
 faces_truth.json (written next to the documents) gives, for every face, the page and the box in PDF points, so
 that tools/check_all.py can check that every face is covered by a black box.
 
-Usage:  python tools/make_test_faces.py [folder]     (default: sample_data/Dossier Test 6)
+Usage:  python tools/make_test_faces.py [folder]     (default: sample_data/Dossier Test 06)
 """
 import json
 import random
@@ -191,7 +191,7 @@ def make_photo(folder: Path, truth: dict):
 
 
 def main():
-    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "sample_data" / "Dossier Test 6"
+    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "sample_data" / "Dossier Test 06"
     folder.mkdir(parents=True, exist_ok=True)
     truth: dict = {}
     make_scan(folder, truth)

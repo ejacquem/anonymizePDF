@@ -3,7 +3,7 @@
 Generate FAKE bank documents for the cases reported on a larger folder of real statements (everything is invented:
 the names, the banks, the numbers, the addresses):
 
-- Dossier Test 2 (traditional): a 2-page statement and its scan. Many account numbers (IBAN, account after a label,
+- Dossier Test 02 (traditional): a 2-page statement and its scan. Many account numbers (IBAN, account after a label,
   'numero du compte' far on the right, RIB, card masks, references), names in another order or cut ('BRU', 'Océane
   Zaïra BRU', 'MAUREL GAËLLE'), transfer labels ('VIRT RECU', 'VIR SEPA FAVEUR', 'PRLV SEPA REF', 'RET DAB FR',
   'ACHAT-DEBIT'), addresses (FR, BE, CH, an address on two lines, an English street, 'bis' after the number).
@@ -126,7 +126,7 @@ def make_digital(lines_per_page: list[list], out: Path):
 
 
 def main():
-    folder2 = ROOT / "sample_data" / "Dossier Test 2"
+    folder2 = ROOT / "sample_data" / "Dossier Test 02"
     folder2.mkdir(parents=True, exist_ok=True)
     digital2 = folder2 / "releve_virements.pdf"
     make_digital([PAGE_2, PAGE_2_ADDRESSES], digital2)

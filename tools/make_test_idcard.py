@@ -9,7 +9,7 @@ anonymizer meets the same problems: bilingual labels, values under them, photo +
 the back, a square 2D code (here a QR-like code standing for the electronic seal) and a 3-line MRZ (TD1) with valid
 check digits.
 
-Usage:  python tools/make_test_idcard.py "sample_data/Dossier Test 4"
+Usage:  python tools/make_test_idcard.py "sample_data/Dossier Test 04"
 Needs the Windows fonts Arial, Consolas (C:\\Windows\\Fonts) and tools/make_test_passport.py (shared drawing code).
 """
 import io
@@ -137,7 +137,7 @@ def back(p) -> Image.Image:
 def make_scan(out: Path, dpi: int = 200, blur: float = 0.7, noise: float = 3.5, quality: int = 78,
               fade: float = 1.0, turn: float = 0.0):
     """The A4 sheet as a scan. The defaults are the clean scan; `dpi`, `blur`, `noise`, `quality` (JPEG), `fade`
-    (contrast) and `turn` (degrees) make the poor copy of Dossier Test 9 (hard to read for the OCR, still legible)."""
+    (contrast) and `turn` (degrees) make the poor copy of Dossier Test 09 (hard to read for the OCR, still legible)."""
     A4W, A4H = int(210 * MM), int(297 * MM)
     sheet = Image.new("RGB", (A4W, A4H), (255, 255, 255))
     for img, (x, y), angle in ((front(PERSON), (30, 30), 0.6), (back(PERSON), (30, 110), -0.4)):
@@ -160,14 +160,14 @@ def make_scan(out: Path, dpi: int = 200, blur: float = 0.7, noise: float = 3.5, 
 
 
 if __name__ == "__main__":
-    folder = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_data/Dossier Test 4")
+    folder = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_data/Dossier Test 04")
     folder.mkdir(parents=True, exist_ok=True)
     out = folder / "carte_identite_scan.pdf"
     make_scan(out)
     print("written:", out)
     print("MRZ:\n  " + "\n  ".join(td1(PERSON)))
-    # the poor copy (150 dpi, blurred, noisy, faded, JPEG 38, turned 1.2 degrees): Dossier Test 9
-    poor = Path("sample_data/Dossier Test 9")
+    # the poor copy (150 dpi, blurred, noisy, faded, JPEG 38, turned 1.2 degrees): Dossier Test 09
+    poor = Path("sample_data/Dossier Test 09")
     poor.mkdir(parents=True, exist_ok=True)
     make_scan(poor / "carte_identite_faible_qualite.pdf", dpi=150, blur=1.1, noise=7.0, quality=38, fade=0.8, turn=1.2)
     print("written:", poor / "carte_identite_faible_qualite.pdf")

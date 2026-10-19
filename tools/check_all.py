@@ -17,7 +17,7 @@ Plus: secret key behaviour, fake-value features (gender, initials, accents, OCR 
 Usage:
   python tools/check_all.py                 # 2 random keys, all folders, option tests (a few minutes)
   python tools/check_all.py --quick         # 1 key, no option tests
-  python tools/check_all.py --keys 3 --folder "Dossier Test 4" --keep
+  python tools/check_all.py --keys 3 --folder "Dossier Test 04" --keep
 Exit code 0 = everything passed.
 """
 from __future__ import annotations
@@ -51,14 +51,14 @@ STATEMENT_0 = ["Thomas", "MARCHAND", "Isabelle", "ROUX", "Julien", "Sophie", "DU
                "06 12 34 56 78", "04 72 00 11 22", "thomas.marchand", "FR76 3000 2058 7100", "05871",
                "00001234567", "30002", "14 rue des Lilas", "45 cours Lafayette", "69003", "x4412"]
 
-# values of the poor ID card copy (Dossier Test 9): the labels are not read, the values are found by their shape
+# values of the poor ID card copy (Dossier Test 09): the labels are not read, the values are found by their shape
 SENSITIVE_9 = ["MARTINEAU", "Julie", "Anne", "X4RTBPFW4", "03 11 1987", "11 06 2033", "12 06 2023", "RENNES",
                "TILLEULS", "35000"]
 # values of the letter (Dossier Test 10): an address on two lines, a town in capitals, a BIC with another country,
 # an account number with a slash
 SENSITIVE_10 = ["Sophie", "Wouters", "75017", "PARIS", "Genève", "1204", "BE68 5390 0754 7034",
                 "51/234519", "234519", "Rhône", "contact@lumen-atelier.example"]
-# values of the statement with transfers (Dossier Test 2, invented names): many accounts and cards, names in another order
+# values of the statement with transfers (Dossier Test 02, invented names): many accounts and cards, names in another order
 # or cut ('BRU', 'MAUREL GAËLLE', 'Noémie Clarisse LEFOL'), addresses (two lines, English, 'bis'), transfer references
 SENSITIVE_2 = ["Ylona", "YLONA", "Océane", "Zaïra", "BRUNEAU", "BRUNE", "MAUREL", "Gaëlle", "GAËLLE", "Clarisse", "LEFOL",
                "Noémie", "Wouters", "Sophie", "Tilleuls", "Victor Hugo", "Library", "Lamartine", "Florissant", "NÎMES",
@@ -78,7 +78,7 @@ SENSITIVE_14 = ["Clément", "Roux", "Théo", "Aurélien", "Morin"]
 # values of the turned text (Dossier Test 13): columns written vertically and lines skewed (tools/make_test_rotated.py)
 SENSITIVE_13 = ["Théo", "Aurélien", "Morin", "Clément", "Roux", "BE68 5390 0754 7034", "0048213976", "15878645",
                 "8 rue des Cerisiers", "69003 Lyon", "14 mars 1985"]
-# values of the invoice (Dossier Test 8)
+# values of the invoice (Dossier Test 08)
 SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 3000 6000 0112 3456 7890 189",
                "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
                "CHE-123.456.789", "Route de Florissant 14", "CH-1206", "86'123'456'789'012"]
@@ -106,12 +106,12 @@ KEEP = {
     "Dossier Test 14": HEADINGS_14,
     "Dossier Test 15": HEADINGS_15,
     # the bank identifiers are public: they name the bank, not the client, and stay (off by default)
-    "Dossier Test 8": {"facture_suisse_fr.pdf": ["MONSIEUR", "Banque Exemple", "Lumen Services SA", "BNPAFRPP",
+    "Dossier Test 08": {"facture_suisse_fr.pdf": ["MONSIEUR", "Banque Exemple", "Lumen Services SA", "BNPAFRPP",
                                                  "GEBABEBB"]},
-    "Dossier Test 1": {"releve_banque_mosane.pdf": ["BMOSBE22"]},
+    "Dossier Test 01": {"releve_banque_mosane.pdf": ["BMOSBE22"]},
     "Dossier Test 10": {"courrier_adresses.pdf": ["Lieu de la signature", "Bonjour Madame", "Atelier Lumen SPRL"]},
     # the operation labels are no name: 'VIRT RECU', 'PRLV SEPA', 'RET DAB FR', 'ACHAT-DEBIT' stay (and the company)
-    "Dossier Test 2": {"releve_virements.pdf": ["VIRT RECU", "PRLV SEPA", "RET DAB FR", "ACHAT-DEBIT", "BOULANGERIE",
+    "Dossier Test 02": {"releve_virements.pdf": ["VIRT RECU", "PRLV SEPA", "RET DAB FR", "ACHAT-DEBIT", "BOULANGERIE",
                                                 "Banque Mosane", "Assurance MAIF"]},
 }
 
@@ -119,11 +119,11 @@ KEEP = {
 SENSITIVE_16 = ["123456789", "0077436639", "AB12345678", "0612345678", "FR7630006000011234567890189", "987654321"]
 # folder -> (sensitive values, {file: (mode, black box kinds, MRZ formats)})
 EXPECT = {
-    "Dossier Test 0": (STATEMENT_0, {
+    "Dossier Test 00": (STATEMENT_0, {
         "releve_compte_fr.pdf": ("digital", [], []),
         "releve_compte_fr_scan.pdf": ("scan", [], []),
     }),
-    "Dossier Test 1": ([
+    "Dossier Test 01": ([
         "Élodie", "Elodie", "VERMEULEN", "Karim", "BENALI", "Inès", "DEWULF", "LEJEUNE", "GOFFIN", "30/07/1985",
         "85.07.30", "142.16", "417 229 654", "0478 12 34 56", "081 30 12 40", "081 30 12 47", "elodie.vermeulen",
         "marc.lejeune", "BE64 7320 4182 6552", "BE58 0635 5271 0479", "BE67 0017 7120 9387",
@@ -132,20 +132,20 @@ EXPECT = {
         "releve_banque_mosane.pdf": ("digital", ["signature"], []),
         "releve_banque_mosane_scan.pdf": ("scan", ["signature"], []),
     }),
-    "Dossier Test 3": (["LEFÈVRE", "LEFEVRE", "Camille", "Hélène", "HELENE", "21CK48329", "21CK483295",
+    "Dossier Test 03": (["LEFÈVRE", "LEFEVRE", "Camille", "Hélène", "HELENE", "21CK48329", "21CK483295",
                         "14 05 1992", "920514", "ROUEN"], {
         "passeport_scan.pdf": ("scan", ["photo", "photo", "signature"], ["TD3"]),
     }),
-    "Dossier Test 4": (["MARTINEAU", "Julie", "Anne", "X4RTBPFW4", "03 11 1987", "871103", "RENNES", "TILLEULS",
+    "Dossier Test 04": (["MARTINEAU", "Julie", "Anne", "X4RTBPFW4", "03 11 1987", "871103", "RENNES", "TILLEULS",
                         "35000"], {
         "carte_identite_scan.pdf": ("scan", ["photo", "photo", "qr code", "signature"], ["TD1"]),
     }),
-    "Dossier Test 7": (["DUBOIS", "PETIT", "Jean-Luc", "DURAND", "LEMAIRE", "ROUSSEAU", "4694616411"], {
+    "Dossier Test 07": (["DUBOIS", "PETIT", "Jean-Luc", "DURAND", "LEMAIRE", "ROUSSEAU", "4694616411"], {
         # text written at an angle: text_truth.json (see tools/make_test_tilt.py)
         "textes_inclines_scan.pdf": ("scan", [], []),
         "permis_incline.jpg": ("scan", [], []),
     }),
-    "Dossier Test 6": (["DUBOIS", "DURAND", "PETIT"], {
+    "Dossier Test 06": (["DUBOIS", "DURAND", "PETIT"], {
         # faces: tools/make_test_faces.py writes faces_truth.json (every face, in PDF points)
         "visages_digital.pdf": ("mixed", ["photo", "photo", "photo"], []),
         "visages_scan.pdf": ("scan", ["photo"] * 6, []),
@@ -154,7 +154,7 @@ EXPECT = {
     }),
     # a poor copy of an ID card (150 dpi, faded, blurred, turned 1.2 degrees; still legible). Known misses on this copy:
     # the ghost portrait and the signature (their labels are not read either): not expected here
-    "Dossier Test 9": (SENSITIVE_9, {
+    "Dossier Test 09": (SENSITIVE_9, {
         "carte_identite_faible_qualite.pdf": ("scan", ["photo", "qr code"], ["TD1"]),
     }),
     # cases reported on real files: a letter with an address on two lines, a town in capitals and the same town alone,
@@ -165,7 +165,7 @@ EXPECT = {
     }),
     # cases reported on real files: 'MONSIEUR' is no BIC, capitalised cities after a postcode, Swiss VAT numbers,
     # apostrophe-grouped references; the same invoice as a digital PDF and as a scan
-    "Dossier Test 8": (SENSITIVE_8, {
+    "Dossier Test 08": (SENSITIVE_8, {
         "facture_suisse_fr.pdf": ("digital", [], []),
         "facture_suisse_fr_scan.pdf": ("scan", [], []),
     }),
@@ -197,7 +197,7 @@ EXPECT = {
         "releve_partiel.pdf": ("digital", [], []),
         "contrat_coupe.pdf": ("digital", [], []),
     }),
-    "Dossier Test 2": (SENSITIVE_2, {
+    "Dossier Test 02": (SENSITIVE_2, {
         "releve_virements.pdf": ("digital", [], []),
         "releve_virements_scan.pdf": ("scan", [], []),
     }),
@@ -206,7 +206,7 @@ EXPECT = {
         "cas_signales.pdf": ("digital", [], []),
         "cas_signales_scan.pdf": ("scan", [], []),
     }),
-    "Dossier Test 5": (STATEMENT_0, {
+    "Dossier Test 05": (STATEMENT_0, {
         "contrat_image_collee.pdf": ("mixed", [], []),
         "releve_annexe_scannee.pdf": ("mixed", [], []),
         "releve_scan_cherchable.pdf": ("scan", [], []),
@@ -430,21 +430,21 @@ def full_run(folders, work_root: Path, ner):
 
 def option_tests(work_root: Path, ner):
     print("\n== config options")
-    _, rep = run_folder("Dossier Test 4", work_root, ner, lambda c: c.replace("  qr_codes: true", "  qr_codes: false"))
+    _, rep = run_folder("Dossier Test 04", work_root, ner, lambda c: c.replace("  qr_codes: true", "  qr_codes: false"))
     check("qr_codes: false -> QR code kept", "qr code" not in [b["kind"] for b in rep["files"][0]["blackouts"]])
-    _, rep = run_folder("Dossier Test 4", work_root, ner, lambda c: c.replace("  signatures: true", "  signatures: false"))
+    _, rep = run_folder("Dossier Test 04", work_root, ner, lambda c: c.replace("  signatures: true", "  signatures: false"))
     check("signatures: false -> signature kept", "signature" not in [b["kind"] for b in rep["files"][0]["blackouts"]])
-    _, rep = run_folder("Dossier Test 4", work_root, ner, lambda c: c.replace("mrz: regenerate", "mrz: keep"))
+    _, rep = run_folder("Dossier Test 04", work_root, ner, lambda c: c.replace("mrz: regenerate", "mrz: keep"))
     check("mrz: keep -> MRZ untouched", rep["files"][0]["mrz"] == [])
-    _, rep = run_folder("Dossier Test 3", work_root, ner, lambda c: c.replace("mrz: regenerate", "mrz: blackout"))
+    _, rep = run_folder("Dossier Test 03", work_root, ner, lambda c: c.replace("mrz: regenerate", "mrz: blackout"))
     check("old option mrz: blackout -> rebuilt anyway", [m["action"] for m in rep["files"][0]["mrz"]] == ["regenerated"])
-    _, rep = run_folder("Dossier Test 1", work_root, ner,
+    _, rep = run_folder("Dossier Test 01", work_root, ner,
                         lambda c: c.replace("photos_only_on_id_documents: true", "photos_only_on_id_documents: false"))
     check("statements, photos searched on every page: no false photo",
           all("photo" not in [b["kind"] for b in f["blackouts"]] for f in rep["files"]))
     # a photo the user removed stays removed, also when the scanned output is searched a second time (leftovers):
     # the second pass must not black it again, neither in the picture nor in the report
-    _, rep = run_folder("Dossier Test 6", work_root, ner, files_only=["visages_scan.pdf"])
+    _, rep = run_folder("Dossier Test 06", work_root, ner, files_only=["visages_scan.pdf"])
     first = [b for b in rep["files"][0]["blackouts"] if b["kind"] == "photo"]
     check("visages_scan.pdf: photos found before removal", len(first) > 0, f"{len(first)} photo(s)")
     removed = [{"file": "visages_scan.pdf", "page": b["page"], "kind": "photo", "box": b["box"]} for b in first]
@@ -457,11 +457,11 @@ def option_tests(work_root: Path, ner):
 
     verify.verify_output = leftover_once
     try:
-        _, rep = run_folder("Dossier Test 6", work_root, ner, files_only=["visages_scan.pdf"], removed=removed)
+        _, rep = run_folder("Dossier Test 06", work_root, ner, files_only=["visages_scan.pdf"], removed=removed)
     finally:
         verify.verify_output = real_verify
     check("visages_scan.pdf: removed photos not in the report", not any(b["kind"] == "photo" for b in rep["files"][0]["blackouts"]))
-    doc = engine.open_source(work_root / "Dossier Test 6" / rep["files"][0]["output"])
+    doc = engine.open_source(work_root / "Dossier Test 06" / rep["files"][0]["output"])
     pages = {}
     for b in first:
         p = b["page"]

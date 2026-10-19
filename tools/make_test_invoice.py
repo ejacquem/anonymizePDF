@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate a FAKE invoice (digital PDF) and its scan, for the cases reported on real files (Dossier Test 8):
+Generate a FAKE invoice (digital PDF) and its scan, for the cases reported on real files (Dossier Test 08):
 
 - "MONSIEUR" as a heading: a bare 8-letter word that a BIC pattern used to take ('MON' 'SIE' ... 'IE' country code)
 - a French postcode with the city in capitals ('75017 PARIS') and a Swiss postcode with its prefix ('CH-1206 Genève')
@@ -10,7 +10,7 @@ Generate a FAKE invoice (digital PDF) and its scan, for the cases reported on re
 
 Everything is invented: the company, the client, the bank details and the numbers.
 
-Usage:  python tools/make_test_invoice.py "sample_data/Dossier Test 8"
+Usage:  python tools/make_test_invoice.py "sample_data/Dossier Test 08"
 Needs PyMuPDF (base fonts only) and tools/make_test_statement.py (the scan).
 """
 import sys
@@ -59,7 +59,7 @@ def make_digital(out: Path):
 
 
 if __name__ == "__main__":
-    folder = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_data/Dossier Test 8")
+    folder = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_data/Dossier Test 08")
     folder.mkdir(parents=True, exist_ok=True)
     digital = folder / "facture_suisse_fr.pdf"
     make_digital(digital)
