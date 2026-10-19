@@ -86,6 +86,7 @@ $("#appOcr").onchange = (e) => {
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   ["config", "recap", "log"].forEach((n) => { $("#tab-" + n).hidden = n !== name; });
+  if (typeof scheduleSave === "function") scheduleSave();
 }
 document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => showTab(t.dataset.tab)));
 
@@ -352,6 +353,7 @@ function updateZoomLabel() {
 }
 
 function setZoom(scale, anchor) {
+  if (typeof scheduleSave === "function") scheduleSave();
   scale = Math.min(4, Math.max(0.25, scale));
   const k = scale / zoom.scale;
   zoom.scale = scale;
@@ -527,6 +529,7 @@ async function openFile(path) {
     if (ok === false) return;
   }
   state.file = path;
+  scheduleSave();
   const orig = node.anonymized ? node.original : node.path;
   const anon = node.anonymized ? node.path : node.anon;
   setViewer("orig", orig);
@@ -1176,6 +1179,7 @@ async function selectFolder(path) {
   state.folder = path;
   state.file = null;
   state.dirty = false;
+  scheduleSave();
   setViewer("orig", null);
   setViewer("anon", null);
   updateReviewButton();
@@ -1890,9 +1894,47 @@ async function init() {
       `<span class="${info.spacy_models.length ? "ok" : "bad"}">names model: ${info.spacy_models.length ? esc(info.spacy_models.join(", ")) : "none (rules only)"}</span>`;
     await loadTree();
     renderRecap();
+    await restoreSession();
   } catch (e) {
     $("#tree").innerHTML = `<div class="note bad">Cannot reach the server: ${esc(e.message)}</div>`;
   }
 }
+// the session: the folder, the file, the zoom, the scroll of both panes, the tab and the viewer mode are kept in this
+// browser, and a reload brings the site back as it was
+const SESSION_KEY = "anonymizePDF.session";
+function saveSession() {
+  try {
+    const at = (w) => [viewers[w].box.scrollLeft, viewers[w].box.scrollTop];
+    const tab = document.querySelector(".tab.active");
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      folder: state.folder, file: state.file, zoom: zoom.scale, fit: zoom.fit,
+      scroll: { orig: at("orig"), anon: at("anon") }, tab: tab ? tab.dataset.tab : "config",
+      mode: nativeMode() ? "pdf" : "viewer",
+    }));
+  } catch (e) { /* no storage */ }
+}
+var saveTimer = null;     // var: the first setZoom of the start runs before the end of this file
+function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveSession, 300); }
+
+async function restoreSession() {
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); } catch (e) { return; }
+  if (!s) return;
+  if (s.tab) showTab(s.tab);
+  if (s.mode === "pdf") setViewMode("pdf");
+  zoom.fit = !!s.fit;
+  if (!zoom.fit && s.zoom) zoom.scale = Math.min(4, Math.max(0.25, s.zoom));
+  updateZoomLabel();
+  if (!s.folder || !state.nodes[s.folder]) return;
+  await selectFolder(s.folder);
+  if (!s.file || !state.nodes[s.file]) return;
+  await openFile(s.file);
+  // the pages are sized once the files are read: then the scroll of both panes is put back
+  await waitFor(() => viewers.orig.pages.length > 0 && (viewers.anon.pages.length > 0 || !viewers.anon.path), 6000);
+  for (const w of VIEWERS) if (s.scroll && s.scroll[w]) setScroll(w, s.scroll[w][0], s.scroll[w][1]);
+}
+
+VIEWERS.forEach((w) => viewers[w].box.addEventListener("scroll", scheduleSave, { passive: true }));
 window.addEventListener("beforeunload", (e) => { if (state.dirty || state.running) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("pagehide", saveSession);
 init();
