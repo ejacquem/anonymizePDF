@@ -11,7 +11,17 @@
   <h1>PDF Anonymizer</h1>
   <span id="root" class="muted"></span>
   <span id="env" class="env"></span>
+  <button id="btnApp" class="mini" title="App settings">⚙ Settings</button>
 </header>
+<div id="appMenu" class="appmenu" hidden>
+  <div class="appmenu-title">App settings <span class="muted small">kept in this browser</span></div>
+  <label class="chk"><input type="checkbox" id="appPopup"> Pop-up messages (top centre)</label>
+  <label class="chk">Pop-up duration <input type="number" id="appPopupSeconds" min="1" max="10" step="1" class="appnum"> s</label>
+  <label class="chk">Changes frame border <input type="range" id="appChangesWidth" min="0" max="5" step="1">
+    <span id="appChangesWidthVal" class="muted small"></span></label>
+  <label class="chk"><input type="checkbox" id="appOcr"> OCR second pass when anonymizing (also on digital PDFs)</label>
+</div>
+<div id="toast" class="toast" hidden><span id="toastText"></span><button id="toastClose" class="mini" title="Close">✕</button></div>
 
 <div id="toolbar">
   <button id="btnTree" class="mini" title="Show / hide the file tree">☰</button>

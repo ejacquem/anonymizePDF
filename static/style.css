@@ -24,6 +24,21 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 header { display: flex; align-items: baseline; gap: 14px; padding: 8px 14px; background: var(--panel);
   border-bottom: 1px solid var(--line); }
 header h1 { font-size: 16px; margin: 0; }
+header #btnApp { margin-left: auto; align-self: center; }
+/* the pop-up: top centre, over everything, and it takes the mouse only where it is */
+.toast { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; align-items: center;
+  gap: 10px; max-width: 80vw; padding: 6px 8px 6px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .18); font-size: 13px; }
+.toast.err { border-color: var(--bad); }
+.toast.ok { border-color: var(--ok); }
+.toast[hidden] { display: none; }
+#toastClose { padding: 0 6px; }
+/* the app settings menu */
+.appmenu { position: fixed; top: 44px; right: 12px; z-index: 900; width: 320px; padding: 12px 14px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .2); display: flex; flex-direction: column; gap: 10px; }
+.appmenu[hidden] { display: none; }
+.appmenu-title { font-weight: 600; }
+.appnum { width: 56px; }
 .env { margin-left: auto; font-size: 12px; }
 .env .ok { color: var(--ok); } .env .bad { color: var(--bad); }
 .muted { color: var(--muted); } .small { font-size: 12px; }
@@ -234,12 +249,12 @@ details.grp[open] > summary::before { content: "▾"; }
 .bbox.auto.sel { outline: 2px solid var(--accent); }
 .bbox.resizing, .bbox.auto.resizing { background: rgba(0, 0, 0, .35); }
 /* changed fields (Changes button): a frame around each replaced value, the clicks go through it */
-.chg { position: absolute; box-sizing: border-box; border: 2px solid var(--warn); z-index: 3; pointer-events: none;
+.chg { position: absolute; box-sizing: border-box; border: var(--chg-w, 2px) solid var(--warn); z-index: 3; pointer-events: none;
   background: color-mix(in srgb, var(--warn) 12%, transparent); }
 /* debug trace (Trace button): every redacted or painted area, blue dotted, hover for the rule */
 .chg.trace { border: 1px dotted #1f78d1; background: color-mix(in srgb, #1f78d1 8%, transparent); pointer-events: auto; }
 /* removed without replacement: dashed purple, so it never looks like a replaced value */
-.chg.removed { border: 2px dashed var(--removed); background: color-mix(in srgb, var(--removed) 14%, transparent); }
+.chg.removed { border: var(--chg-w, 2px) dashed var(--removed); background: color-mix(in srgb, var(--removed) 14%, transparent); }
 button.mdel { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
 .mrow .mrep { font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); background: transparent; color: var(--text); min-width: 0; }
 .mhead { padding-top: 4px; }

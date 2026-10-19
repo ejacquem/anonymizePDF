@@ -142,6 +142,10 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   entry with `origin` and `replaces` (the detected box): that box is skipped on every run.
 - Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format.
 - Header: OCR engine in use and spaCy models.
+- App settings (⚙ Settings in the header, kept in localStorage `anonymizePDF.app`): pop-up messages on/off and their
+  duration (`notify` / `toast`, top centre, 3 s by default; off = the status line), the border width of the Changes frames
+  (`--chg-w`), and the OCR second pass (same value as the OCR check of Config › Settings).
+- Frames placed in page points (the red leftovers, the blue value frame) are redrawn on every zoom (`sizePages`).
 - Config tab: *Table* view (default, remembered) edits a model of the YAML (`anonymizer/configmodel.py`: `to_model`
   reads active entries AND the commented suggestions line by line, `to_yaml` writes the scan layout back); *YAML*
   view = the raw file. API: `GET /api/config/model`, `POST /api/config/model/parse|render`, `PUT /api/config/model`.

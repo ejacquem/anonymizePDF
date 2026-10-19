@@ -29,6 +29,59 @@ function setStatus(msg, cls) {
   s.className = "status " + (cls || "");
 }
 
+// ---------- messages: a pop-up at the top centre, or the status line when the pop-up is off ----------
+let toastTimer = null;
+function toast(msg, cls) {
+  const el = $("#toast");
+  $("#toastText").textContent = msg;
+  el.className = "toast " + (cls || "");
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, Math.max(1, state.app.popupSeconds) * 1000);
+}
+function notify(msg, cls) {
+  if (state.app.popup) toast(msg, cls);
+  else setStatus(msg, cls);
+}
+$("#toastClose").onclick = () => { $("#toast").hidden = true; clearTimeout(toastTimer); };
+
+// the app settings menu (⚙ in the header)
+function syncAppMenu() {
+  $("#appPopup").checked = state.app.popup;
+  $("#appPopupSeconds").value = state.app.popupSeconds;
+  $("#appChangesWidth").value = state.app.changesWidth;
+  $("#appChangesWidthVal").textContent = state.app.changesWidth + " px";
+  $("#appOcr").checked = state.ocrVerify;
+}
+$("#btnApp").onclick = () => {
+  const menu = $("#appMenu");
+  syncAppMenu();
+  menu.hidden = !menu.hidden;
+};
+document.addEventListener("pointerdown", (e) => {
+  const menu = $("#appMenu");
+  if (!menu.hidden && !e.target.closest("#appMenu") && !e.target.closest("#btnApp")) menu.hidden = true;
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#appMenu").hidden) $("#appMenu").hidden = true;
+});
+$("#appPopup").onchange = (e) => { state.app.popup = e.target.checked; saveApp(); };
+$("#appPopupSeconds").onchange = (e) => {
+  state.app.popupSeconds = Math.min(10, Math.max(1, Math.round(+e.target.value) || 3));
+  e.target.value = state.app.popupSeconds;
+  saveApp();
+};
+$("#appChangesWidth").oninput = (e) => {
+  state.app.changesWidth = +e.target.value;
+  $("#appChangesWidthVal").textContent = state.app.changesWidth + " px";
+  applyAppSettings();
+  saveApp();
+};
+$("#appOcr").onchange = (e) => {
+  state.ocrVerify = e.target.checked;
+  try { localStorage.setItem(OCR_KEY, state.ocrVerify ? "1" : "0"); } catch (err) { /* ignore */ }
+};
+
 // ---------- tabs ----------
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
@@ -95,6 +148,7 @@ function renderNode(node, parent, depth) {
 const PT_TO_PX = 96 / 72;                 // 100 % = PDF points shown at CSS 96 dpi
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 const zoom = { scale: 1, fit: true };
+const termSel = { key: null, hits: [], i: -1 };   // the value of the config shown in blue (see locateTerm)
 const viewers = {
   orig: { path: null, pages: [], box: $("#origView"), list: $("#origPages"), stamp: 0 },
   anon: { path: null, pages: [], box: $("#anonView"), list: $("#anonPages"), stamp: 0 },
@@ -166,6 +220,7 @@ function sizePages(which) {
     el.style.height = v.pages[i].h * k + "px";
   });
   if (which === "anon") drawBoxes();
+  if (which === "orig") redrawTermFrame();          // the frames are placed in page points: they follow the zoom
   drawChanges(which);
 }
 
@@ -578,7 +633,6 @@ function centerOn(which, h) {
 }
 
 // a value of the config, clicked: its places in the selected original file, one after the other, shown in blue
-const termSel = { key: null, hits: [], i: -1 };
 async function locateTerm(term) {
   const cur = currentOriginalNode();
   if (!cur || !state.folder) { setStatus("Select a file first", "err"); return; }
@@ -592,12 +646,16 @@ async function locateTerm(term) {
     } catch (e) { setStatus(e.message, "err"); return; }
   }
   const n = termSel.hits.length;
-  if (!n) { setStatus(`“${term}” is not in ${cur.name}`, "err"); return; }
+  if (!n) { notify(`“${term}” is not in ${cur.name}`, "err"); return; }
   termSel.i = (termSel.i + 1) % n;
   const h = termSel.hits[termSel.i];
   centerOn("orig", h);
   drawTermFrame(h);
   setStatus(`“${term}” · place ${termSel.i + 1} of ${n} in ${cur.name} (page ${h.page}), click again for the next one`, "ok");
+}
+
+function redrawTermFrame() {
+  if (termSel.i >= 0 && termSel.hits[termSel.i]) drawTermFrame(termSel.hits[termSel.i]);
 }
 
 function drawTermFrame(h) {
@@ -616,7 +674,7 @@ async function locateLeftover(file, li) {
   const f = state.report && (state.report.files || []).find((x) => x.file === file);
   const l = f && f.leftovers[li];
   if (!l) return;
-  if (!(l.hits || []).length) { setStatus("No position for this text: anonymize the file again", "err"); return; }
+  if (!(l.hits || []).length) { notify("No position for this text: anonymize the file again", "err"); return; }
   if (nativeMode()) setViewMode("viewer");
   if (currentFileName() !== file) {
     await openFile((state.folder ? state.folder + "/" : "") + file);
@@ -1214,6 +1272,15 @@ document.addEventListener("change", (e) => {
 state.cfgView = (() => { try { const v = localStorage.getItem(VIEW_KEY); return v === "yaml" ? "yaml" : "table"; } catch (e) { return "table"; } })();
 state.model = null;
 state.ocrVerify = (() => { try { return localStorage.getItem(OCR_KEY) === "1"; } catch (e) { return false; } })();
+// app settings (the menu ⚙ in the header): kept in this browser
+const APP_KEY = "anonymizePDF.app";
+const APP_DEFAULT = { popup: true, popupSeconds: 3, changesWidth: 2 };
+state.app = (() => { try { return { ...APP_DEFAULT, ...JSON.parse(localStorage.getItem(APP_KEY) || "{}") }; } catch (e) { return { ...APP_DEFAULT }; } })();
+function saveApp() { try { localStorage.setItem(APP_KEY, JSON.stringify(state.app)); } catch (e) { /* no storage */ } }
+function applyAppSettings() {
+  document.documentElement.style.setProperty("--chg-w", state.app.changesWidth + "px");
+}
+applyAppSettings();
 state.openGroups = null;          // types whose group is unfolded (null = default: groups with active entries)
 
 function infoShort(info) {
