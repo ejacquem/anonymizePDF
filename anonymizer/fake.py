@@ -69,6 +69,9 @@ Marronniers Vignes Prairies Écoles Jardins Remparts Lavandes Bruyères Pins Orm
 Genêts Mimosas Églantiers Charmes Noyers Orchidées Bleuets Pâquerettes Champs Vergers Bouleaux Saules
 """.split()
 
+# the articles of a street name ('de la', 'du'): words of every document, not a reason to refuse a name
+_STREET_ARTICLES = {"de", "la", "le", "l", "du", "des", "d", "les", "au", "aux"}
+
 # the months, for a street named after a date ('avenue du 11 novembre')
 FR_MONTHS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
              "octobre", "novembre", "décembre"]
@@ -618,14 +621,18 @@ class Faker:
                 # so they always agree ('de la Jardins' cannot happen)
                 old = art + name
                 # never the same noun back: 'de Stade' is not 'du Stade'; the noun of the document is no choice either
-                phrases = [x for x in FRENCH_STREET_PHRASES if not any(_pkey(w) in self.reserved for w in x.split())
+                # the articles are words of every document ('de', 'la'): only the nouns are checked against them
+                phrases = [x for x in FRENCH_STREET_PHRASES if not any(_pkey(w) in self.reserved for w in x.split()
+                                                                     if _pkey(w) not in _STREET_ARTICLES)
                            and _pkey(name) not in _pkey(x) and _pkey(x) not in _pkey(name)]
-                new_name = self._pick(phrases, len(old), rng, {_norm(old)}) or (art + self.scramble(name, rng))
+                # a real street name, never letters at random: the closest length, else any common street
+                fallback = [x for x in FRENCH_STREET_PHRASES if _pkey(name) not in _pkey(x) and _pkey(x) not in _pkey(name)]
+                new_name = self._pick(phrases, len(old), rng, {_norm(old)}) or rng.choice(phrases or fallback)
                 return f"{pre}{m.group('kw')}{m.group('sp')}{new_name}{post}"
             words = name.split()
             if len(words) == 1:
                 new_name = self._pick(FRENCH_STREETS + LAST_NAMES, len(name), rng, {_norm(name)} | self.reserved) \
-                    or self.scramble(name, rng)
+                    or rng.choice([x for x in FRENCH_STREETS if _pkey(x) != _pkey(name)])
                 new_name = _style_token(name, new_name)
             else:
                 # 'Bourgmestre Jean Materne' -> 'Chevalier Paul Martin': streets named after people read well

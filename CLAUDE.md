@@ -273,13 +273,16 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   novembre', 'rue du 8 mai 12', number before or after; `_NAME_WORD` stops a name at the words of a sentence). A street
   on one line is not swallowed by a two-line address whose number is on the next line (`pii.resolve`). Fakes
   (`fake.street`): the kind (rue, avenue) and the article stay, the NAME always changes (`_date_street` for dates,
-  the phrase list never gives back the same noun). Test: `street_name_tests`.
+  the phrase list never gives back the same noun). Test: `street_name_tests`. The articles ('de', 'la', 'du') are
+  words of every document: they are not checked against the reserved words, so a fake is always a real street name
+  (`_STREET_ARTICLES`, `fake.street`); the random-letter `scramble` is never the fallback of a street name.
   STREET_ADDRESS (a street keyword, a name of up to 3 words in any case, then the number; the address can be written on
   two lines, the number ends it and is never the first digits of a postcode; on one line, a street name does not run
   on to the next line; the address after a label to the end of the line: 'Rue : 04 Library place'; English number
   first: '04 Library place'), POSTAL_CITY (postcode + city in Title case or CAPITALS, prefixes B-, F-, CH-, L-, NL-,
   D-, I-, A-; not 'Code' / 'Banque' / 'Guichet'...), the town at the end of an address is a POSTAL_CITY too,
-  ACCOUNT_NUMBER (after "N° de compte" / "Numéro client", with spaces, '-', '.' or '/' as separators, French RIB, long digit runs, apostrophe-grouped digits
+  ACCOUNT_NUMBER (after "N° de compte" / "Numéro client" / "Compte" / "Compte courant" / "RIB" on the same line, or without
+  label when it is five or more digits and one capital letter ('0012345Y', '12345 Y', not running text), with spaces, '-', '.' or '/' as separators, French RIB, long digit runs, apostrophe-grouped digits
   `86'123'456'789'012` with masks, at least 3 groups so amounts `1'240.00` are not caught),
   BANK_CODE ("Code banque / guichet", "Clé RIB"), CONTRACT_REF ("police", "contrat", "dossier", "REF" with letters and
   digits, and an identifier written alone 'BT187536HE8O43': lowest priority), DOC_NUMBER,

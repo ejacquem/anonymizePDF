@@ -1110,6 +1110,34 @@ def first_letter_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def account_and_street_names_tests():
+    """Two fixes on real files. An account number with a check letter is found with or without its label ('0012345Y',
+    '12345 Y', 'Compte : 0012345Y', 'RIB 0012345Y'), and not in running text ('Le 12345 E est dû'). A street name is
+    never random letters, even when the words of the document ('de', 'la', 'rue') are all reserved."""
+    print("\n== account numbers with a check letter, and street names")
+    from anonymizer import fake as fk
+    found = lambda t: [m.value for m in pii.detect_all(t) if m.type == "ACCOUNT_NUMBER"]   # noqa: E731
+    for text, value in [("Numéro de compte 0012345Y", "0012345Y"), ("N° de compte 12345 Y", "12345 Y"),
+                        ("Compte : 0012345Y", "0012345Y"), ("Compte n° 12345 Y", "12345 Y"), ("RIB 0012345Y", "0012345Y"),
+                        ("0012345Y", "0012345Y"), ("12345 Y", "12345 Y"), ("Compte courant 0012345Y", "0012345Y")]:
+        check(f"an account number is found: {text!r}", value in found(text), repr(found(text)))
+    for text in ["Le 12345 E est dû", "Compte rendu 2024", "75001 Paris", "Montant 12345 EUR"]:
+        check(f"running text gives no account number: {text!r}", not found(text), repr(found(text)))
+    for value in ["0012345Y", "12345 Y", "000012345Y"]:
+        fake = Faker(b"n" * 32).suggest("ACCOUNT_NUMBER", value)
+        check(f"the fake of {value!r} keeps digits and the letter, and changes", fake != value
+              and bool(re.fullmatch(r"\d+\s?[A-Z]", fake)), repr(fake))
+    # the street names: the words of the document are reserved (as in a real scan), the names stay real names
+    doc_words = "rue de la république 12 rue de bellel route de la reine rue du Marché de la gare de la mairie"
+    known = list(fk.FRENCH_STREET_PHRASES) + list(fk.FRENCH_STREETS) + list(LAST_NAMES)
+    for value in ["rue de la république", "route de la reine", "rue de bellel", "rue Zzyzx"]:
+        f = Faker(b"n" * 32)
+        f.reserve([doc_words])
+        out = f.street(value)
+        check(f"the street {value!r} gets a real street name (no random letters): {out!r}",
+              any(k in out for k in known), repr(out))
+
+
 def bank_identifier_tests():
     """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
     European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
@@ -1375,6 +1403,7 @@ def main():
         street_name_tests()
         second_pass_tests()
         first_letter_tests()
+        account_and_street_names_tests()
         manual_text_tests()
         rotated_tests()
         town_tests()

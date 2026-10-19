@@ -317,6 +317,12 @@ DETECTORS = [
                                   r"rekeningnummer|rekening\s+nr\.?|num[ée]ro\s+client|n[°o]\s+client|klantnummer)"
                                   r"\s*[:\-]?\s*((?=[0-9A-Z]*\d)[0-9A-Z]+(?:[ ./\-][0-9A-Z]+){0,5})(?![\w,])"),
      _v_account_labeled),          # a letter may follow the digits: '000012345Y' (the group is not case-insensitive)
+    # 'Compte : 0012345Y', 'Compte courant 12345 Y', 'RIB 0012345Y': the value follows on the same line
+    ("ACCOUNT_NUMBER", re.compile(r"(?i:compte(?:[ \t]+(?:courant|épargne|epargne|titres|bancaire|client))?|\bRIB\b)"
+                                  r"[ \t]*[:\-]?[ \t]*((?=[0-9A-Z]*\d)[0-9A-Z]+(?:[ ./\-][0-9A-Z]+){0,5})(?![\w,])"),
+     _v_account_labeled),
+    # an account number with a check letter, without label: '0012345Y', '12345 Y' (five digits or more, one capital)
+    ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{5,}[ ]?[A-Z](?![\w'’\-])(?![ ]+[a-zà-ÿ])"), _v_account),
     # insurance policy / contract / file number after its label: 'police 45.118.902', 'contrat n° 2024-118'
     ("CONTRACT_REF", re.compile(r"(?i:police|polis|n[°o]\s+de\s+police|contrat|n[°o]\s+de\s+contrat|dossier|"
                                 r"contract|policy)(?:\s+n[°o]\.?)?\s*[:\-]?\s*(\d+(?:[ .\-/]\d+){0,5})(?![\w,])"),
