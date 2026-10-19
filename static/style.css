@@ -81,7 +81,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .pane-tools button { height: 22px; box-sizing: border-box; line-height: 18px; padding-top: 0; padding-bottom: 0; }
 .pane-tools .seg { height: 22px; }
 .pane-tools .seg button { height: 100%; padding: 0 9px; font-size: 12px; line-height: 18px; }
-#btnBox.on, #btnChanges.on, #btnTrace.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+#btnBox.on, #btnChanges.on, #btnTrace.on, #btnText.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
 .pane-body { flex: 1; min-height: 0; overflow: auto; }
 .viewer { position: relative; overflow: auto; background: var(--viewer-bg); }
 .pages { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px; width: max-content;
@@ -91,7 +91,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 main.native .viewer { overflow: hidden; }
 main.native .viewer .pages { display: none; }
 main.native .viewer iframe.loaded { display: block; }
-main.native .zoom .mini { display: none; }
+main.native .zoom .mini:disabled { opacity: .45; cursor: not-allowed; }
 .page { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .35); flex: none; }
 .page img { display: block; width: 100%; height: 100%; -webkit-user-drag: none; user-select: none; }
 /* image mode: click + drag to move around the page */
@@ -183,16 +183,14 @@ details.grp > summary { cursor: pointer; padding: 5px 2px; display: flex; align-
 details.grp > summary::-webkit-details-marker { display: none; }
 details.grp > summary::before { content: "▸"; color: var(--muted); width: 7px; font-size: 10px; transform: scale(1.8); }
 details.grp[open] > summary::before { content: "▾"; }
-.erow { display: grid; grid-template-columns: 18px minmax(0, 1fr) 14px minmax(0, 1fr) 34px 62px 22px; gap: 4px;
+.erow { display: grid; grid-template-columns: 18px minmax(0, 1fr) 14px minmax(0, 1fr) 34px 14px 22px; gap: 4px;
   align-items: center; padding: 1px 2px 1px 10px; border-radius: 4px; }
 .erow:hover { background: var(--sel); }
 .cfghint { padding: 14px 6px; line-height: 1.5; }
 .erow.off .efind, .erow.off .erep { color: var(--muted); }
 .erow.removed .efind { text-decoration: line-through; }
 /* a value changed by hand: a pen and its kind (edited / hidden / removed) in a column of its own */
-.eflag { font-size: 11px; white-space: nowrap; color: #b26a00; border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; }
-.eflag.hidden { color: var(--muted); }
-.eflag.removed { color: #b3261e; }
+.eflag { font-size: 12px; line-height: 1; color: var(--muted); text-align: center; }
 .erestore { padding: 0 4px; font-size: 11px; }
 .efind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .erep { font: inherit; border: 1px solid transparent; background: transparent; color: var(--text); padding: 1px 4px;

@@ -436,6 +436,8 @@ function updateFrame(which) {
 
 function applyViewMode() {
   $("main").classList.toggle("native", nativeMode());
+  ["#zoomIn", "#zoomOut", "#zoomFit"].forEach((id) => { $(id).disabled = nativeMode(); });
+  updateToolbar();
   VIEWERS.forEach(updateFrame);
   if (!nativeMode()) {
     if (zoom.fit) applyFit();
@@ -595,7 +597,7 @@ function boxListInner() {
   if (!name) return `<div class="muted small">Select a file to see its black boxes.</div>`;
   const entries = boxEntries();
   if (!entries.length) {
-    return `<div class="muted small">No black box on ${esc(name)}. Draw one with ▭ Black box, or Anonymize the file to see the automatic ones.</div>`;
+    return `<div class="muted small">No black box on ${esc(name)}.</div>`;
   }
   return entries.filter((e) => e.type !== "text").map((e) => {
     const w = Math.round(e.box[2] - e.box[0]), h = Math.round(e.box[3] - e.box[1]);
@@ -609,8 +611,18 @@ function boxListInner() {
 function boxPanelHtml() {
   let open = true;
   try { open = localStorage.getItem(BOXES_OPEN_KEY) !== "0"; } catch (e) { /* ignore */ }
-  return `<details class="boxpanel"${open ? " open" : ""}><summary>Black boxes <span class="muted small">of the selected file</span></summary>
+  return `<details class="boxpanel"${open ? " open" : ""}><summary title="Black boxes of the selected file: drawn with ▭ Black box, or found by the anonymization (automatic). Click a row to select it on the page, ✕ removes it.">Black boxes</summary>
     <div id="boxList">${boxListInner()}</div></details>`;
+}
+
+// the pen of a value follows its edit at once, without redrawing the table (the input keeps its focus)
+function refreshRowFlag(row) {
+  const e = state.model.entries[+row.dataset.i];
+  const flag = autoFlag(e);
+  const el = row.querySelector(".eflag");
+  el.className = "eflag " + flag;
+  el.title = flag ? FLAG_TITLE[flag] : "";
+  el.textContent = flag ? "✎" : "";
 }
 
 function renderBoxList() {
@@ -627,7 +639,7 @@ function textListInner() {
   if (!name) return `<div class="muted small">Select a file to see its typed texts.</div>`;
   const rows = boxEntries().filter((e) => e.type === "text");
   if (!rows.length) {
-    return `<div class="muted small">No typed text on ${esc(name)}. Draw one with ▤ Text, for what the OCR cannot read.</div>`;
+    return `<div class="muted small">No typed text on ${esc(name)}.</div>`;
   }
   return rows.map((e) => {
     const w = Math.round(e.box[2] - e.box[0]), h = Math.round(e.box[3] - e.box[1]);
@@ -641,7 +653,7 @@ function textListInner() {
 function textPanelHtml() {
   let open = true;
   try { open = localStorage.getItem(TEXTS_OPEN_KEY) !== "0"; } catch (e) { /* ignore */ }
-  return `<details class="boxpanel textpanel"${open ? " open" : ""}><summary>Typed texts <span class="muted small">of the selected file</span></summary>
+  return `<details class="boxpanel textpanel"${open ? " open" : ""}><summary title="Texts typed by hand over the page with ▤ Text, written into the anonymized file. Click a row to select it, ✕ removes it.">Typed texts</summary>
     <div id="textList">${textListInner()}</div></details>`;
 }
 
@@ -1087,7 +1099,7 @@ function manualHtml(man) {
   const rows = repl.map((r, i) => `<div class="mrow"><span class="mfind" title="${esc(r.find)}">${esc(r.find)}</span>
     <span class="arrow">→</span><input class="mrep" data-mi="${i}" value="${esc(r.replace)}" spellcheck="false">
     <button class="mdel mini" data-mdel="repl:${i}" title="Delete this value">✕</button></div>`).join("");
-  return `<details class="manual"${open ? " open" : ""}><summary>Manual data <span class="muted small">kept by every scan</span></summary>
+  return `<details class="manual"${open ? " open" : ""}><summary title="Values typed by hand: kept by every scan, they win over the automatic ones">Manual data</summary>
     <div class="mlist">${rows || '<div class="muted small">No manual value yet.</div>'}</div>
     <div class="addrow"><input id="addFind" placeholder="value to replace" spellcheck="false">
       <span class="arrow">→</span><input id="addRep" placeholder="replacement" spellcheck="false"><button id="addBtn" class="mini">Add</button></div>
@@ -1095,7 +1107,11 @@ function manualHtml(man) {
 }
 
 // an automatic value changed by hand keeps its scanned state (orig), so it is flagged and kept by the next scan
-const FLAG_LABEL = { edited: "edited", hidden: "hidden", removed: "removed" };
+const FLAG_TITLE = {
+  removed: "Removed by hand: not replaced, kept when the config is generated again",
+  hidden: "Unchecked by hand: not replaced, kept when the config is generated again",
+  edited: "Changed by hand (replacement or ticks): kept when the config is generated again",
+};
 function markOrig(e) { if (!e.orig) e.orig = { replace: e.replace, active: e.active }; }
 function autoFlag(e) {
   if (e.removed) return "removed";
@@ -1127,12 +1143,12 @@ function renderTable() {
     groups.get(e.type).push(i);
   });
   const types = [...groups.keys()].sort((a, b) => (TYPE_ORDER.indexOf(a) + 1 || 99) - (TYPE_ORDER.indexOf(b) + 1 || 99));
-  let h = settingsHtml(m.settings) + manualHtml(m.manual || { replacements: [], blackouts: [] }) + boxPanelHtml()
-    + textPanelHtml();
   const nAct = m.entries.filter((e) => e.active && !e.removed).length;
   const nRem = m.entries.filter((e) => e.removed).length;
-  h += `<div class="cfgsum muted small">${nAct} value(s) replaced · ${m.entries.length - nAct - nRem} suggestion(s) not active${nRem ? ` · ${nRem} removed` : ""}
-    · tick a line to replace it, untick to keep the original</div>`;
+  let h = settingsHtml(m.settings)
+    + `<div class="cfgsum muted small">${nAct} value(s) replaced · ${m.entries.length - nAct - nRem} suggestion(s) not active${nRem ? ` · ${nRem} removed` : ""}
+    · tick a line to replace it, untick to keep the original</div>`
+    + manualHtml(m.manual || { replacements: [], blackouts: [] }) + boxPanelHtml() + textPanelHtml();
   for (const t of types) {
     const idx = groups.get(t).sort((a, b) => (m.entries[b].active - m.entries[a].active) || a - b);
     const act = idx.filter((i) => m.entries[i].active).length;
@@ -1144,11 +1160,7 @@ function renderTable() {
     for (const i of idx) {
       const e = m.entries[i];
       const flag = autoFlag(e);
-      const flagHtml = flag
-        ? `<span class="eflag ${flag}" title="${flag === "removed" ? "Removed by hand: not replaced, kept when the config is generated again"
-            : flag === "hidden" ? "Unchecked by hand: not replaced, kept when the config is generated again"
-            : "Changed by hand (replacement or ticks): kept when the config is generated again"}">✎ ${FLAG_LABEL[flag]}</span>`
-        : "";
+      const flagHtml = `<span class="eflag ${flag}"${flag ? ` title="${FLAG_TITLE[flag]}"` : ""}>${flag ? "✎" : ""}</span>`;   // a column of its own
       h += `<div class="erow${e.active && !e.removed ? "" : " off"}${e.removed ? " removed" : ""}" data-i="${i}">
         <input type="checkbox" class="echk"${e.active ? " checked" : ""}${e.removed ? " disabled" : ""} title="${e.active ? "Replaced" : "Not replaced"}">
         <span class="efind" title="${esc(e.info || "")}">${esc(e.find)}</span>
@@ -1162,8 +1174,6 @@ function renderTable() {
     h += `</details>`;
   }
   if (!types.length && q) h += `<div class="muted small">Nothing matches “${esc(q)}”.</div>`;
-  h += `<div class="cfghint muted small">Edit any value: a changed replacement, an unchecked value (hidden) or a removed
-    one is flagged ✎ and kept when the config is generated again. Your own values go in the Manual data panel.</div>`;
   if ((m.regex || []).length) h += `<div class="muted small">${m.regex.length} regex rule(s): edit them in the YAML view.</div>`;
   box.innerHTML = h;
   box.querySelectorAll(".gchk").forEach((c) => { c.indeterminate = c.dataset.some === "1"; });
@@ -1208,6 +1218,7 @@ $("#cfgTable").addEventListener("input", (ev) => {
     markOrig(e);
     e.replace = t.value;
     tableChanged();
+    refreshRowFlag(t.closest(".erow"));
   }
 });
 $("#cfgTable").addEventListener("click", (ev) => {
@@ -1330,7 +1341,7 @@ function updateToolbar() {
   btnChanges.title = nChanges
     ? `Frame the ${changes.replaced.length} replaced field(s) (orange) and the ${changes.removed.length} removed area(s) (purple, dashed) of this file, in both panes`
     : "No replaced field recorded for this file: anonymize it to see them";
-  $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig);
+  $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig) || nativeMode();
   $("#btnText").disabled = $("#btnBox").disabled;
 }
 
