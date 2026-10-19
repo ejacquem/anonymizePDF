@@ -338,9 +338,9 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   writes with it (`FontBook.chars`: a subset may still report glyphs it does not have, which drew 'Î' and 'Y' as gaps),
   else the same font installed on
   the PC (Windows registry HKLM + HKCU, no admin: e.g. Consolas → consola.ttf), else the closest base-14. Same size,
-  colour, baseline; may extend up to +35 % into free space (`free_right`, per line of a value: the room of each
-  line is its own), else shrunk: height to 70 % at least, then squeezed sideways (`morph`, 82 % of the width, 60 % at
-  worst; `render.SQUEEZE_FLOOR` / `SIZE_FLOOR`). A replacement far longer than its room can still overflow. `digital_fill: none` keeps
+  colour, baseline, inside the original box (the Changes frame): a text wider than the box is squeezed sideways to
+  90 % of its width at most (`morph`), then made smaller (height 70 % at least, width 60 % at worst;
+  `render.SQUEEZE_FLOOR` / `SIZE_FLOOR` / `SQUEEZE_MIN`). A value on several lines has one box per line. `digital_fill: none` keeps
   the page background (redaction with `fill=False`). A value on several lines gets its replacement cut across the same
   lines (`engine._cut_lines`, digital and scan), each line with its own baseline.
   A value on one horizontal line is redacted and placed at its own glyphs (`render.exact_box`: the union of the glyph

@@ -918,8 +918,6 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
         ex = render.exact_box(before, m.value, boxes[0]) if len(boxes) == 1 and style and             render._is_horizontal(style["dir"]) else None
         exact.append([ex] if ex else boxes)
     plan = [(m, bx) for (m, _), bx in zip(plan, exact)]
-    # each line of a value has its own room: the next word on that line, not the one of the first line
-    limits = [[render.free_right(words, b, page.rect.width) for b in boxes] for _, boxes in plan]
     # a line that is not horizontal: the removed glyphs are taken from the characters (a word box of a slanted word
     # overlaps its neighbours), and the replacement is turned with the line
     turned = []
@@ -956,7 +954,7 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
     for (m, _), style, glyphs in zip(plan, styles, neighbours):
         render.redraw_missing(page, glyphs, style, fonts)
     if not blackbox:
-        for (m, boxes), style, lines_limit, ext in zip(plan, styles, limits, turned):
+        for (m, boxes), style, ext in zip(plan, styles, turned):
             if not m.replacement or m.invisible:
                 continue
             if ext:
@@ -964,10 +962,10 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
                 continue
             # a value on several lines gets its replacement on the same lines, each line cut in proportion to its width
             parts = _cut_lines(m.replacement, [b[2] - b[0] for b in boxes]) if len(boxes) > 1 else [m.replacement]
-            for b, part, limit in zip(boxes, parts, lines_limit):
+            for b, part in zip(boxes, parts):
                 if part:                                   # each line keeps its own baseline
                     line_style = (render.style_at(spans, b) or style) if len(boxes) > 1 else style
-                    render.insert_replacement(page, b, part, line_style, fonts, limit)
+                    render.insert_replacement(page, b, part, line_style, fonts)
 
 
 def _cut_lines(text: str, widths: list[float]) -> list[str]:

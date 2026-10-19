@@ -477,22 +477,19 @@ def insert_rotated(page, ext: dict, text: str, style: dict, fonts: FontBook):
     tw.write_text(page, morph=(start, fitz.Matrix(dx, -dy, dy, dx, 0, 0)))
 
 
-# a replacement longer than its room: the height may drop to SIZE_FLOOR of the original, and only when that is not
-# enough the width is squeezed (to SQUEEZE_FLOOR of its width at least, see insert_replacement)
-SQUEEZE_FLOOR = 0.82
+# a replacement longer than its box: first squeezed sideways (down to SQUEEZE_FLOOR of its width, almost invisible),
+# then smaller (down to SIZE_FLOOR of the original height); SQUEEZE_MIN is the least width left (see insert_replacement)
+SQUEEZE_FLOOR = 0.9
 SIZE_FLOOR = 0.7
 SQUEEZE_MIN = 0.6
 
 
-def insert_replacement(page, box, text, style: dict | None = None, fonts: FontBook | None = None,
-                       limit_x: float | None = None):
-    """Write `text` at the place of the removed text, in the original font/size/colour when known.
-    It may run a little past the original width if nothing is next to it (up to `limit_x`, at most +35 %);
-    otherwise the font size is reduced to fit. A line that is not horizontal is written turned with it."""
+def insert_replacement(page, box, text, style: dict | None = None, fonts: FontBook | None = None):
+    """Write `text` inside the place of the removed text (the box), in the original font/size/colour when known.
+    A text wider than the box is squeezed sideways a little, then made smaller (see SQUEEZE_FLOOR).
+    A line that is not horizontal is written turned with it (render.insert_rotated)."""
     x0, y0, x1, y1 = box
     avail = max(x1 - x0, 1)
-    if limit_x is not None:
-        avail = max(avail, min(limit_x - x0, avail * 1.35))
     if style is None or fonts is None:
         h = max(y1 - y0, 4)
         size = h * 0.8
