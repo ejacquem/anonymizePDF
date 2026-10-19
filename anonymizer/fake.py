@@ -311,10 +311,13 @@ class Faker:
             return "-".join(parts)
         pk = _pkey(token)
         if pk in self.truncations and pk not in self.aliases and "-" not in token:
-            # the full word decides the kind: 'Gasp' cut from the middle name 'Gaspard' is a first name too
+            # the full word decides the kind: 'Gasp' cut from the middle name 'Gaspard' is a first name too.
+            # A full word that is itself a cut form (or cut from this one) is no full word: no recursion on it
             whole = self.truncations[pk]
-            full = self.name_token(whole, self.kind_seen.get(_pkey(whole), kind), avoid, gender)
-            return _style_token(token, full[:len(token)])
+            wk = _pkey(whole)
+            if wk != pk and wk not in self.truncations:
+                full = self.name_token(whole, self.kind_seen.get(wk, kind), avoid, gender)
+                return _style_token(token, full[:len(token)])
         key = self.aliases.get(pk, pk)
         self.kind_seen.setdefault(key, kind)
         known = self.names.get((kind, key)) or self._similar_name(kind, key)

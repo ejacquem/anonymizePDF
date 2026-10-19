@@ -659,6 +659,15 @@ def names_tests():
           engine.name_truncations(["Théo Aurélien Gaspard Morin", "Théo Aurélien Gasp", "Théo Aurélien Gas"])
           == {"gas": "Gaspard", "gasp": "Gaspard"})
     f.truncations = {"gasp": "Gaspard"}
+    cyc = Faker(b"n" * 32)
+    cyc.truncations = {"gasp": "gaspard", "gaspard": "gasp", "mo": "Mo"}
+    try:
+        cyc.name_token("Gasp", "first")
+        cyc.name_token("Mo", "last")
+        ok = True
+    except RecursionError:
+        ok = False
+    check("truncations that point at each other (or at themselves) do not recurse forever", ok)
     full = f.name_token("Gaspard", "first")
     check("a cut form gets the cut replacement of its full word, of the same kind",
           f.name_token("Gasp", "last") == full[:4] and f.name_token("GASP", "last") == full[:4].upper())
