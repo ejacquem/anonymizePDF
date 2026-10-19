@@ -729,6 +729,63 @@ def common_words_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def text_overlap_tests():
+    """A replacement longer than the original is squeezed or made smaller to fit its room: it never runs over the next
+    word of its line (two characters of the output page never overlap). Bug seen on real files: a long name ran over
+    the following word."""
+    print("\n== replacements do not run over the next word")
+
+    def overlapping(page):
+        chars = []
+        for b in page.get_text("rawdict")["blocks"]:
+            for line in b.get("lines", []):
+                for span in line["spans"]:
+                    chars += [c for c in span["chars"] if c["c"].strip()]
+        bad = []
+        for i, a in enumerate(chars):
+            for b in chars[i + 1:]:
+                ab, bb = a["bbox"], b["bbox"]
+                inter = min(ab[2], bb[2]) - max(ab[0], bb[0])
+                vert = min(ab[3], bb[3]) - max(ab[1], bb[1])
+                if inter > 0.3 * min(ab[2] - ab[0], bb[2] - bb[0]) and vert > 0.5 * min(ab[3] - ab[1], bb[3] - bb[1]):
+                    bad.append((a["c"], b["c"]))
+        return bad
+
+    cases = [("Client Jean Dupont | Tel 0470 12 34 56", "Jean Dupont", "Alexandre Lemaire"),
+             ("Client Marc Dubois | Tel 0470 12 34 56", "Marc Dubois", "Christophe Desmarets")]
+    tmp = Path(tempfile.mkdtemp(prefix="anon_overlap_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        for i, (line, _, _) in enumerate(cases):
+            page.insert_text((60, 100 + 40 * i), line, fontname="helv", fontsize=10)
+        doc.save(tmp / "chevauchement.pdf", garbage=4)
+        cfg = "\n".join([
+            'ocr_lang: "fra+eng"', "case_sensitive: false", "match_case: true",
+            "style: {mode: replace, digital_fill: none}",
+            "blackout: {photos: false, photos_only_on_id_documents: false, signatures: false, qr_codes: false}",
+            "mrz: regenerate", "replacements:"] +
+            [f'  - {{find: "{find}", replace: "{rep}", type: PERSON}}' for _, find, rep in cases] + ["regex: []"])
+        engine.run_anonymize(tmp, "chevauchement", cfg, "fra+eng", False, lambda m: None)
+        out = fitz.open(tmp / "chevauchement_anonymized.pdf")[0]
+        for line, find, rep in cases:
+            text = out.get_text()
+            check(f"'{rep}' is written and runs over nothing", rep.split()[0] in text and not overlapping(out),
+                  repr(overlapping(out))[:120])
+        # a value on two lines: the second line has a word right after it, its room is that line's, not the first's
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((60, 100), "Client Jean", fontname="helv", fontsize=10)
+        page.insert_text((60, 114), "Dupont | Tel 0470 12 34 56", fontname="helv", fontsize=10)
+        doc.save(tmp / "deux_lignes.pdf", garbage=4)
+        engine.run_anonymize(tmp, "deux_lignes", cfg, "fra+eng", False, lambda m: None)
+        out = fitz.open(tmp / "deux_lignes_anonymized.pdf")[0]
+        check("a value on two lines: the second line's replacement runs over nothing", not overlapping(out),
+              repr(overlapping(out))[:120])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def invisible_copy_tests():
     """A drawn name with an invisible copy of it on top (the OCR layer of a scan): the drawn name gets its replacement.
     Bug seen on a real file: the name was erased (white, no text) because the drawn match was taken for invisible text."""
@@ -901,6 +958,7 @@ def main():
         text_loss_tests()
         names_tests()
         common_words_tests()
+        text_overlap_tests()
         rotated_tests()
         town_tests()
         speedup_tests()

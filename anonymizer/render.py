@@ -477,6 +477,13 @@ def insert_rotated(page, ext: dict, text: str, style: dict, fonts: FontBook):
     tw.write_text(page, morph=(start, fitz.Matrix(dx, -dy, dy, dx, 0, 0)))
 
 
+# a replacement longer than its room: the height may drop to SIZE_FLOOR of the original, and only when that is not
+# enough the width is squeezed (to SQUEEZE_FLOOR of its width at least, see insert_replacement)
+SQUEEZE_FLOOR = 0.82
+SIZE_FLOOR = 0.7
+SQUEEZE_MIN = 0.6
+
+
 def insert_replacement(page, box, text, style: dict | None = None, fonts: FontBook | None = None,
                        limit_x: float | None = None):
     """Write `text` at the place of the removed text, in the original font/size/colour when known.
@@ -497,13 +504,22 @@ def insert_replacement(page, box, text, style: dict | None = None, fonts: FontBo
     font = fonts.font_for(style, text)
     size = style["size"]
     width = font.text_length(text, fontsize=size)
+    sx = 1.0
     if width > avail:
-        size = max(size * avail / width, 4)
+        # too long for the room: a little smaller and, if still too long, squeezed sideways (never over the neighbours).
+        # The height goes down to SIZE_FLOOR of the original, the width to SQUEEZE_FLOOR; what does not fit then runs on
+        needed = avail / width
+        scale = min(1.0, max(needed / SQUEEZE_FLOOR, SIZE_FLOOR))
+        size = max(size * scale, 4)
+        sx = max(needed / scale, SQUEEZE_MIN)
     c = style["color"]
     color = (((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255)
     tw = fitz.TextWriter(page.rect, color=color)
     tw.append((x0, style["baseline"]), text, font=font, fontsize=size)
-    tw.write_text(page)
+    if sx < 1:
+        tw.write_text(page, morph=(fitz.Point(x0, style["baseline"]), fitz.Matrix(sx, 0, 0, 1, 0, 0)))
+    else:
+        tw.write_text(page)
 
 
 def _drawing_key(d) -> tuple:
