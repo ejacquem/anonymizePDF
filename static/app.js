@@ -562,6 +562,55 @@ function waitFor(cond, ms = 4000) {
   });
 }
 
+// zoom on a place (PDF points) and centre a pane on it; the other pane follows
+function centerOn(which, h) {
+  const v = viewers[which], vb = v.box;
+  zoom.fit = false;
+  setZoom(Math.min(4, Math.max(zoom.scale, (vb.clientWidth * 0.4) / ((h.box[2] - h.box[0]) * PT_TO_PX))));
+  const pageEl = v.list.children[h.page - 1];
+  if (!pageEl) return;
+  const k = pageScale();
+  const pr = pageEl.getBoundingClientRect(), vr = vb.getBoundingClientRect();
+  const left = vb.scrollLeft + (pr.left - vr.left) + (h.box[0] + h.box[2]) / 2 * k - vb.clientWidth / 2;
+  const top = vb.scrollTop + (pr.top - vr.top) + (h.box[1] + h.box[3]) / 2 * k - vb.clientHeight / 2;
+  setScroll(which, left, top);
+  syncScroll(which);
+}
+
+// a value of the config, clicked: its places in the selected original file, one after the other, shown in blue
+const termSel = { key: null, hits: [], i: -1 };
+async function locateTerm(term) {
+  const cur = currentOriginalNode();
+  if (!cur || !state.folder) { setStatus("Select a file first", "err"); return; }
+  const key = cur.name + "|" + term;
+  if (termSel.key !== key) {
+    try {
+      const r = await api(`/api/find?folder=${encodeURIComponent(state.folder)}&file=${encodeURIComponent(cur.name)}&term=${encodeURIComponent(term)}`);
+      termSel.key = key;
+      termSel.hits = r.hits || [];
+      termSel.i = -1;
+    } catch (e) { setStatus(e.message, "err"); return; }
+  }
+  const n = termSel.hits.length;
+  if (!n) { setStatus(`“${term}” is not in ${cur.name}`, "err"); return; }
+  termSel.i = (termSel.i + 1) % n;
+  const h = termSel.hits[termSel.i];
+  centerOn("orig", h);
+  drawTermFrame(h);
+  setStatus(`“${term}” · place ${termSel.i + 1} of ${n} in ${cur.name} (page ${h.page}), click again for the next one`, "ok");
+}
+
+function drawTermFrame(h) {
+  viewers.orig.list.querySelectorAll(".tlbox").forEach((n) => n.remove());
+  const pageEl = viewers.orig.list.children[h.page - 1];
+  if (!pageEl) return;
+  const k = pageScale(), d = document.createElement("div");
+  d.className = "tlbox";
+  Object.assign(d.style, { left: h.box[0] * k + "px", top: h.box[1] * k + "px",
+    width: (h.box[2] - h.box[0]) * k + "px", height: (h.box[3] - h.box[1]) * k + "px" });
+  pageEl.appendChild(d);
+}
+
 // a click on a leftover in the Recap: open its file, zoom on the next place of that text, and centre the viewer on it
 async function locateLeftover(file, li) {
   const f = state.report && (state.report.files || []).find((x) => x.file === file);
@@ -578,18 +627,7 @@ async function locateLeftover(file, li) {
   const i = ((leftCycle[cycle] ?? -1) + 1) % n;
   leftCycle[cycle] = i;
   const h = l.hits[i];
-  const v = viewers.anon, vb = v.box;
-  zoom.fit = false;
-  setZoom(Math.min(4, Math.max(zoom.scale, (vb.clientWidth * 0.4) / ((h.box[2] - h.box[0]) * PT_TO_PX))));
-  const pageEl = v.list.children[h.page - 1];
-  if (pageEl) {
-    const k = pageScale();
-    const pr = pageEl.getBoundingClientRect(), vr = vb.getBoundingClientRect();
-    const left = vb.scrollLeft + (pr.left - vr.left) + (h.box[0] + h.box[2]) / 2 * k - vb.clientWidth / 2;
-    const top = vb.scrollTop + (pr.top - vr.top) + (h.box[1] + h.box[3]) / 2 * k - vb.clientHeight / 2;
-    setScroll("anon", left, top);
-    syncScroll("anon");
-  }
+  centerOn("anon", h);
   leftSel.file = file;
   leftSel.key = li + "|" + i;
   drawBoxes();
@@ -1279,7 +1317,7 @@ function renderTable() {
       const flagHtml = `<span class="eflag ${flag}"${flag ? ` title="${FLAG_TITLE[flag]}"` : ""}>${flag ? "✎" : ""}</span>`;   // a column of its own
       h += `<div class="erow${e.active && !e.removed ? "" : " off"}${e.removed ? " removed" : ""}" data-i="${i}">
         <input type="checkbox" class="echk"${e.active ? " checked" : ""}${e.removed ? " disabled" : ""} title="${e.active ? "Replaced" : "Not replaced"}">
-        <span class="efind" title="${esc(e.info || "")}">${esc(e.find)}</span>
+        <span class="efind lookup" title="Click to find it in the selected file (click again for the next place)">${esc(e.find)}</span>
         <span class="arrow">→</span>
         <input class="erep" value="${esc(e.replace)}" spellcheck="false" title="Replacement (edit freely)"${e.removed ? " disabled" : ""}>
         <span class="einfo muted" title="${esc(e.info || "")}">${esc(infoShort(e.info))}</span>
@@ -1351,6 +1389,7 @@ $("#cfgTable").addEventListener("click", (ev) => {
     tableChanged();
     return renderTable();
   }
+  if (t.classList.contains("efind") || t.classList.contains("mfind")) { locateTerm(t.textContent.trim()); return; }
   if (t.classList.contains("erestore")) {                    // back to the scanned state (or to its change)
     const e = state.model.entries[+t.closest(".erow").dataset.i];
     e.removed = false;

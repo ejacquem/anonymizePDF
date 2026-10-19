@@ -23,7 +23,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from anonymizer import engine as eng
-from anonymizer import configmodel, ocr, secret
+from anonymizer import configmodel, ocr, secret, verify
 from anonymizer.pii import fitz, load_ner
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -263,6 +263,32 @@ def put_config_model():
         return bad(f"Config not saved: {e}")
     (folder / eng.CONFIG_NAME).write_text(text, encoding="utf-8")
     return jsonify({"ok": True, "text": text})
+
+
+@app.get("/api/find")
+def find_term():
+    """Where a value of the config is in an original file: {hits: [{page, box}]} (PDF points), for the viewer."""
+    try:
+        folder = folder_arg(request.args)
+        pdf = folder / Path(request.args.get("file", "")).name
+        if not pdf.is_file():
+            return bad("file not found", 404)
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    term = request.args.get("term", "").strip()
+    if not term:
+        return bad("no term")
+    case_sensitive = False
+    cfg = folder / eng.CONFIG_NAME
+    if cfg.exists():
+        try:
+            case_sensitive = bool(eng.parse_config(cfg.read_text(encoding="utf-8")).get("case_sensitive"))
+        except ValueError:
+            pass
+    try:
+        return jsonify({"hits": verify.find_hits(pdf, term, case_sensitive, STATE["ocr_lang"])})
+    except Exception as e:  # noqa: BLE001
+        return bad(f"Search failed: {e}")
 
 
 @app.get("/api/report")

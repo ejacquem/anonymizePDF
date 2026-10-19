@@ -83,6 +83,25 @@ def _hit_boxes(words: list[dict], text: str, spans: list, rx, pno: int, scale: f
     return out
 
 
+def find_hits(path: Path, term: str, case_sensitive: bool, ocr_lang: str) -> list[dict]:
+    """Where a term of the config is in a file: {page, box in PDF points}. The text layer first; the OCR (tolerant
+    to the usual misreadings) when the text layer has no such text, so a scanned page is found too."""
+    read = read_output(path, ocr_lang, use_ocr=False)
+    rx = term_regex(term, case_sensitive)
+    hits = []
+    for pno, page in enumerate(read.pages, start=1):
+        text, spans = words_to_text(page.layer_words)
+        hits += _hit_boxes(page.layer_words, text, spans, rx, pno)
+    if hits or not ocr.available():
+        return hits
+    read = read_output(path, ocr_lang, use_ocr=True)
+    rx = term_regex(term, case_sensitive, ocr=True)
+    for pno, page in enumerate(read.pages, start=1):
+        text, spans = words_to_text(page.words)
+        hits += _hit_boxes(page.words, text, spans, rx, pno, 72 / 300)
+    return hits
+
+
 def verify_output(read: OutputRead, cfg: dict) -> list[dict]:
     """The original values (the config's `find` terms) that the file still contains, with where each one is
     (`hits`: {page, box in PDF points} for the text layer and the OCR, so the viewer can show and find it)."""
