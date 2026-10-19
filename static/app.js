@@ -542,6 +542,60 @@ function textFit(text, box, k) {
   return { wPx, hPx, pad, size, sx: Math.max(wPx - 2 * pad, 1) / tw };
 }
 
+// the places where the original text is still found in the anonymized file (red frames, found from the Recap)
+const leftSel = { file: null, key: null };      // the place shown with a thicker frame, and of which file
+const leftCycle = {};                           // per leftover: the place of the last click (clicks loop over them)
+function leftoverHits() {
+  const name = currentFileName();
+  const f = name && state.report && (state.report.files || []).find((x) => x.file === name);
+  const out = [];
+  if (!f) return out;
+  f.leftovers.forEach((l, li) => (l.hits || []).forEach((h, hi) => out.push({ key: li + "|" + hi, page: h.page, box: h.box, find: l.find })));
+  return out;
+}
+
+function waitFor(cond, ms = 4000) {
+  return new Promise((res) => {
+    const t0 = Date.now();
+    const tick = () => (cond() || Date.now() - t0 > ms) ? res(!!cond()) : setTimeout(tick, 60);
+    tick();
+  });
+}
+
+// a click on a leftover in the Recap: open its file, zoom on the next place of that text, and centre the viewer on it
+async function locateLeftover(file, li) {
+  const f = state.report && (state.report.files || []).find((x) => x.file === file);
+  const l = f && f.leftovers[li];
+  if (!l) return;
+  if (!(l.hits || []).length) { setStatus("No position for this text: anonymize the file again", "err"); return; }
+  if (nativeMode()) setViewMode("viewer");
+  if (currentFileName() !== file) {
+    await openFile((state.folder ? state.folder + "/" : "") + file);
+    await waitFor(() => viewers.anon.pages.length > 0);
+  }
+  const cycle = file + "|" + li;
+  const n = l.hits.length;
+  const i = ((leftCycle[cycle] ?? -1) + 1) % n;
+  leftCycle[cycle] = i;
+  const h = l.hits[i];
+  const v = viewers.anon, vb = v.box;
+  zoom.fit = false;
+  setZoom(Math.min(4, Math.max(zoom.scale, (vb.clientWidth * 0.4) / ((h.box[2] - h.box[0]) * PT_TO_PX))));
+  const pageEl = v.list.children[h.page - 1];
+  if (pageEl) {
+    const k = pageScale();
+    const pr = pageEl.getBoundingClientRect(), vr = vb.getBoundingClientRect();
+    const left = vb.scrollLeft + (pr.left - vr.left) + (h.box[0] + h.box[2]) / 2 * k - vb.clientWidth / 2;
+    const top = vb.scrollTop + (pr.top - vr.top) + (h.box[1] + h.box[3]) / 2 * k - vb.clientHeight / 2;
+    setScroll("anon", left, top);
+    syncScroll("anon");
+  }
+  leftSel.file = file;
+  leftSel.key = li + "|" + i;
+  drawBoxes();
+  setStatus(`“${l.find}” · place ${i + 1} of ${n} (page ${h.page}), click again for the next one`, "ok");
+}
+
 // every black box of the selected file: { key, type, idx, page, box, kind, label }
 function boxEntries() {
   const name = currentFileName();
@@ -574,8 +628,17 @@ function drawBoxes() {
   const k = pageScale();
   const entries = boxEntries();
   [...v.list.children].forEach((el, i) => {
-    el.querySelectorAll(".bbox").forEach((n) => n.remove());
+    el.querySelectorAll(".bbox, .lbox").forEach((n) => n.remove());
     // the typed texts are drawn only while the Text tool is on: the anonymized file shows the real result otherwise
+    leftoverHits().filter((h) => h.page === i + 1).forEach((h) => {
+      const d = document.createElement("div");
+      const current = leftSel.file === currentFileName() && leftSel.key === h.key;
+      d.className = "lbox" + (current ? " current" : "");
+      d.title = `Original text still in the output: “${h.find}”`;
+      Object.assign(d.style, { left: h.box[0] * k + "px", top: h.box[1] * k + "px",
+        width: (h.box[2] - h.box[0]) * k + "px", height: (h.box[3] - h.box[1]) * k + "px" });
+      el.appendChild(d);
+    });
     entries.filter((e) => e.page === i + 1 && (e.type !== "text" || boxes.textTool)).forEach((e) => {
       const bx = boxes.preview && boxes.preview.key === e.key ? boxes.preview.box : e.box;
       const d = document.createElement("div");
@@ -1509,6 +1572,7 @@ async function loadReport() {
   try { state.report = await api(`/api/report?folder=${encodeURIComponent(state.folder)}`); } catch (e) { state.report = null; }
   await loadStatus();
   VIEWERS.forEach(drawChanges);            // the report may have new boxes for the replaced fields
+  drawBoxes();                             // and new places for the text still found
   renderRecap();
 }
 
@@ -1621,8 +1685,8 @@ function renderRecap() {
     if (f.error) h += `<div class="note bad">Error: ${esc(f.error)}</div>`;
     f.warnings.forEach((w) => { h += `<div class="note warn">⚠ ${esc(w)}</div>`; });
     if (f.leftovers.length) {
-      h += `<div class="note bad"><b>Original text still found in the output:</b><br>` +
-        f.leftovers.map((l) => `${esc(l.where)}: “${esc(l.find)}” ×${l.count}`).join("<br>") + `</div>`;
+      h += `<div class="note bad"><b>Original text still found in the output:</b> <span class="muted small">click to find it</span><br>` +
+        f.leftovers.map((l, li) => `<button class="lfind" data-lfile="${esc(f.file)}" data-li="${li}" title="Show it in the anonymized file (click again for the next place)">${esc(l.where)}: “${esc(l.find)}” ×${l.count}</button>`).join("<br>") + `</div>`;
     }
     if (f.items.length) {
       h += `<table class="items"><tr><th>Type</th><th>Original → Replacement</th><th>×</th><th>Pages</th></tr>`;
@@ -1636,6 +1700,9 @@ function renderRecap() {
   }
   box.innerHTML = ov + h;
   bindOverview(box);
+  box.querySelectorAll("button.lfind").forEach((b) => {
+    b.onclick = () => locateLeftover(b.dataset.lfile, +b.dataset.li);
+  });
   box.querySelectorAll("button[data-open]").forEach((b) => {
     b.onclick = (ev) => {
       ev.preventDefault(); ev.stopPropagation();

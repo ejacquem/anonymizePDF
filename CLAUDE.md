@@ -200,6 +200,8 @@ console running `app.py` and the last 12 lines in the job log.
      saved as a new JPEG in a new PDF (nothing of the original file is copied).
    - The output is read once (`verify.read_output`: metadata, text layer, OCR when used); both checks work on that
      reading, and a second pass re-reads it because it changed the file.
+   - Leftovers are placed: each one has `hits` (page, box in PDF points, text layer and OCR). The viewer frames them in red
+     (`.lbox`, `drawBoxes`), and a click on a leftover in the Recap (`locateLeftover`) shows the next place, zooms and centres.
    - Verify (`verify.verify_output`): searches the output for each original value (metadata, text layer, and OCR with the
      tolerant regex whenever the file is not purely digital, or when "OCR check" is ticked). If a scanned file has
      leftovers, `run_anonymize` runs a second pass on its output: text only (photos / codes / signatures are off in

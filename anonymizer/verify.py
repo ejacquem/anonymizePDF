@@ -33,6 +33,7 @@ class PageRead:
     layer: str                      # the text layer of the page, as text
     words: list[dict]               # what the checks read: the OCR of the page, or its text layer words
     ocr: bool                       # True when `words` is an OCR reading
+    layer_words: list[dict] = field(default_factory=list)   # the text layer words, boxes in PDF points
 
 
 @dataclass
@@ -54,7 +55,8 @@ def read_output(path: Path, ocr_lang: str, use_ocr: bool) -> OutputRead:
         for page in doc:
             layer_words = digital_words(page)
             words = ocr_words(render_page(page, 300), ocr_lang) if ocr_on else layer_words
-            read.pages.append(PageRead(layer=words_to_text(layer_words)[0], words=words, ocr=ocr_on))
+            read.pages.append(PageRead(layer=words_to_text(layer_words)[0], words=words, ocr=ocr_on,
+                                       layer_words=layer_words))
     finally:
         doc.close()
     return read
@@ -66,25 +68,49 @@ def _fold(text: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", text.upper()).translate(str.maketrans("OILSBZ", "011582"))
 
 
+def _hit_boxes(words: list[dict], text: str, spans: list, rx, pno: int, scale: float = 1.0) -> list[dict]:
+    """Where each match of `rx` in `text` is: the union of the boxes of the words it covers (PDF points, `scale` turns
+    the word boxes into points). Each hit is {page, box}: the viewer shows them one after another."""
+    out = []
+    for m in rx.finditer(text):
+        covered = [w["box"] for w, (ws, we) in zip(words, spans) if we > m.start() and ws < m.end() and w.get("box")]
+        if not covered:
+            continue
+        out.append({"page": pno, "box": [round(min(b[0] for b in covered) * scale, 1),
+                                         round(min(b[1] for b in covered) * scale, 1),
+                                         round(max(b[2] for b in covered) * scale, 1),
+                                         round(max(b[3] for b in covered) * scale, 1)]})
+    return out
+
+
 def verify_output(read: OutputRead, cfg: dict) -> list[dict]:
-    """The original values (the config's `find` terms) that the file still contains."""
+    """The original values (the config's `find` terms) that the file still contains, with where each one is
+    (`hits`: {page, box in PDF points} for the text layer and the OCR, so the viewer can show and find it)."""
     rxs = [(f, term_regex(f, cfg["case_sensitive"])) for f in cfg["terms"] if len(f) >= 3]
     ocr_rxs = [(f, term_regex(f, cfg["case_sensitive"], ocr=True)) for f in cfg["terms"] if len(f) >= 3]
     left: list[dict] = []
 
-    def check(where: str, text: str, tolerant: bool = False):
+    def check(where: str, text: str, hits: list[dict], tolerant: bool = False):
         for find, rx in (ocr_rxs if tolerant else rxs):
             n = len(rx.findall(text))
             if n:
-                left.append({"where": where, "find": find, "count": n})
+                left.append({"where": where, "find": find, "count": n, "hits": [h for h in hits if h["find"] == find]})
 
     for k, v in read.metadata:
-        check(f"metadata.{k}", v)
+        check(f"metadata.{k}", v, [])
     for pno, page in enumerate(read.pages, start=1):
-        check(f"p.{pno} text layer", page.layer)
+        text, spans = words_to_text(page.layer_words)
+        hits = []
+        for find, rx in rxs:
+            hits += [{**h, "find": find} for h in _hit_boxes(page.layer_words, text, spans, rx, pno)]
+        check(f"p.{pno} text layer", page.layer, hits)
     if read.ocr:
         for pno, page in enumerate(read.pages, start=1):
-            check(f"p.{pno} OCR", words_to_text(page.words)[0], tolerant=True)
+            text, spans = words_to_text(page.words)
+            hits = []
+            for find, rx in ocr_rxs:
+                hits += [{**h, "find": find} for h in _hit_boxes(page.words, text, spans, rx, pno, 72 / 300)]
+            check(f"p.{pno} OCR", text, hits, tolerant=True)
     return left
 
 
