@@ -142,6 +142,12 @@ async function loadTree() {
   updateToolbar();
 }
 
+// the folders above a path are unfolded, so the path is visible in the tree
+function unfoldAbove(path) {
+  if (!path) return;
+  path.split("/").forEach((_, i, parts) => state.open.add(parts.slice(0, i + 1).join("/")));
+}
+
 function renderTree() {
   const box = $("#tree");
   box.innerHTML = "";
@@ -168,6 +174,7 @@ function renderNode(node, parent, depth) {
       else state.open.add(node.path);
       await selectFolder(node.path);
       renderTree();
+      scheduleSave();
     };
     parent.appendChild(row);
     if (open) node.children.forEach((c) => renderNode(c, parent, depth + 1));
@@ -567,6 +574,8 @@ async function openFile(path) {
     if (ok === false) return;
   }
   state.file = path;
+  unfoldAbove(dirname(path));
+  renderTree();
   scheduleSave();
   const orig = node.anonymized ? node.original : node.path;
   const anon = node.anonymized ? node.path : node.anon;
@@ -1943,7 +1952,7 @@ function saveSession() {
     const at = (w) => [viewers[w].box.scrollLeft, viewers[w].box.scrollTop];
     const tab = document.querySelector(".tab.active");
     localStorage.setItem(SESSION_KEY, JSON.stringify({
-      folder: state.folder, file: state.file, zoom: zoom.scale, fit: zoom.fit,
+      folder: state.folder, file: state.file, open: [...state.open], zoom: zoom.scale, fit: zoom.fit,
       scroll: { orig: at("orig"), anon: at("anon") }, tab: tab ? tab.dataset.tab : "config",
       mode: nativeMode() ? "pdf" : "viewer",
     }));
@@ -1958,6 +1967,9 @@ async function restoreSession() {
   if (!s) return;
   if (s.tab) showTab(s.tab);
   if (s.mode === "pdf") setViewMode("pdf");
+  if (Array.isArray(s.open)) state.open = new Set([...s.open.filter((p) => !state.nodes[p] || state.nodes[p].type === "dir"), ""]);
+  unfoldAbove(s.file ? dirname(s.file) : "");
+  renderTree();
   zoom.fit = !!s.fit;
   if (!zoom.fit && s.zoom) zoom.scale = Math.min(4, Math.max(0.25, s.zoom));
   updateZoomLabel();
