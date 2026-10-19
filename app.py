@@ -13,8 +13,10 @@ inside --root. Original PDFs are never modified; results are written next to the
 import argparse
 import hashlib
 import json
+import sys
 import threading
 import time
+import traceback
 import uuid
 from pathlib import Path
 
@@ -404,6 +406,11 @@ def start_job(kind: str, fn):
             job["error"] = str(e)
             job["status"] = "error"
             log(f"ERROR: {e}")
+            # the full traceback goes to the console where the app runs; the log shows its last frames
+            tb = traceback.format_exc()
+            print(tb, file=sys.stderr, flush=True)
+            for line in tb.splitlines()[-12:]:
+                log(f"  {line}")
         finally:
             job["ended"] = time.time()
             JOB_LOCK.release()

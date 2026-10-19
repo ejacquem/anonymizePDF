@@ -9,6 +9,7 @@ Engine used by the web app (and usable from Python directly).
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import io
 import json
 import re
@@ -69,7 +70,40 @@ signature handtekening unterschrift nom surname prénom prénoms prenom prenoms 
 nationalité nationalite nationality naissance birth lieu place document expiry expiration délivrance delivrance
 issue adresse address domicile taille height autorité autorite authority passeport passport identité identite
 identity carte card république republique française francaise naam voornamen geslacht nationaliteit
+comptes titres titre successions
 """.split())
+_STOP_KEYS = {_pkey(w) for w in _STOP}
+# words that only join a name to the words before it or after it: 'SUCCESSION DE NOM', 'TITRES DE NOM'
+_CONNECTORS = {"de", "la", "le", "les", "des", "du", "et", "a", "à", "au", "aux", "en", "l", "d"}
+
+
+@functools.lru_cache(maxsize=8192)
+def is_label_word(token: str) -> bool:
+    """A stop word, or a word one or two letters away from one ('SUCCËSSION', 'COMPTÈ', 'COMTPES', 'Monsieul' from an
+    OCR or a typo): no name. Accents do not count (_pkey)."""
+    key = _pkey(token.strip(".,;:-'’"))
+    if not key:
+        return False
+    if key in _STOP_KEYS:
+        return True
+    return len(key) >= 5 and any(len(s) >= 5 and abs(len(s) - len(key)) <= 2 and
+                                 SequenceMatcher(None, key, s).ratio() >= 0.85 for s in _STOP_KEYS)
+
+
+def trim_name_edges(value: str) -> str:
+    """Drop the words at both ends of a name that are labels, titles, towns, bank operations or connectors:
+    'SUCCESSION DE NOM PRENOM' -> 'NOM PRENOM', 'COMPTE RBT NOM' -> 'NOM'. The words inside stay."""
+    def edge(t):
+        return (is_label_word(t) or t.casefold().strip(".,;:") in _CONNECTORS or is_town_name(t)
+                or _pkey(t) in OPERATION_KEYS)
+    toks = value.split()
+    while toks and edge(toks[0]):
+        toks.pop(0)
+    while toks and edge(toks[-1]):
+        toks.pop()
+    return " ".join(toks)
+
+
 _BIRTH_RX = re.compile(r"(?i)(\bn[ée]e?\s*(?:le|à|a|en|:)\b|\bn[ée]e?\s*:|naissance|naiss\.|geboren|geboorte|birth|\bborn\b|\bdob\b)")
 _HONORIFIC_START = re.compile(rf"^{_HONORIFIC}\s+")
 _TITLE_BEFORE = re.compile(rf"({_HONORIFIC})\s*$")
@@ -188,7 +222,7 @@ def accept_person(value: str, honorific: bool, from_ner: bool, vocab: frozenset 
     toks = [t.strip(",.;:") for t in value.split() if t.strip(",.;:")]
     if not toks or any(c.isdigit() for c in value):
         return False
-    if any(t.casefold() in _STOP or is_town_name(t) for t in toks):
+    if any(is_label_word(t) or is_town_name(t) for t in toks):
         return False
     if honorific:
         return len(toks) >= 2 or len(toks[0]) >= 3
@@ -314,6 +348,7 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
         value = " ".join(m.value.split())
         if m.type == "PERSON":
             value = _HONORIFIC_START.sub("", value.split(" - ")[0]).strip(" ,.;:")
+            value = trim_name_edges(value)            # 'SUCCESSION DE NOM' keeps 'NOM'
         if m.type in NAME_TYPES:
             value = strip_operations(value)           # 'VIRT RECU MARION' is the name MARION
         if len(value) < 3:
@@ -445,7 +480,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         tokens_added.add(norm_value(e["value"]))
         for tok, kind in zip(toks if len(toks) > 1 else [], kinds):
             clean = tok.strip(",.;:")
-            if len(clean) < 4 or clean.casefold() in _STOP or is_town_name(clean) or kind == "particle":
+            if len(clean) < 4 or is_label_word(clean) or is_town_name(clean) or kind == "particle":
                 continue
             if norm_value(clean) in tokens_added:
                 continue
@@ -478,7 +513,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         runs, run = [], []
         for tok in seq.split():
             # a word with a digit is no name ('BE67' starts an IBAN): it ends the run
-            if tok.casefold().rstrip(".") in _STOP or is_town_name(tok) or _pkey(tok) in OPERATION_KEYS or \
+            if is_label_word(tok) or is_town_name(tok) or _pkey(tok) in OPERATION_KEYS or \
                     any(c.isdigit() for c in tok):
                 runs.append(run)
                 run = []
@@ -486,7 +521,8 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                 run.append(tok)
         runs.append(run)
         for run in runs:
-            value = " ".join(run)
+            value = trim_name_edges(" ".join(run))          # 'DE Lucas Martin' is 'Lucas Martin'
+            run = value.split()
             if len(run) < 2 or not any(_pkey(t) in known_words or _pkey(t) in firsts for t in run):
                 continue
             if norm_value(value) in tokens_added:
@@ -497,7 +533,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                      "shares a name word with an active name")
     for word in tokens:
         key = _pkey(word)
-        if key in known_words or norm_value(word) in tokens_added or not word[:1].isupper():
+        if key in known_words or norm_value(word) in tokens_added or not word[:1].isupper() or is_label_word(word):
             continue
         ratio, best = max(((SequenceMatcher(None, key, k).ratio(), k) for k in known_words
                            if abs(len(k) - len(key)) <= 2), default=(0.0, ""))
@@ -511,7 +547,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         # capitals alone are headings and company names ('BANQUE MOSANE'): only suggested with a known name word.
         # A candidate with a stop word or an ordinary word of the documents is no name at all: not suggested either.
         toks = e["value"].split()
-        if e["value"].isupper() or any(t.casefold() in _STOP or _pkey(t) in vocab for t in toks):
+        if e["value"].isupper() or any(is_label_word(t) or _pkey(t) in vocab for t in toks):
             continue
         # one ordinary word is a heading or a label ('Page', 'Bleue'), not a name, unless it is a known first name
         if len(toks) < 2 and _pkey(toks[0]) not in firsts:

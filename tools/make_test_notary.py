@@ -25,6 +25,10 @@ LABELS = [
     "Date de signature", "Maître", "Dr", "Me", "Mademoiselle", "Monsieur et Madame",
 ]
 
+# table headings of a notarial statement, and an OCR reading of a barcode (no name, no account: kept as written)
+TABLE_HEADINGS = ["SUCCESSION", "COMPTE RBT", "COMPTE CTS", "MUTATION", "TITRES DE", "TITRES", "COMPTES", "COMPTÈ",
+                  "111111111111"]
+
 # titles in the forms the documents write them: alone, before a name, with a dot, in capitals
 TITLES = [
     "M", "MME", "MR", "MLE", "MLLE", "Monsieur", "Madame", "Mademoiselle", "M.", "Mme", "Mlle",
@@ -40,6 +44,11 @@ FILES = {
         (60, 132, 10, "MLE Ambre Lefèvre, mineure, représentée par M. Théo A. Morin"),
         (60, 148, 10, "Page 1 / 3 - Novembre 2025 - pagina 1 - bevoegde notaris"),
         (60, 370, 10, "Maître Paul Durand, notaire associé, et Monsieur Jean Petit, témoin"),
+        # labels written in front of a name: the name is found, the label is not part of it
+        (60, 400, 10, "SUCCESSION Ambre Lefèvre"),
+        (60, 416, 10, "COMPTE RBT Clémence Roux"),
+        (60, 432, 10, "TITRES DE Lucas Martin"),
+        (60, 448, 10, "A LA SUCCESSION DE Théo Aurélien Morin"),
     ] + [(60, 180 + 16 * i, 9, label) for i, label in enumerate(LABELS[:12])],
     # the second page: the labels of the table, a title with no name after it, and a second person
     "tableau_comptes.pdf": [
@@ -52,7 +61,7 @@ FILES = {
         (60, 452, 9, "MLLE"),
         (60, 468, 9, "Monsieur"),
         (60, 500, 9, "Monsieur et Madame Jean Petit, époux de Clémence Roux"),
-    ],
+    ] + [(60, 560 + 16 * i, 9, label) for i, label in enumerate(TABLE_HEADINGS)],
 }
 
 

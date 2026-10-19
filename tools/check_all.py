@@ -98,7 +98,8 @@ HEADINGS_15 = {
                             "compte rbt", "Maître"],
     "tableau_comptes.pdf": ["Comptes du défunt", "Compte courant", "Notaire associé", "Frais de succession",
                             "Solde de compte", "Pièces annexées", "Liste des biens", "Intermédiation", "Bleue",
-                            "domicil", "VIG", "SUCC", "bevoegde", "MLLE"],
+                            "domicil", "VIG", "SUCC", "bevoegde", "MLLE", "SUCCESSION", "COMPTE RBT", "COMPTE CTS",
+                            "MUTATION", "TITRES DE", "TITRES", "COMPTES", "COMPTÈ", "111111111111"],
 }
 KEEP = {
     "Dossier Test 15": HEADINGS_15,
@@ -704,6 +705,9 @@ def common_words_tests():
             page.insert_text((60, 60 + 16 * i), text, fontname="helv", fontsize=9)
         doc.save(tmp / "titres.pdf", garbage=4)
         cfg = engine.scan_folder(tmp, "titres", None, "fra+eng", lambda m: None)["config"]
+        check("a barcode read as a run of 1s is no account number",
+              not [m for m in pii.detect_all("Code 111111111111 BE68 5390 0754 7034") if m.type == "ACCOUNT_NUMBER"
+                   and "111111111111" in m.value])
         active = [m.group(1) for m in re.finditer(r'^\s*-\s*\{find: "([^"]+)", replace: "[^"]*", type: PERSON\}',
                                                   cfg, re.M)]
         bad = [v for v in active if {t.casefold().strip(".,") for t in v.split()} & (titles | labels)]

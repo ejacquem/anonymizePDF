@@ -398,11 +398,18 @@ def detect_ner(text: str, ner, types: set[str] | None = None) -> list[Match]:
     return out
 
 
+def _repeated_digits(value: str) -> bool:
+    """A barcode read by the OCR as a run of one digit ('111111111111'): seven or more of the same digit, no letter."""
+    digits = re.sub(r"\D", "", value)
+    return len(digits) >= 7 and len(set(digits)) == 1 and not re.search(r"[^\W\d_]", value)
+
+
 def detect_all(text: str, ner=None, types: set[str] | None = None) -> list[Match]:
     ms = detect_structured(text, types)
     if ner and (not types or types & NER_TYPES):
         ms += detect_ner(text, ner, types)
-    return resolve(ms)
+    # a barcode read as '1111...' is no account, card or phone number
+    return resolve([m for m in ms if not _repeated_digits(m.value)])
 
 
 # --------------------------------------------------------------------------
@@ -506,6 +513,7 @@ def apply_config(text: str, cfg: dict, ner, numberer: Numberer) -> list[Match]:
         cands = detect_structured(text, types)
         if ner and types & NER_TYPES:
             cands += detect_ner(text, ner, types)
+        cands = [m for m in cands if not _repeated_digits(m.value)]
         for m in cands:
             m.source = 2
             m.replacement = auto[m.type]

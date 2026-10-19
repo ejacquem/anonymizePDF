@@ -153,7 +153,8 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api/page?path=&page=&scale=`,
 `GET|PUT /api/config?folder=`, `GET /api/report?folder=`, `POST /api/scan`, `POST /api/anonymize` (job id; `file` = one file name; `removed` = [{file, page, kind, box}] automatic boxes left out of this run),
 `GET|PUT /api/review?folder=`, `GET /api/status?folder=`, `POST /api/batch`,
-`GET /api/job/<id>?since=N` (log lines + status + progress: files done / total, elapsed, eta). Jobs run in a thread, one at a time.
+`GET /api/job/<id>?since=N` (log lines + status + progress: files done / total, elapsed, eta). Jobs run in a thread, one at a time. A job error prints its full traceback on the
+console running `app.py` and the last 12 lines in the job log.
 
 ## 5. Pipeline
 
@@ -274,6 +275,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   bank labels (Page, Compte, Alliance, Succession, Mutation, Novembre...) are in `_STOP`: they split a run of capitals,
   so 'MLE Ambre Lefèvre' keeps 'Ambre Lefèvre'. A single ordinary word is only an uncertain suggestion when it is a
   known first name.
+  A label word is also one or two letters away from a stop word (`is_label_word`: 'SUCCËSSION', 'COMPTÈ', 'COMTPES' from
+  the OCR), and the words at both ends of a name that are labels, titles, towns, operations or connectors ('DE', 'LA')
+  are trimmed (`trim_name_edges`): 'SUCCESSION DE Lucas Martin' keeps 'Lucas Martin'. A run of one digit of 7 or more
+  ('111111111111', a barcode read by the OCR) is no number (`pii._repeated_digits`).
 - Identity by shape (`fields.identity_shape`, identity documents only, see `is_id_document`): when the labels are not
   read (poor copy), the 9-character document number (letters and digits) and the words that are CAPS or Capitalised and
   not boilerplate (`_ID_BOILERPLATE`, fuzzy: `is_boilerplate`, so 'Sumame' is 'Surname') are PERSON / DOC_NUMBER,

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import fields, ocr
 from .ocr import ocr_words, render_page
-from .pii import (NAME_TYPES, PERSON_RANKS, detect_structured, digital_words, fitz, norm_value, strip_operations,
+from .pii import (NAME_TYPES, PERSON_RANKS, _repeated_digits, detect_structured, digital_words, fitz, norm_value, strip_operations,
                   term_regex, words_to_text)
 
 # the identity fields of an ID document (label kind -> type) that the second check reads back
@@ -105,8 +105,8 @@ def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
             text = re.sub(re.escape(fake), " ", text, flags=re.IGNORECASE)
         id_page = fields.is_id_document(words)
         found = [(m.type, m.value) for m in detect_structured(text)
-                 if m.type in LEAK_TYPES or (m.type == "DATE" and id_page)
-                 or (m.type == "PERSON" and m.rank == PERSON_RANKS[0])]
+                 if not _repeated_digits(m.value) and (m.type in LEAK_TYPES or (m.type == "DATE" and id_page)
+                 or (m.type == "PERSON" and m.rank == PERSON_RANKS[0]))]
         if id_page:
             found += fields.identity_shape(words)
             found += [(_LEAK_LABELS[f["kind"]], f["value"]) for f in fields.find_labeled(words)
