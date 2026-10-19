@@ -787,7 +787,7 @@ def manual_text_tests():
     try:
         doc = fitz.open()
         page = doc.new_page(width=595, height=842)
-        page.insert_text((60, 100), "Ancienne valeur oubliee", fontname="helv", fontsize=10)
+        page.insert_text((60, 100), "Ancienne valeur oubliee", fontname="helv", fontsize=10, color=(0.8, 0, 0))
         page.draw_line((40, 103), (560, 103), color=(0, 0, 0), width=0.8)           # a line across the text
         doc.save(tmp / "texte.pdf", garbage=4)
         box = [56.0, 90.0, 260.0, 110.0]
@@ -805,6 +805,11 @@ def manual_text_tests():
         ends = [c["bbox"][2] for b in out.get_text("rawdict")["blocks"] for l in b.get("lines", [])
                 for sp in l["spans"] for c in sp["chars"] if c["c"].strip() and c["bbox"][0] >= box[0] - 1
                 and c["bbox"][2] <= box[2] + 30]
+        colours = [sp["color"] for b in out.get_text("dict")["blocks"] for l in b.get("lines", [])
+                   for sp in l["spans"] if "Jean" in sp["text"]]
+        check("the typed text takes the colour of the text it replaces (red here)",
+              bool(colours) and (colours[0] >> 16) > 150 and (colours[0] & 255) < 60,
+              repr([hex(c) for c in colours]))
         check("the typed text is stretched to the box width",
               bool(ends) and abs(max(ends) - box[2]) < 6.0, f"right edge {max(ends) if ends else None} box {box[2]}")
     finally:

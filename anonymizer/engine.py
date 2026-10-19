@@ -875,6 +875,9 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
             newp.insert_image(newp.rect, stream=_jpeg(img))
             continue
         words = lay["words"]
+        typed = cfg.get("manual_texts", {}).get(pno, [])
+        # the colour of the text a typed text covers, read before the page changes
+        typed_colors = [render.style_rgb(render.style_at(render.page_spans(page), box)) for box, _ in typed]
         bo = cfg["blackout"]
         want_photos = bo["photos"] and (not bo["photos_only_on_id_documents"] or fields.is_id_document(words))
         # faces and codes are both looked for on one render of the page, taken before it is redacted
@@ -902,8 +905,8 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
             extras["blackouts"] += [{"page": pno, "kind": k, "box": [round(v, 1) for v in r]} for k, r in black]
             for k, r in black:
                 _note(extras, pno, r, f"black box ({k})")
-        for box, text in cfg.get("manual_texts", {}).get(pno, []):       # typed by hand, after the boxes
-            render.paint_text_box_pdf(page, box, text)
+        for (box, text), color in zip(typed, typed_colors):              # typed by hand, after the boxes
+            render.paint_text_box_pdf(page, box, text, color)
             _note(extras, pno, box, "typed text (manual)", "", text)
     if fonts.used:
         log("   fonts: " + ", ".join(f"{n} {k}" for k, n in sorted(fonts.used.items()))
@@ -1252,6 +1255,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                    b[3] + 0.5 * (b[3] - b[1])) for b in found_photos]
     manual = [tuple(v * 300 / 72 for v in b) for b in cfg.get("manual_boxes", {}).get(pno, [])]   # pt -> px
     typed = [(tuple(v * 300 / 72 for v in b), t) for b, t in cfg.get("manual_texts", {}).get(pno, [])]
+    typed_inks = [render.text_ink(img, box) for box, _ in typed]     # before anything is painted over
     not_ink = ([zone] if zone else []) + codes + photo_area + manual
     signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
     removed = cfg.get("removed_boxes", {}).get(pno, [])     # automatic boxes the user removed: not painted
@@ -1313,8 +1317,8 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     if photos or codes or signs or manual:
         log(f"   page {pno}: blacked out {len(photos)} photo(s), {len(codes)} QR code(s), {len(signs)} signature(s), "
             f"{len(manual)} box(es) drawn by hand")
-    for box, text in typed:                                             # typed by hand: painted over the page
-        render.paint_text_box(img, box, text)
+    for (box, text), ink in zip(typed, typed_inks):                     # typed by hand: painted over the page
+        render.paint_text_box(img, box, text, ink)
     log(f"   page {pno}/{n_pages} (scan): OCR {len(words)} words, {len(plan)} replacement(s)"
         f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
     return img

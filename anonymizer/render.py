@@ -697,12 +697,21 @@ def stretch_layout(text: str, box, bold: bool = False):
     return font, (x0 + pad, y0 + pad + asc), sx
 
 
-def paint_text_box(img, box, text: str, bold: bool = False):
-    """Scan: the box is painted with the paper colour around it, then the typed text is written in it, stretched."""
+def paint_text_box(img, box, text: str, ink, bold: bool = False):
+    """Scan: the box is painted with the paper colour around it, then the typed text is written in it, stretched,
+    in `ink` (the colour of the text it replaces, see ink_color)."""
     x = [int(round(v)) for v in box]
     ImageDraw.Draw(img).rectangle(x, fill=background_color(img, x))
     font, xy, sx = stretch_layout(text, box, bold)
-    write_text(img, xy, text, font, (0, 0, 0), sx)
+    write_text(img, xy, text, font, tuple(ink), sx)
+
+
+def style_rgb(style: dict | None) -> tuple:
+    """The colour of a digital text span (0..1 per channel); black when there is no text under the box."""
+    if not style:
+        return (0, 0, 0)
+    c = style["color"]
+    return (((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255)
 
 
 def paper_color_pdf(page, box) -> tuple:
@@ -715,7 +724,7 @@ def paper_color_pdf(page, box) -> tuple:
     return tuple(float(v) / 255 for v in np.median(ring, axis=0))
 
 
-def paint_text_box_pdf(page, box, text: str):
+def paint_text_box_pdf(page, box, text: str, color=(0, 0, 0)):
     """Digital: what is under the box is removed (its text, its pixels; the lines it crosses are covered by the paper
     colour), then the typed text is written in the box, stretched to its width and height."""
     rect = fitz.Rect(box)
@@ -729,7 +738,7 @@ def paint_text_box_pdf(page, box, text: str):
     size = max((y1 - y0 - 2 * pad) / max(font.ascender - font.descender, 0.1), 4)
     baseline = y0 + pad + font.ascender * size
     sx = max(x1 - x0 - 2 * pad, 1) / max(font.text_length(text, fontsize=size), 1)
-    tw = fitz.TextWriter(page.rect, color=(0, 0, 0))
+    tw = fitz.TextWriter(page.rect, color=color)
     tw.append((x0 + pad, baseline), text, font=font, fontsize=size)
     tw.write_text(page, morph=(fitz.Point(x0 + pad, baseline), fitz.Matrix(sx, 0, 0, 1, 0, 0)))
 
@@ -888,6 +897,21 @@ def ink_color(img, box):
     lum = crop @ np.array([0.299, 0.587, 0.114])
     dark = crop[lum <= np.percentile(lum, 10)]
     return tuple(int(v) for v in np.median(dark, axis=0))
+
+
+def text_ink(img, box, default=(0, 0, 0)):
+    """Colour of the text in a box that is mostly paper (a typed text covers a line of text, often a thin one): the
+    pixels clearly darker than the paper around the box. `default` when there is no such pixel."""
+    W, H = img.size
+    x0, y0, x1, y1 = [int(v) for v in box]
+    crop = np.asarray(img.crop((max(x0, 0), max(y0, 0), min(x1, W), min(y1, H)))).reshape(-1, 3).astype(float)
+    if not len(crop):
+        return default
+    lum = crop @ np.array([0.299, 0.587, 0.114])
+    paper = background_color(img, box)
+    paper_lum = float(np.array(paper) @ np.array([0.299, 0.587, 0.114]))
+    ink = crop[lum < paper_lum - 60]
+    return tuple(int(v) for v in np.median(ink, axis=0)) if len(ink) >= 3 else default
 
 
 def background_color(img, box):
