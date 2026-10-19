@@ -216,7 +216,8 @@ console running `app.py` and the last 12 lines in the job log.
      count is per file; the `found N times` of the config counts the whole folder. Zoom on the word is an app setting (off).
    - Verify (`verify.verify_output`): searches the output for each original value (metadata, text layer, and OCR with the
      tolerant regex whenever the file is not purely digital, or when "OCR check" is ticked). If a scanned file has
-     leftovers, `run_anonymize` runs a second pass on its output: text only (photos / codes / signatures are off in
+     leftovers, `run_anonymize` runs a second pass on its output (the per-file config `fcfg`: a list in the whole
+     config is not a per-page dict; the log says when it is not needed): text only (photos / codes / signatures are off in
      that pass, so a box the user removed is not blacked out again, and the report keeps the first pass's boxes).
    - Second check (`verify.leak_suspects`): the detectors run again on what the output still says (text layer, or its OCR),
      with the fake values taken out of the text first (a fake street and the fake town on one line are not an

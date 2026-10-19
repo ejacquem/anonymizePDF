@@ -1020,6 +1020,47 @@ def street_name_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def second_pass_tests():
+    """The second pass of an anonymization is logged every time, and it runs on a scan whose output still holds an
+    original value (it crashed before: the per-file config was not used). A digital file says how its output is checked."""
+    print("\n== second pass")
+    src = ROOT / "sample_data" / "Dossier Test 16"
+    tmp = Path(tempfile.mkdtemp(prefix="anon_pass2_"))
+    try:
+        shutil.copy(src / "colon_scan.pdf", tmp / "colon_scan.pdf")
+        base = ["ocr_lang: \"fra+eng\"", "case_sensitive: false", "match_case: true",
+                "style: {mode: replace, digital_fill: none}",
+                "blackout: {photos: false, photos_only_on_id_documents: false, signatures: false, qr_codes: false}",
+                "mrz: regenerate", "replacements:"]
+        # the value is replaced by itself: it is still in the output, so the second pass has to search it again
+        left = "\n".join(base + ["  - {find: \"123456789\", replace: \"123456789\", type: ACCOUNT_NUMBER}", "regex: []"])
+        logs = []
+        rep = engine.run_anonymize(tmp, "pass2", left, "fra+eng", False, logs.append)
+        text = "\n".join(logs)
+        check("a scan with a value left in its output does not fail", rep["files"][0].get("error") is None,
+              str(rep["files"][0].get("error")))
+        check("the second pass runs and is logged", "second pass on the scanned output" in text, text[-300:])
+        good = "\n".join(base + ["  - {find: \"987654321\", replace: \"719795412\", type: ACCOUNT_NUMBER}", "regex: []"])
+        logs = []
+        for f in tmp.glob("*_anonymized.pdf"):
+            f.unlink()
+        engine.run_anonymize(tmp, "pass2", good, "fra+eng", False, logs.append)
+        check("a scan with nothing left says so: the second pass is not needed",
+              "second pass: not needed" in "\n".join(logs), "\n".join(logs)[-300:])
+        shutil.copy(ROOT / "sample_data" / "Dossier Test 14" / "releve_placements.pdf", tmp / "releve_placements.pdf")
+        digital = "\n".join(base + ["  - {find: \"Théo Aurélien Morin\", replace: \"Enzo Petit\", type: PERSON}", "regex: []"])
+        logs = []
+        engine.run_anonymize(tmp, "pass2", digital, "fra+eng", True, logs.append)
+        check("a digital file checked with the OCR option is read by OCR",
+              "checking the output (OCR)" in "\n".join(logs), "\n".join(logs)[-300:])
+        logs = []
+        engine.run_anonymize(tmp, "pass2", digital, "fra+eng", False, logs.append)
+        check("a digital file without the OCR option is checked on its text layer",
+              "checking the output (text layer" in "\n".join(logs), "\n".join(logs)[-300:])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def bank_identifier_tests():
     """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
     European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
@@ -1283,6 +1324,7 @@ def main():
         split_word_tests()
         colon_tests()
         street_name_tests()
+        second_pass_tests()
         manual_text_tests()
         rotated_tests()
         town_tests()

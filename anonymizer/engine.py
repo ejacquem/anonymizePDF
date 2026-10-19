@@ -1471,8 +1471,11 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
             entry["replaced"] = len(records)
             log(f"   {len(records)} replacement(s), verifying...")
             use_ocr = mode != "digital" or ocr_verify            # a digital file is checked on its text, unless asked
+            log("   checking the output " + ("(OCR)" if use_ocr else "(text layer; OCR check off for digital PDFs)") + "...")
             read = verify.read_output(out, ocr_lang, use_ocr)    # read once: both checks work on this reading
             entry["leftovers"] = verify.verify_output(read, cfg)
+            if mode == "scan" and not entry["leftovers"]:
+                log("   second pass: not needed, no original value left in the output")
             if entry["leftovers"] and mode == "scan":
                 # a scanned page is only read once by OCR: a value the first pass missed (small print, a second
                 # label) is searched again on the new output, and replaced if found
@@ -1480,7 +1483,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 tmp = out.with_name(out.stem + ".pass2" + out.suffix)
                 # only text is replaced here: the photos, codes and signatures were decided by the first pass (the
                 # ones the user removed included), so they are not searched again on the output
-                text_only = {**cfg, "blackout": {**cfg["blackout"], "photos": False, "qr_codes": False, "signatures": False}}
+                # the per-file config (the manual boxes and texts of this file, not the whole config)
+                text_only = {**fcfg, "blackout": {**cfg["blackout"], "photos": False, "qr_codes": False, "signatures": False}}
                 more, more_extras = _scan_source(out, tmp, text_only, ocr_lang, log)
                 extras.setdefault("trace", []).extend(more_extras.get("trace", []))
                 tmp.replace(out)
