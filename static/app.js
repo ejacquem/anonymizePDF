@@ -399,11 +399,35 @@ function updateZoomLabel() {
   $("#zoomFit").title = zoom.fit ? `Fit page width (${pct})` : "Fit page width";
 }
 
+// the point of the page under a pointer position (box coordinates): the page and its fraction across it, measured on
+// the screen, so the page margins and the gaps between pages do not matter. null when the pointer is in a gap.
+function pinPoint(which, ax, ay) {
+  const v = viewers[which], br = v.box.getBoundingClientRect();
+  const sx = br.left + ax, sy = br.top + ay;
+  for (let i = 0; i < v.list.children.length; i++) {
+    const r = v.list.children[i].getBoundingClientRect();
+    if (sx >= r.left && sx <= r.right && sy >= r.top && sy <= r.bottom) {
+      return { i, fx: (sx - r.left) / r.width, fy: (sy - r.top) / r.height, sx, sy };
+    }
+  }
+  return null;
+}
+
+// after a zoom: the same point of the page is again under the pointer
+function unpinPoint(which, pin) {
+  const v = viewers[which], el = v.list.children[pin.i];
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  const nx = r.left + pin.fx * r.width, ny = r.top + pin.fy * r.height;
+  setScroll(which, v.box.scrollLeft + (nx - pin.sx), v.box.scrollTop + (ny - pin.sy));
+}
+
 function setZoom(scale, anchor) {
   if (typeof scheduleSave === "function") scheduleSave();
   scale = Math.min(4, Math.max(0.25, scale));
   const k = scale / zoom.scale;
   zoom.scale = scale;
+  const pin = anchor ? pinPoint(anchor.which, anchor.x, anchor.y) : null;
   // keep the point under the cursor (or the centre) where it is
   const keep = {};
   for (const which of VIEWERS) {
@@ -414,6 +438,7 @@ function setZoom(scale, anchor) {
   }
   VIEWERS.forEach(sizePages);
   for (const which of VIEWERS) setScroll(which, keep[which].x, keep[which].y);
+  if (anchor && pin) unpinPoint(anchor.which, pin);
   if (anchor) syncScroll(anchor.which);
   updateZoomLabel();
   clearTimeout(setZoom.timer);
@@ -504,9 +529,11 @@ for (const which of VIEWERS) {
     e.preventDefault();
     box.setPointerCapture(e.pointerId);
     box.classList.add("panning");
-    const start = { x: e.clientX, y: e.clientY, left: box.scrollLeft, top: box.scrollTop };
+    let last = { x: e.clientX, y: e.clientY };        // the last pointer position: the drag is relative to it
     const move = (ev) => {
-      setScroll(which, start.left - (ev.clientX - start.x), start.top - (ev.clientY - start.y));
+      const dx = ev.clientX - last.x, dy = ev.clientY - last.y;
+      last = { x: ev.clientX, y: ev.clientY };
+      setScroll(which, box.scrollLeft - dx, box.scrollTop - dy);
       syncScroll(which);              // move the other pane right away, without waiting for the scroll event
     };
     const up = () => {
