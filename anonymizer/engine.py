@@ -593,9 +593,9 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     active_values = {norm_value(a["value"]) for a in active}
     off = [o for o in off if norm_value(o["value"]) not in active_values]
     text = render_config(rel, pdfs, active, off, default_ocr_lang)
-    old = folder / CONFIG_NAME                              # a new scan keeps the manual data of the old config
+    old = folder / CONFIG_NAME                              # a new scan keeps the changes made by hand
     if old.exists():
-        text = configmodel.keep_manual(text, old.read_text(encoding="utf-8"))
+        text = configmodel.keep_edits(text, old.read_text(encoding="utf-8"))
     stats = {"files": len(pdfs), "active": len(active), "inactive": len(off), "seconds": round(time.time() - t0, 1)}
     log(f"Done: {len(active)} active replacement(s), {len(off)} suggestion(s) left commented out "
         f"({stats['seconds']}s)")

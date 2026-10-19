@@ -177,11 +177,17 @@ details.grp > summary { cursor: pointer; padding: 5px 2px; display: flex; align-
 details.grp > summary::-webkit-details-marker { display: none; }
 details.grp > summary::before { content: "▸"; color: var(--muted); width: 7px; font-size: 10px; transform: scale(1.8); }
 details.grp[open] > summary::before { content: "▾"; }
-.erow { display: grid; grid-template-columns: 18px minmax(0, 1fr) 14px minmax(0, 1fr) 34px 22px; gap: 4px;
+.erow { display: grid; grid-template-columns: 18px minmax(0, 1fr) 14px minmax(0, 1fr) 34px 62px 22px; gap: 4px;
   align-items: center; padding: 1px 2px 1px 10px; border-radius: 4px; }
 .erow:hover { background: var(--sel); }
 .cfghint { padding: 14px 6px; line-height: 1.5; }
 .erow.off .efind, .erow.off .erep { color: var(--muted); }
+.erow.removed .efind { text-decoration: line-through; }
+/* a value changed by hand: a pen and its kind (edited / hidden / removed) in a column of its own */
+.eflag { font-size: 11px; white-space: nowrap; color: #b26a00; border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; }
+.eflag.hidden { color: var(--muted); }
+.eflag.removed { color: #b3261e; }
+.erestore { padding: 0 4px; font-size: 11px; }
 .efind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .erep { font: inherit; border: 1px solid transparent; background: transparent; color: var(--text); padding: 1px 4px;
   border-radius: 4px; min-width: 0; }

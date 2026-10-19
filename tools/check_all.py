@@ -732,6 +732,53 @@ def common_words_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def config_edit_tests():
+    """Automatic values changed by hand (edited, hidden, removed) are flagged, saved in the config, and kept when the
+    config is generated again; a value the new scan does not find is kept as the user left it."""
+    print("\n== automatic values edited by hand")
+    old = "\n".join(["replacements:",
+                     '  - {find: "Jean Dupont", replace: "Alexandre Lemaire", type: PERSON}',
+                     '  # - {find: "Marc Dubois", replace: "Paul Renard", type: PERSON}',
+                     '  - {find: "Lyon", replace: "Nantes", type: LOCATION}',
+                     '  - {find: "Nice", replace: "Brest", type: LOCATION}', "regex: []", ""])
+    model = configmodel.to_model(old)
+    by = {e["find"]: e for e in model["entries"]}
+
+    def mark(e):                                   # what the table does on the first change of a value
+        if not e.get("orig"):
+            e["orig"] = {"replace": e["replace"], "active": e["active"]}
+    mark(by["Jean Dupont"]); by["Jean Dupont"]["replace"] = "Zoé Martin"
+    mark(by["Lyon"]); by["Lyon"]["active"] = False
+    mark(by["Marc Dubois"]); by["Marc Dubois"]["removed"] = True
+    mark(by["Nice"])
+    edited = configmodel.to_yaml(model, "dossier")
+    back = {e["find"]: e for e in configmodel.to_model(edited)["entries"]}
+    check("an edited value keeps its new replacement and is flagged 'edited'",
+          back["Jean Dupont"]["replace"] == "Zoé Martin" and back["Jean Dupont"]["flag"] == "edited")
+    check("an unchecked value is flagged 'hidden'", back["Lyon"]["flag"] == "hidden" and not back["Lyon"]["active"])
+    check("a removed value is flagged 'removed' and listed, not replaced",
+          back["Marc Dubois"]["flag"] == "removed" and not back["Marc Dubois"]["active"])
+    check("a value put back to its scanned state has no flag", back["Nice"]["flag"] == "")
+    fresh = "\n".join(["replacements:",
+                        '  - {find: "Jean Dupont", replace: "Alexandre Lemaire", type: PERSON}',
+                        '  - {find: "Lyon", replace: "Nantes", type: LOCATION}',
+                        '  # - {find: "Marc Dubois", replace: "Paul Renard", type: PERSON}',
+                        '  - {find: "Paris", replace: "Lille", type: LOCATION}', "regex: []", ""])
+    kept = configmodel.keep_edits(fresh, edited)
+    after = {e["find"]: e for e in configmodel.to_model(kept)["entries"]}
+    check("a new scan keeps the edited replacement of a value it still finds",
+          after["Jean Dupont"]["replace"] == "Zoé Martin" and after["Jean Dupont"]["flag"] == "edited")
+    check("a new scan keeps a hidden value hidden", not after["Lyon"]["active"] and after["Lyon"]["flag"] == "hidden")
+    check("a new scan keeps a removed value out", after["Marc Dubois"]["flag"] == "removed"
+          and not after["Marc Dubois"]["active"])
+    check("a value the new scan finds for the first time is taken as scanned",
+          after["Paris"]["active"] and after["Paris"]["replace"] == "Lille" and after["Paris"]["flag"] == "")
+    check("a value the new scan no longer finds keeps its edit", "Nice" not in after or after["Nice"]["flag"] == "")
+    active = engine.parse_config(kept)["terms"]
+    check("only the active values are replaced after a new scan",
+          active.get("Jean Dupont") == "Zoé Martin" and "Lyon" not in active and "Marc Dubois" not in active)
+
+
 def bank_identifier_tests():
     """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
     European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
@@ -990,6 +1037,7 @@ def main():
         common_words_tests()
         text_overlap_tests()
         bank_identifier_tests()
+        config_edit_tests()
         rotated_tests()
         town_tests()
         speedup_tests()

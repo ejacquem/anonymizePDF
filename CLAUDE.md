@@ -140,6 +140,11 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   reads active entries AND the commented suggestions line by line, `to_yaml` writes the scan layout back); *YAML*
   view = the raw file. API: `GET /api/config/model`, `POST /api/config/model/parse|render`, `PUT /api/config/model`.
   The YAML stays the storage: a round trip must keep the applied config identical (checked by check_all).
+  Automatic values can be changed by hand: a replacement edited, a value unchecked (hidden) or removed. Each is flagged
+  with a pen in its own column ('edited' / 'hidden' / 'removed'), and listed in `auto_changes` of the YAML with its
+  `original` and `was_active` (`configmodel.auto_flag`, `to_model`, `to_yaml`). A new scan keeps them
+  (`configmodel.keep_edits`): a value still found keeps its change, a removed one stays out, a value the scan no longer
+  finds keeps its change. The scan no longer asks for a confirmation about this (`check: config_edit_tests`).
 - Review flag: 'Mark as reviewed' in the Anonymized pane head; `anon_review.json` per folder = {original name: {at,
   sha256 of the output}}; a flag counts only while the output's hash matches (regenerated or edited -> not reviewed);
   `run_anonymize` also clears the flag of each file it regenerates. Tree badges `✓` (file) and `✓ r/n` (folder).
@@ -226,6 +231,7 @@ manual_blackouts:                   # black boxes drawn in the Anonymized pane: 
   # a moved automatic box: origin = photo | qr code | signature, replaces = the box the detector found
   - {file: "x.pdf", page: 1, box: [x0, y0, x1, y1], origin: photo, replaces: [x0, y0, x1, y1]}
 ```
+`auto_changes:` (written by the app) keeps the automatic values changed by hand: `{find, type, original, was_active, removed}`.
 There is no list of removed automatic boxes in the config: they are only sent with an anonymization run.
 Missing keys in older configs get the safe defaults (everything on). `find` matching (`pii.term_regex`): case-
 insensitive, flexible whitespace, word boundaries; on scans `ocr=True` also accepts 0/O/D, 1/l/I, 5/S, 8/B, 2/Z,

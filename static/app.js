@@ -1000,6 +1000,17 @@ function manualHtml(man) {
   </details>`;
 }
 
+// an automatic value changed by hand keeps its scanned state (orig), so it is flagged and kept by the next scan
+const FLAG_LABEL = { edited: "edited", hidden: "hidden", removed: "removed" };
+function markOrig(e) { if (!e.orig) e.orig = { replace: e.replace, active: e.active }; }
+function autoFlag(e) {
+  if (e.removed) return "removed";
+  if (!e.orig) return "";
+  if (e.orig.active && !e.active) return "hidden";
+  if (e.replace !== e.orig.replace || !!e.active !== e.orig.active) return "edited";
+  return "";
+}
+
 function renderTable() {
   const box = $("#cfgTable");
   const m = state.model;
@@ -1022,8 +1033,9 @@ function renderTable() {
   });
   const types = [...groups.keys()].sort((a, b) => (TYPE_ORDER.indexOf(a) + 1 || 99) - (TYPE_ORDER.indexOf(b) + 1 || 99));
   let h = settingsHtml(m.settings) + manualHtml(m.manual || { replacements: [], blackouts: [] }) + boxPanelHtml();
-  const nAct = m.entries.filter((e) => e.active).length;
-  h += `<div class="cfgsum muted small">${nAct} value(s) replaced · ${m.entries.length - nAct} suggestion(s) not active
+  const nAct = m.entries.filter((e) => e.active && !e.removed).length;
+  const nRem = m.entries.filter((e) => e.removed).length;
+  h += `<div class="cfgsum muted small">${nAct} value(s) replaced · ${m.entries.length - nAct - nRem} suggestion(s) not active${nRem ? ` · ${nRem} removed` : ""}
     · tick a line to replace it, untick to keep the original</div>`;
   for (const t of types) {
     const idx = groups.get(t).sort((a, b) => (m.entries[b].active - m.entries[a].active) || a - b);
@@ -1035,19 +1047,27 @@ function renderTable() {
       <b>${esc(TYPE_LABELS[t] || t)}</b> <span class="muted">${act}/${idx.length}</span></summary>`;
     for (const i of idx) {
       const e = m.entries[i];
-      h += `<div class="erow${e.active ? "" : " off"}" data-i="${i}">
-        <input type="checkbox" class="echk"${e.active ? " checked" : ""} title="${e.active ? "Replaced" : "Not replaced"}">
+      const flag = autoFlag(e);
+      const flagHtml = flag
+        ? `<span class="eflag ${flag}" title="${flag === "removed" ? "Removed by hand: not replaced, kept when the config is generated again"
+            : flag === "hidden" ? "Unchecked by hand: not replaced, kept when the config is generated again"
+            : "Changed by hand (replacement or ticks): kept when the config is generated again"}">✎ ${FLAG_LABEL[flag]}</span>`
+        : "";
+      h += `<div class="erow${e.active && !e.removed ? "" : " off"}${e.removed ? " removed" : ""}" data-i="${i}">
+        <input type="checkbox" class="echk"${e.active ? " checked" : ""}${e.removed ? " disabled" : ""} title="${e.active ? "Replaced" : "Not replaced"}">
         <span class="efind" title="${esc(e.info || "")}">${esc(e.find)}</span>
         <span class="arrow">→</span>
-        <input class="erep" value="${esc(e.replace)}" spellcheck="false" title="Replacement (edit freely)">
+        <input class="erep" value="${esc(e.replace)}" spellcheck="false" title="Replacement (edit freely)"${e.removed ? " disabled" : ""}>
         <span class="einfo muted" title="${esc(e.info || "")}">${esc(infoShort(e.info))}</span>
-        <button class="edel mini" title="Delete this line">✕</button></div>`;
+        ${flagHtml}
+        ${e.removed ? `<button class="erestore mini" title="Put this value back (its scanned state)">↺</button>`
+          : `<button class="edel mini" title="Remove this value (kept out of the next scan too)">✕</button>`}</div>`;
     }
     h += `</details>`;
   }
   if (!types.length && q) h += `<div class="muted small">Nothing matches “${esc(q)}”.</div>`;
-  h += `<div class="cfghint muted small">Values found by the scan are listed above. To add a value of your own, use the
-    Manual data panel: it is kept when the config is generated again.</div>`;
+  h += `<div class="cfghint muted small">Edit any value: a changed replacement, an unchecked value (hidden) or a removed
+    one is flagged ✎ and kept when the config is generated again. Your own values go in the Manual data panel.</div>`;
   if ((m.regex || []).length) h += `<div class="muted small">${m.regex.length} regex rule(s): edit them in the YAML view.</div>`;
   box.innerHTML = h;
   box.querySelectorAll(".gchk").forEach((c) => { c.indeterminate = c.dataset.some === "1"; });
@@ -1069,6 +1089,7 @@ $("#cfgTable").addEventListener("change", (ev) => {
   }
   if (t.classList.contains("echk")) {
     const i = +t.closest(".erow").dataset.i;
+    markOrig(m.entries[i]);
     m.entries[i].active = t.checked;
     tableChanged();
     return renderTable();
@@ -1076,7 +1097,9 @@ $("#cfgTable").addEventListener("change", (ev) => {
   if (t.classList.contains("gchk")) {
     const q = ($("#cfgSearch").value || "").trim().toLowerCase();
     m.entries.forEach((e) => {
-      if (e.type === t.dataset.type && (!q || e.find.toLowerCase().includes(q) || (e.replace || "").toLowerCase().includes(q))) e.active = t.checked;
+      if (e.removed || e.type !== t.dataset.type || (q && !e.find.toLowerCase().includes(q) && !(e.replace || "").toLowerCase().includes(q))) return;
+      markOrig(e);
+      e.active = t.checked;
     });
     tableChanged();
     return renderTable();
@@ -1085,7 +1108,9 @@ $("#cfgTable").addEventListener("change", (ev) => {
 $("#cfgTable").addEventListener("input", (ev) => {
   const t = ev.target;
   if (t.classList.contains("erep")) {
-    state.model.entries[+t.closest(".erow").dataset.i].replace = t.value;
+    const e = state.model.entries[+t.closest(".erow").dataset.i];
+    markOrig(e);
+    e.replace = t.value;
     tableChanged();
   }
 });
@@ -1095,8 +1120,17 @@ $("#cfgTable").addEventListener("click", (ev) => {
   const row = t.closest && t.closest(".brow");
   if (row) { selectBox(row.dataset.bkey); return; }
   if (t.classList.contains("gchk")) { ev.stopPropagation(); return; }    // do not fold the group
-  if (t.classList.contains("edel")) {
-    state.model.entries.splice(+t.closest(".erow").dataset.i, 1);
+  if (t.classList.contains("edel")) {                         // removed by hand: flagged, kept out of the next scan
+    const e = state.model.entries[+t.closest(".erow").dataset.i];
+    markOrig(e);
+    e.removed = true;
+    e.active = false;
+    tableChanged();
+    return renderTable();
+  }
+  if (t.classList.contains("erestore")) {                    // back to the scanned state (or to its change)
+    const e = state.model.entries[+t.closest(".erow").dataset.i];
+    e.removed = false;
     tableChanged();
     return renderTable();
   }
@@ -1268,7 +1302,6 @@ async function runJob(kind, url, body, label, opts = {}) {
 
 $("#btnScan").onclick = async () => {
   if (state.batchMode) return runBatch("scan");
-  if (state.hasConfig && !confirm("Scanning again replaces the automatic values: your ticks and edits on them are lost. Your manual data (values and black boxes) is kept. Continue?")) return;
   const r = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan");
   await loadTree();
   if (r && r.status === "done") {
@@ -1362,7 +1395,7 @@ function renderOverview() {
 async function runBatch(action) {
   const redo = $("#batchRedo") && $("#batchRedo").checked;
   if (action === "all" && !confirm("Scan the folders without config and anonymize them right away, without reviewing the new configs?")) return;
-  if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder: the automatic values are replaced (your ticks and edits on them are lost). The manual data is kept. Continue?")) return;
+  if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder. Your edits and manual data are kept. Continue?")) return;
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify },
     { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize" }[action]);

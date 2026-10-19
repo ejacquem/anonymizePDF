@@ -80,28 +80,76 @@ def to_model(text: str) -> dict:
         manual_repl.append({"find": e["find"], "replace": e["replace"]})
     entries = [e for e in entries if not (e["active"] and e["type"] == "TERM")]
     manual_boxes = [dict(i) for i in data.get("manual_blackouts") or [] if isinstance(i, dict) and "box" in i]
+    # automatic values changed by hand (edited, hidden, removed): the original value is kept, so a new scan can
+    # tell what the user changed. A removed value is listed too (flag 'removed'): it can be restored in the table.
+    by_key = {(_key(e["find"]), e["type"]): e for e in entries}
+    for item in data.get("auto_changes") or []:
+        if not isinstance(item, dict) or not item.get("find"):
+            continue
+        orig = {"replace": "" if item.get("original") is None else str(item["original"]),
+                "active": bool(item.get("was_active", True))}
+        e = by_key.get((_key(item["find"]), str(item.get("type") or "TERM")))
+        if e is None:
+            if not item.get("removed"):
+                continue
+            e = {"find": str(item["find"]), "replace": orig["replace"], "type": str(item.get("type") or "TERM"),
+                 "active": False, "info": "removed by hand"}
+            entries.append(e)
+            by_key[(_key(e["find"]), e["type"])] = e
+        e["orig"] = orig
+        e["removed"] = bool(item.get("removed"))
+        if e["removed"]:
+            e["active"], e["replace"] = False, orig["replace"]
+    for e in entries:
+        e["flag"] = auto_flag(e)
     return {"settings": s, "entries": entries, "regex": data.get("regex") or [], "extra": extra,
             "folder": _folder_of(text),
             "manual": {"replacements": manual_repl, "blackouts": manual_boxes}}
+
+
+def auto_flag(e: dict) -> str:
+    """'removed' | 'hidden' (unchecked) | 'edited' (its replacement changed, or it was switched on), '' when the value is
+    as the scan wrote it. Uses the original value kept in e['orig']."""
+    if e.get("removed"):
+        return "removed"
+    orig = e.get("orig")
+    if not orig:
+        return ""
+    if orig["active"] and not e.get("active"):
+        return "hidden"
+    if e.get("replace") != orig["replace"] or bool(e.get("active")) != orig["active"]:
+        return "edited"
+    return ""
 
 
 def has_manual(manual: dict | None) -> bool:
     return bool(manual and (manual.get("replacements") or manual.get("blackouts")))
 
 
-def keep_manual(new_text: str, old_text: str) -> str:
-    """The text of a new scan, with the manual data of the previous config (if any) put back: the manual values
-    win over the automatic ones (an automatic value with the same text is dropped)."""
+def keep_edits(new_text: str, old_text: str) -> str:
+    """The text of a new scan, with what was changed by hand in the previous config put back: the automatic values
+    edited, hidden or removed (matched by their text), and the manual data (manual values win over the automatic
+    ones: an automatic value with the same text is dropped). A value the new scan no longer finds is kept as it was."""
     try:
         old = to_model(old_text)
     except ValueError:
         return new_text
-    if not has_manual(old.get("manual")):
+    changed = [e for e in old["entries"] if e.get("flag")]
+    manual = old.get("manual") or {}
+    if not changed and not has_manual(manual):
         return new_text
     model = to_model(new_text)
-    manual_keys = {_key(m["find"]) for m in old["manual"]["replacements"]}
+    new_by_key = {_key(e["find"]): e for e in model["entries"]}
+    for e in changed:
+        ne = new_by_key.get(_key(e["find"]))
+        if ne is None:
+            model["entries"].append(e)                   # not in the new scan: kept as the user left it
+            continue
+        ne.update(orig=e["orig"], removed=e.get("removed", False), replace=e["replace"], active=e["active"])
+        ne["flag"] = auto_flag(ne)
+    manual_keys = {_key(m["find"]) for m in manual.get("replacements") or []}
     model["entries"] = [e for e in model["entries"] if _key(e["find"]) not in manual_keys]
-    model["manual"] = old["manual"]
+    model["manual"] = manual
     return to_yaml(model, model.get("folder") or "")
 
 
@@ -157,6 +205,8 @@ def to_yaml(model: dict, folder: str = "") -> str:
     def key(e):
         return order.get(e.get("type") or "TERM", 99)
 
+    changes = [e for e in entries if e.get("orig") and auto_flag(e)]          # edited, hidden or removed by hand
+    entries = [e for e in entries if not e.get("removed")]
     active = [e for e in entries if e.get("active")]
     off = [e for e in entries if not e.get("active")]
     cur = None
@@ -176,6 +226,15 @@ def to_yaml(model: dict, folder: str = "") -> str:
                 L += ["", f"  # ---------- {cur} (not active) ----------"]
             L.append(line(e, "  # "))
     L.append("")
+    if changes:
+        L += ["# Automatic values changed by hand (edited, hidden or removed). Kept when the config is generated again:",
+              "# original = the value the scan wrote, was_active = whether it was replaced, removed = left out.",
+              "auto_changes:"]
+        for e in changes:
+            removed = ", removed: true" if e.get("removed") else ""
+            L.append(f"  - {{find: {_q(e['find'])}, type: {e.get('type') or 'TERM'}, original: {_q(e['orig']['replace'])}, "
+                     f"was_active: {_b(e['orig']['active'])}{removed}}}")
+        L.append("")
     manual = model.get("manual") or {}
     if manual.get("replacements"):
         L += ["# Manual values: typed by hand, kept by every scan, they win over the automatic values.",
