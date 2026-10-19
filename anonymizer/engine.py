@@ -58,6 +58,9 @@ banque agence compte relevé releve total solde carte date libellé libelle dét
 votre vos titulaire numéro numero téléphone telephone période periode synthèse synthese informations ancien nouveau
 virement prélèvement prelevement retrait chèque cheque paiement facture contrat client clients conseiller conseillère
 conseillere service services monsieur madame mademoiselle bank account statement balance dear mister miss
+mr mrs mme mlle mle m ms dr me maître maitre docteur heer mevrouw mevr dhr mijnheer
+page pagina notaire notaires alliance succession succ succes déclaration declaration decl intermédiation intermediation
+vig mutation bleue bleu vie cts rbt domicil domicilié domicilie bevoegde bevoegd
 square rue avenue boulevard chaussée chaussee chemin allée allee impasse quai route passage villa cours
 code swift bic iban tva btw vat
 sa sprl srl bvba nv asbl gmbh ltd ag
@@ -475,7 +478,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         runs, run = [], []
         for tok in seq.split():
             # a word with a digit is no name ('BE67' starts an IBAN): it ends the run
-            if tok.casefold() in _STOP or is_town_name(tok) or _pkey(tok) in OPERATION_KEYS or \
+            if tok.casefold().rstrip(".") in _STOP or is_town_name(tok) or _pkey(tok) in OPERATION_KEYS or \
                     any(c.isdigit() for c in tok):
                 runs.append(run)
                 run = []
@@ -509,6 +512,9 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         # A candidate with a stop word or an ordinary word of the documents is no name at all: not suggested either.
         toks = e["value"].split()
         if e["value"].isupper() or any(t.casefold() in _STOP or _pkey(t) in vocab for t in toks):
+            continue
+        # one ordinary word is a heading or a label ('Page', 'Bleue'), not a name, unless it is a known first name
+        if len(toks) < 2 and _pkey(toks[0]) not in firsts:
             continue
         off.append({**e, "replace": faker.person(e["value"], gender(e)), "note": "uncertain name - check it"})
 

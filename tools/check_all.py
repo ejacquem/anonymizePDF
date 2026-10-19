@@ -82,6 +82,7 @@ SENSITIVE_13 = ["Théo", "Aurélien", "Morin", "Clément", "Roux", "BE68 5390 07
 SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 3000 6000 0112 3456 7890 189",
                "BNPAFRPP", "GEBABEBB", "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
                "CHE-123.456.789", "Route de Florissant 14", "CH-1206", "86'123'456'789'012"]
+SENSITIVE_15 = ["Ambre Lefèvre", "Clémence Roux", "Lucas Martin", "Théo Aurélien Morin", "Paul Durand", "Jean Petit"]
 # values that must stay readable in a digital output (no over-redaction): folder -> {file: [values]}
 # the headings of the statements that must stay readable: none of them is a name (Dossier Test 14)
 HEADINGS_14 = {
@@ -91,8 +92,18 @@ HEADINGS_14 = {
                            "Bank Transfer", "Investment Summary"],
     "tableau_operations.pdf": ["Accounts", "Income", "Maturity", "May Bill Payment"],
 }
+# the labels and titles of the notarial statements stay readable (Dossier Test 15): none of them is a name
+HEADINGS_15 = {
+    "dossier_notaire.pdf": ["Alliance Notaire", "Déclaration de succession", "Novembre 2025", "Compte", "Mutation",
+                            "compte rbt", "Maître"],
+    "tableau_comptes.pdf": ["Comptes du défunt", "Compte courant", "Notaire associé", "Frais de succession",
+                            "Solde de compte", "Pièces annexées", "Liste des biens", "Intermédiation", "Bleue",
+                            "domicil", "VIG", "SUCC", "bevoegde", "MLLE"],
+}
 KEEP = {
+    "Dossier Test 15": HEADINGS_15,
     "Dossier Test 14": HEADINGS_14,
+    "Dossier Test 15": HEADINGS_15,
     "Dossier Test 8": {"facture_suisse_fr.pdf": ["MONSIEUR", "Banque Exemple", "Lumen Services SA"]},
     "Dossier Test 10": {"courrier_adresses.pdf": ["Lieu de la signature", "Bonjour Madame", "Atelier Lumen SPRL"]},
     # the operation labels are no name: 'VIRT RECU', 'PRLV SEPA', 'RET DAB FR', 'ACHAT-DEBIT' stay (and the company)
@@ -162,6 +173,11 @@ EXPECT = {
         "tableau_operations.pdf": ("digital", [], []),
         "tableau_labels.pdf": ("digital", [], []),
     }),
+    # notarial statement and table full of titles and labels written with capitals (tools/make_test_notary.py)
+    "Dossier Test 15": (SENSITIVE_15, {
+        "dossier_notaire.pdf": ("digital", [], []),
+        "tableau_comptes.pdf": ("digital", [], []),
+    }),
     "Dossier Test 13": (SENSITIVE_13, {
         "texte_vertical.pdf": ("digital", [], []),
         "texte_incline.pdf": ("digital", [], []),
@@ -204,7 +220,9 @@ def found_in(secret_value: str, text: str) -> bool:
     """A single word (a name) must be found as a whole word ('Anne' is not in 'VANNES'); numbers and values of
     several words are searched as substrings of the text without spaces (stricter)."""
     if re.fullmatch(r"[^\W\d_]+", secret_value):
-        words = {norm(w) for w in re.split(r"[^\w]+", unicodedata.normalize("NFKD", text)) if w}
+        # the accents are removed first: a decomposed 'î' would cut 'Maître' in two words
+        plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+        words = {norm(w) for w in re.split(r"[^\w]+", plain) if w}
         return norm(secret_value) in words
     return norm(secret_value) in norm(text)
 
@@ -662,6 +680,41 @@ def names_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def common_words_tests():
+    """Titles and notarial or bank labels written with capitals are never active names; the real names next to them
+    are still found (Dossier Test 15, tools/make_test_notary.py). Bug seen on a real file: 'MLE Ambre Lefèvre' and
+    'MR Lucas Martin' were replaced with the title inside, and 'Page', 'Compte', 'Alliance Notaire' were names."""
+    print("\n== titles and labels are no names")
+    titles = {"m", "mme", "mlle", "mle", "mr", "mrs", "ms", "dr", "me", "monsieur", "madame", "mademoiselle",
+              "maître", "maitre", "docteur"}
+    labels = {"alliance", "notaire", "succession", "compte", "page", "novembre", "mutation", "bleue", "pagina",
+              "bevoegde", "vig", "succ", "declaration", "déclaration", "domicil", "intermédiation", "intermediation",
+              "cts", "rbt"}
+    tmp = Path(tempfile.mkdtemp(prefix="anon_titles_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        lines = ["Alliance Notaire - Déclaration de succession", "A la succession de Monsieur Théo Aurélien Morin",
+                 "Vie de MME Clémence Roux, domiciliée à Lyon", "MR Lucas Martin, héritier",
+                 "MLE Ambre Lefèvre, mineure", "M Lucas Martin et Mme Ambre Lefèvre, indivisaires",
+                 "Page 1 / 3 - Novembre 2025 - pagina 1 - bevoegde notaris", "Compte courant", "Mutation", "Bleue",
+                 "compte rbt", "compte cts", "VIG", "SUCC", "MME", "MR", "MLLE", "Monsieur", "Maître Paul Durand",
+                 "Monsieur et Madame Jean Petit"]
+        for i, text in enumerate(lines):
+            page.insert_text((60, 60 + 16 * i), text, fontname="helv", fontsize=9)
+        doc.save(tmp / "titres.pdf", garbage=4)
+        cfg = engine.scan_folder(tmp, "titres", None, "fra+eng", lambda m: None)["config"]
+        active = [m.group(1) for m in re.finditer(r'^\s*-\s*\{find: "([^"]+)", replace: "[^"]*", type: PERSON\}',
+                                                  cfg, re.M)]
+        bad = [v for v in active if {t.casefold().strip(".,") for t in v.split()} & (titles | labels)]
+        check("no title or label is an active name", not bad, repr(bad))
+        for name in ["Théo Aurélien Morin", "Clémence Roux", "Ambre Lefèvre", "Lucas Martin", "Paul Durand", "Jean Petit"]:
+            check(f"a real name next to the titles is active: {name}",
+                  any(all(t in v.split() for t in name.split()) for v in active), repr(active))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def invisible_copy_tests():
     """A drawn name with an invisible copy of it on top (the OCR layer of a scan): the drawn name gets its replacement.
     Bug seen on a real file: the name was erased (white, no text) because the drawn match was taken for invisible text."""
@@ -833,6 +886,7 @@ def main():
         invisible_copy_tests()
         text_loss_tests()
         names_tests()
+        common_words_tests()
         rotated_tests()
         town_tests()
         speedup_tests()

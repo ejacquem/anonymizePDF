@@ -270,7 +270,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   suggested ('Jun Bill payment', 'Capital Invested', 'May Start': Dossier Test 14).
   Active PERSON: after a title, contains a known
   first name, spaCy Title Case, or found under a label. `_STOP` words (including label words such as signature, nom,
-  nationalité, adresse) are never names.
+  nationalité, adresse) are never names. Titles (M, MME, MR, MLE, MLLE, Monsieur, Madame, Maître...) and notarial /
+  bank labels (Page, Compte, Alliance, Succession, Mutation, Novembre...) are in `_STOP`: they split a run of capitals,
+  so 'MLE Ambre Lefèvre' keeps 'Ambre Lefèvre'. A single ordinary word is only an uncertain suggestion when it is a
+  known first name.
 - Identity by shape (`fields.identity_shape`, identity documents only, see `is_id_document`): when the labels are not
   read (poor copy), the 9-character document number (letters and digits) and the words that are CAPS or Capitalised and
   not boilerplate (`_ID_BOILERPLATE`, fuzzy: `is_boilerplate`, so 'Sumame' is 'Surname') are PERSON / DOC_NUMBER,
@@ -423,6 +426,8 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   A new test document needs an entry there.
 - Names of several words (`names_tests`): the title keeps five words, middle names are first names, cut forms follow
   the full word, and a run of names with a known word is found without the title rule and without NER.
+- Titles and labels (`common_words_tests`, Dossier Test 15 from `tools/make_test_notary.py`): no title or label is an
+  active name, and the real names next to them are found. Dossier Test 14 and 15 keep their headings readable (KEEP).
 - Reported cases (`reported_cases_tests`): masked cards with X, REF / BT identifiers, 'numero du compte', 'Rue :',
   'MLE', names in another order and cut, 'bis', BIC in capitals, '30002 Code banque', two-line addresses, name
   kinds and spellings, the two-line cut. Dossier Test 2 and 11 are in EXPECT (digital and scan), KEEP holds the
