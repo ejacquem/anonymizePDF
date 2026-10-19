@@ -816,6 +816,33 @@ def manual_text_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def review_skip_tests():
+    """A folder run (and a batch run) anonymizes every file except the ones reviewed on their current output: a reviewed
+    file is only anonymized again when it is chosen by itself. Reviewed on an old output: anonymized again."""
+    print("\n== reviewed files are left alone by a folder run")
+    import app as flask_app
+    src = Path(ROOT) / "sample_data" / "Dossier Test 14"
+    tmp = Path(tempfile.mkdtemp(prefix="anon_review_"))
+    try:
+        for name in ["releve_placements.pdf", "tableau_labels.pdf"]:
+            shutil.copy(src / name, tmp / name)
+        cfg = engine.scan_folder(tmp, "revue", None, "fra+eng", lambda m: None)["config"]
+        (tmp / engine.CONFIG_NAME).write_text(cfg, encoding="utf-8")
+        engine.run_anonymize(tmp, "revue", cfg, "fra+eng", False, lambda m: None)
+        check("before a review, every file is anonymized by a folder run",
+              sorted(flask_app.files_to_anonymize(tmp)) == ["releve_placements.pdf", "tableau_labels.pdf"])
+        anon = engine.output_of(tmp / "releve_placements.pdf")
+        (tmp / flask_app.REVIEW_NAME).write_text(json.dumps({"releve_placements.pdf": {"at": "x", "sha256": flask_app._sha(anon)}}),
+                                                 encoding="utf-8")
+        check("a reviewed file is left out of a folder run",
+              flask_app.files_to_anonymize(tmp) == ["tableau_labels.pdf"])
+        anon.write_bytes(anon.read_bytes() + b"\n%edited")
+        check("a file reviewed on an earlier output is anonymized again",
+              "releve_placements.pdf" in flask_app.files_to_anonymize(tmp))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def bank_identifier_tests():
     """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
     European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
@@ -1075,6 +1102,7 @@ def main():
         text_overlap_tests()
         bank_identifier_tests()
         config_edit_tests()
+        review_skip_tests()
         manual_text_tests()
         rotated_tests()
         town_tests()

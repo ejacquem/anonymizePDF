@@ -473,6 +473,10 @@ def anonymize():
     rel = rel_of(folder)
     ocr_verify = bool(data.get("ocr_verify"))
     only = [Path(str(data["file"])).name] if data.get("file") else None     # one file, or the whole folder
+    if only is None:
+        only = files_to_anonymize(folder)                 # a folder run leaves the reviewed files alone
+        if not only:
+            return bad("Every file of this folder is reviewed: nothing to anonymize. Anonymize one file to redo it.")
     removed = data.get("removed") if isinstance(data.get("removed"), list) else []   # automatic boxes removed: this run only
 
     def work(log, progress):
@@ -482,6 +486,13 @@ def anonymize():
 
     job = start_job("anonymize", work)
     return jsonify({"job": job["id"]}) if job else bad("Another job is running", 409)
+
+
+def files_to_anonymize(folder: Path) -> list[str]:
+    """The PDFs of a folder that a folder run anonymizes: every one except the files reviewed on their current output
+    (a reviewed file is only anonymized again when it is chosen by itself)."""
+    reviewed = reviewed_files(folder)
+    return [p.name for p in eng.list_sources(folder) if p.name not in reviewed]
 
 
 def _batch_phases(d: Path, action: str, redo: bool) -> tuple[list[str], str]:
@@ -537,8 +548,12 @@ def batch():
                         (d / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
                     else:
                         text = (d / eng.CONFIG_NAME).read_text(encoding="utf-8")
-                        eng.run_anonymize(d, rel_of(d), text, STATE["ocr_lang"], ocr_verify, lambda m: log("   " + m),
-                                          progress=report)
+                        todo = files_to_anonymize(d)               # the reviewed files are left alone
+                        if not todo:
+                            log("   every file is reviewed: nothing to anonymize")
+                        else:
+                            eng.run_anonymize(d, rel_of(d), text, STATE["ocr_lang"], ocr_verify, lambda m: log("   " + m),
+                                              only=todo, progress=report)
                     offset += counts[d]
                 done.append(rel)
             except Exception as e:  # noqa: BLE001  (one folder failing must not stop the others)
