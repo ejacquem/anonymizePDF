@@ -660,10 +660,11 @@ def names_tests():
           == {"gas": "Gaspard", "gasp": "Gaspard"})
     f.truncations = {"gasp": "Gaspard"}
     cyc = Faker(b"n" * 32)
-    cyc.truncations = {"gasp": "gaspard", "gaspard": "gasp", "mo": "Mo"}
+    cyc.truncations = {"gasp": "gaspard", "gaspard": "gasp", "mo": "Mo", "gasp2": "Gasp2-Ab"}
     try:
         cyc.name_token("Gasp", "first")
         cyc.name_token("Mo", "last")
+        cyc.name_token("Gasp2-Ok", "first")          # a cut word whose full word is hyphenated, holding the cut word
         ok = True
     except RecursionError:
         ok = False

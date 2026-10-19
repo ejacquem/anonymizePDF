@@ -315,7 +315,7 @@ class Faker:
             # A full word that is itself a cut form (or cut from this one) is no full word: no recursion on it
             whole = self.truncations[pk]
             wk = _pkey(whole)
-            if wk != pk and wk not in self.truncations:
+            if wk != pk and wk not in self.truncations and "-" not in whole:
                 full = self.name_token(whole, self.kind_seen.get(wk, kind), avoid, gender)
                 return _style_token(token, full[:len(token)])
         key = self.aliases.get(pk, pk)
