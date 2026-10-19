@@ -915,9 +915,10 @@ def text_ink(img, box, default=(0, 0, 0)):
 
 
 def ink_start(img, box) -> float:
-    """Where the value really starts inside a scanned word box: the first glyph of the value. An OCR box can start a few
-    pixels before it, on a colon (':AB123'). A colon covers only part of the height of the text, a letter or a digit
-    covers all of it: the start is the first column whose ink reaches most of the height. Never moves to the left."""
+    """Where the value really starts inside a scanned word box. An OCR box can start on a colon before the value
+    (':AB123'): a colon is a short, narrow mark with a gap after it, with ink on only a few rows of the text height.
+    That first mark is skipped. A letter is never skipped (its strokes fill its height, or it touches the next letter):
+    the start stays at the box. Never moves to the left."""
     x0, y0, x1, y1 = box
     W, H = img.size
     xa, xb = max(int(x0), 0), min(int(x1), W)
@@ -935,11 +936,23 @@ def ink_start(img, box) -> float:
     if not len(rows):
         return x0
     text_h = rows[-1] - rows[0] + 1                         # the height of the text in this box
-    column_h = ink.sum(axis=0)                              # how many rows of ink each column has
-    tall = np.nonzero(column_h >= 0.45 * text_h)[0]
-    if not len(tall):
+    cols = ink.any(axis=0)
+    runs, start = [], None
+    for c, on in enumerate(cols):
+        if on and start is None:
+            start = c
+        elif not on and start is not None:
+            runs.append((start, c))
+            start = None
+    if start is not None:
+        runs.append((start, len(cols)))
+    if len(runs) < 2:
         return x0
-    return max(x0, xa + tall[0] - 1.0)
+    a, b = runs[0]                                          # the first mark of the box
+    occupancy = ink[:, a:b].any(axis=1).sum() / max(text_h, 1)   # the share of the text height it fills
+    if (b - a) <= 0.6 * text_h and occupancy <= 0.4:          # a colon: narrow, a few rows, a gap after it
+        return max(x0, xa + runs[1][0] - 1.0)
+    return x0
 
 
 def background_color(img, box):

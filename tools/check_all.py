@@ -1061,6 +1061,55 @@ def second_pass_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def first_letter_tests():
+    """The first letter of a name is replaced with the rest of it: 'M. Albert Dupont' never keeps its 'A' (a scan was
+    left with 'A' before the fake first name, from the colon skip). Diagonal first letters (A, V, W, Y) are the risk.
+    Names are written after a title, as the statements write them (the title is no name)."""
+    print("\n== the first letter of a name is replaced")
+    names = ["Albert", "Alain", "Vincent", "WALTER", "Yvan", "Anne"]
+    lines = ["Titulaire : M. Albert Dupont", "M. Alain Lemoine", "Mme Vincent Martin", "M. WALTER DUBOIS", "M. Yvan Girard",
+             "Mme Anne Roux", "Fin du releve"]
+    tmp = Path(tempfile.mkdtemp(prefix="anon_first_"))
+    try:
+        dig, scn = tmp / "numerique", tmp / "scan"
+        dig.mkdir()
+        scn.mkdir()
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        for i, t in enumerate(lines):
+            page.insert_text((60, 100 + 16 * i), t, fontname="helv", fontsize=10)
+        doc.save(dig / "premieres.pdf", garbage=4)
+        # the same lines as a scan: the OCR box of a word can start on the first letter's foot
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGB", (2480, 3508), (252, 251, 247))
+        d = ImageDraw.Draw(img)
+        f = ImageFont.truetype("arial.ttf", 44)
+        for i, t in enumerate(lines):
+            d.text((180, 420 + 150 * i), t, font=f, fill=(20, 20, 20))
+        png = scn / "premieres_scan.png"
+        img.save(png)
+        scan = fitz.open()
+        spage = scan.new_page(width=595, height=842)
+        spage.insert_image(spage.rect, filename=str(png))
+        scan.save(scn / "premieres_scan.pdf", garbage=4)
+        png.unlink()
+        for folder, out_name in [(dig, "premieres_anonymized.pdf"), (scn, "premieres_scan_anonymized.pdf")]:
+            cfg = engine.scan_folder(folder, "premieres", None, "fra+eng", lambda m: None)["config"]
+            engine.run_anonymize(folder, "premieres", cfg, "fra+eng", False, lambda m: None)
+            if folder is dig:
+                digital = " ".join(fitz.open(folder / out_name)[0].get_text().split())
+                for nm in names:
+                    check(f"digital: '{nm}' is replaced in full (no letter left)",
+                          not re.search(rf"(?<!\w){re.escape(nm)}(?!\w)", digital, re.I), digital[:160])
+            else:
+                words = [w["text"] for w in ocr.ocr_words(ocr.render_page(fitz.open(folder / out_name)[0], 300), "fra+eng")]
+                left = [nm for nm in names if any(w.casefold() == nm.casefold() for w in words)]
+                check("scan: no first name is left in the output (OCR of the output)", not left,
+                      repr(left) + " " + " ".join(words)[:200])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def bank_identifier_tests():
     """The BIC is the bank's public identifier: a suggestion (commented out), never active by default. A BIC must have a
     European country code: capitalised words ('VIREMENT', 'CANALSAT', 'FRANCOIS', 'BOULOGNE', 'PRESTATIONS') are no
@@ -1325,6 +1374,7 @@ def main():
         colon_tests()
         street_name_tests()
         second_pass_tests()
+        first_letter_tests()
         manual_text_tests()
         rotated_tests()
         town_tests()

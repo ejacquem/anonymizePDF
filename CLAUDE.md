@@ -398,10 +398,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   colour, then a rectangle of the same colour for the lines), the text is written with its height filled by the box and
   its width stretched to the box (`morph`, or a mask resized on scans). Scans: `stretch_layout` / `write_text`.
 - Scans, the value's box: a word only partly covered is cut by the Arial widths of its characters (`pii._advance`,
-  `match_boxes`), and the replacement starts at the first glyph of the value (`render.ink_start`: the first column whose ink
-  covers 45 % of the text height, so a colon before the value is not counted). The paint does not widen to the left of
-  the value. Test: `colon_tests` (Dossier Test 16: a good and a poor scan with colons, `colon_truth.json`, compared by the shape
-  of the ink down each colon).
+  `match_boxes`). `render.ink_start` skips a colon-like first mark only (narrow, a few rows of the text height, a gap
+  after it), so a colon before the value is not counted; a letter is never skipped (an 'A' keeps its foot and is
+  replaced). The paint does not widen to the left of the value. Tests: `colon_tests` (Dossier Test 16: a good and a poor
+  scan with colons, `colon_truth.json`, compared by the shape of the ink down each colon) and `first_letter_tests`.
 - Scans: text sized from the ink height of the original (tight OCR boxes), same baseline, ink colour sampled, paper
   colour sampled for the patch. Bold (`BoldMeter`): median horizontal ink run / estimated font size vs the page
   median, bold if > 1.4× (calibrated against Test 1's digital twin). Fails on ID documents (mostly bold text, no
