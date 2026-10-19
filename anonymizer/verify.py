@@ -83,23 +83,39 @@ def _hit_boxes(words: list[dict], text: str, spans: list, rx, pno: int, scale: f
     return out
 
 
+def _overlaps(a: list, b: list) -> bool:
+    """Two boxes (PDF points) that share most of the smaller one."""
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    if w <= 0 or h <= 0:
+        return False
+    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])) or 1
+    return w * h > 0.3 * small
+
+
 def find_hits(path: Path, term: str, case_sensitive: bool, ocr_lang: str) -> list[dict]:
-    """Where a term of the config is in a file: {page, box in PDF points}. The text layer first; the OCR (tolerant
-    to the usual misreadings) when the text layer has no such text, so a scanned page is found too."""
-    read = read_output(path, ocr_lang, use_ocr=False)
+    """Every place of a term of the config in a file: {page, box in PDF points}, all pages counted. The text layer
+    gives the words written as text; a page that is a scan, or has pictures, is also read by OCR (tolerant to the usual
+    misreadings), and the OCR words that the text layer already gives are not counted twice."""
     rx = term_regex(term, case_sensitive)
-    hits = []
-    for pno, page in enumerate(read.pages, start=1):
-        text, spans = words_to_text(page.layer_words)
-        hits += _hit_boxes(page.layer_words, text, spans, rx, pno)
-    if hits or not ocr.available():
-        return hits
-    read = read_output(path, ocr_lang, use_ocr=True)
-    rx = term_regex(term, case_sensitive, ocr=True)
-    for pno, page in enumerate(read.pages, start=1):
-        text, spans = words_to_text(page.words)
-        hits += _hit_boxes(page.words, text, spans, rx, pno, 72 / 300)
-    return hits
+    rx_ocr = term_regex(term, case_sensitive, ocr=True)
+    out: list[dict] = []
+    doc = fitz.open(path)
+    try:
+        for pno, page in enumerate(doc, start=1):
+            layer = digital_words(page)
+            text, spans = words_to_text(layer)
+            mine = _hit_boxes(layer, text, spans, rx, pno)
+            out += mine
+            if ocr.available() and (len(layer) < 3 or page.get_images()):
+                words = ocr_words(render_page(page, 300), ocr_lang)
+                text, spans = words_to_text(words)
+                for h in _hit_boxes(words, text, spans, rx_ocr, pno, 72 / 300):
+                    if not any(_overlaps(h["box"], m["box"]) for m in mine):
+                        out.append(h)
+    finally:
+        doc.close()
+    return out
 
 
 def verify_output(read: OutputRead, cfg: dict) -> list[dict]:

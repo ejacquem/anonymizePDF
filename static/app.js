@@ -52,6 +52,7 @@ function syncAppMenu() {
   $("#appChangesWidth").value = state.app.changesWidth;
   $("#appChangesWidthVal").textContent = state.app.changesWidth.toFixed(1) + " px";
   $("#appOcr").checked = state.ocrVerify;
+  $("#appAutoZoom").checked = !!state.app.autoZoom;
   renderEngineChoices();
 }
 
@@ -91,6 +92,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("#appMenu").hidden) $("#appMenu").hidden = true;
 });
 $("#appPopup").onchange = (e) => { state.app.popup = e.target.checked; saveApp(); };
+$("#appAutoZoom").onchange = (e) => { state.app.autoZoom = e.target.checked; saveApp(); };
 $("#appPopupSeconds").onchange = (e) => {
   state.app.popupSeconds = Math.min(10, Math.max(1, Math.round(+e.target.value) || 3));
   e.target.value = state.app.popupSeconds;
@@ -670,8 +672,10 @@ function waitFor(cond, ms = 4000) {
 // zoom on a place (PDF points) and centre a pane on it; the other pane follows
 function centerOn(which, h) {
   const v = viewers[which], vb = v.box;
-  zoom.fit = false;
-  setZoom(Math.min(4, Math.max(zoom.scale, (vb.clientWidth * 0.4) / ((h.box[2] - h.box[0]) * PT_TO_PX))));
+  if (state.app.autoZoom) {                                 // the setting: zoom on the word, or only move to it
+    zoom.fit = false;
+    setZoom(Math.min(4, Math.max(zoom.scale, (vb.clientWidth * 0.4) / ((h.box[2] - h.box[0]) * PT_TO_PX))));
+  }
   const pageEl = v.list.children[h.page - 1];
   if (!pageEl) return;
   const k = pageScale();
@@ -1324,7 +1328,7 @@ state.model = null;
 state.ocrVerify = (() => { try { return localStorage.getItem(OCR_KEY) === "1"; } catch (e) { return false; } })();
 // app settings (the menu ⚙ in the header): kept in this browser
 const APP_KEY = "anonymizePDF.app";
-const APP_DEFAULT = { popup: true, popupSeconds: 3, changesWidth: 2 };
+const APP_DEFAULT = { popup: true, popupSeconds: 3, changesWidth: 2, autoZoom: false };
 state.app = (() => { try { return { ...APP_DEFAULT, ...JSON.parse(localStorage.getItem(APP_KEY) || "{}") }; } catch (e) { return { ...APP_DEFAULT }; } })();
 function saveApp() { try { localStorage.setItem(APP_KEY, JSON.stringify(state.app)); } catch (e) { /* no storage */ } }
 function applyAppSettings() {

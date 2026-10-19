@@ -210,8 +210,10 @@ console running `app.py` and the last 12 lines in the job log.
      reading, and a second pass re-reads it because it changed the file.
    - Leftovers are placed: each one has `hits` (page, box in PDF points, text layer and OCR). The viewer frames them in red
      (`.lbox`, `drawBoxes`), and a click on a leftover in the Recap (`locateLeftover`) shows the next place, zooms and centres.
-     A click on a value of the config (the original text in the table or in Manual data) finds its places in the
-     selected original (`locateTerm`, `GET /api/find`, `verify.find_hits`: text layer, then OCR) and frames them in blue (`.tlbox`).
+     A click on a value of the config (the original text in the table or in Manual data) finds every place in the
+     selected original (`locateTerm`, `GET /api/find`, `verify.find_hits`: the text layer of every page, plus the OCR of the
+     pages that are scans or have pictures, without the words already counted) and frames them in blue (`.tlbox`). The
+     count is per file; the `found N times` of the config counts the whole folder. Zoom on the word is an app setting (off).
    - Verify (`verify.verify_output`): searches the output for each original value (metadata, text layer, and OCR with the
      tolerant regex whenever the file is not purely digital, or when "OCR check" is ticked). If a scanned file has
      leftovers, `run_anonymize` runs a second pass on its output: text only (photos / codes / signatures are off in
