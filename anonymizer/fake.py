@@ -687,13 +687,37 @@ class Faker:
         allowed = [t for t in towns if not any(g in towns[t] for g in self.reserved_digits)]
         new = self._pick(allowed, len(name), rng, {name})
         if new is None:
-            # no town of a similar length (a long name: 'BOULOGNE-BILLANCOURT'): a real town of the list, not letters
-            other = [t for t in allowed if _norm(t) != _norm(name)]
-            if other:
-                new = rng.choice(other)
+            # no town of a similar length: two or more towns of the list joined by a hyphen, as the long names of France
+            # do ('BOULOGNE-BILLANCOURT' -> 'MONTAUBAN-CHAMBERY'): the replacement keeps the length of the original, so
+            # that it does not leave a gap before what follows it on the line (the postcode is the one of the first town)
+            joined = self._compound(allowed, len(name), rng, {name})
+            if joined is not None:
+                return joined, towns[joined.split("-", 1)[0]]
         if new is None:
             return self.scramble(name, rng), None
         return new, towns[new]
+
+    def _compound(self, towns: dict, target: int, rng: random.Random, avoid: set[str]) -> str | None:
+        """Towns of the list joined by hyphens, as long as the length stays within the target: a name of `target`
+        letters gets a fake of about the same length (within 2 letters, or 15 %)."""
+        names = sorted(towns)
+        slack = max(2, round(0.15 * target))
+        avoid = {_pkey(a) for a in avoid}
+        for attempt in range(20):
+            parts: list[str] = []
+            length = 0
+            while True:
+                room = target + slack - length - (1 if parts else 0)
+                options = [t for t in names if len(t) <= room and _pkey(t) not in avoid]
+                if not options or room < 0:
+                    break
+                parts.append(rng.choice(options))
+                length += len(parts[-1]) + (1 if len(parts) > 1 else 0)
+                if abs(length - target) <= slack:
+                    break
+            if parts and abs(length - target) <= slack and len(parts) > 1:
+                return "-".join(parts)
+        return None
 
     def postal_city(self, value: str) -> str:
         # a US city line: 'Anywhere, USA 40000' -> 'Riverton, USA 61230' (a town of the list, the state and the ZIP digits)

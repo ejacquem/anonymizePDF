@@ -382,6 +382,9 @@ Order must never change a result (`order_tests`): a value written with several s
   in a sentence: the same town); its postcode belongs to it (`FR_TOWNS` / `BE_TOWNS` hold a real postcode per town).
   A town of the document is a LOCATION term in the config (`scan_folder`), so the same town written alone is replaced
   like the town of a postcode. A capitalised town is never a person ('Sophie PARIS' is no name).
+  The fake keeps the length of the original: a long name ('BOULOGNE-BILLANCOURT') gets towns of the list joined by a hyphen
+  (`fake._compound`, 'MONTAUBAN-CHAMBERY'), since a short town leaves a gap before what follows on the line (the same width
+  in a digital text and in a scan: `town_size_tests`).
 - Names: FR/BE/NL lists by length and **gender** (`gender_of`: lists, then the title, then French endings; the
   `Sexe` field wins on ID documents). Keys without case / accents (`_pkey`: `Élodie` = `elodie`, used in e-mails).
   `Faker.names` memory keeps consistency: initials follow the replaced first name (`initial`, preferring first names

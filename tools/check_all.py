@@ -1423,8 +1423,8 @@ def parenthesised_town_tests():
           bool(m) and m.group(1).upper() == f.city("NANTERRE").upper(), f"{fake} / {f.city('NANTERRE')}")
     towns = {k.upper() for k in {**FR_TOWNS, **BE_TOWNS}}
     long_fake = f.suggest("POSTAL_CITY", "BOULOGNE-BILLANCOURT (72000)")
-    check("the fake of a long town is a real town of the list, not letters",
-          long_fake.split(" (")[0].upper() in towns, long_fake)
+    check("the fake of a long town is towns of the list joined, not letters",
+          all(part in towns for part in long_fake.split(" (")[0].upper().split("-")), long_fake)
     # the whole thing on a digital letter: the towns and their codes are gone from the output, the country stays
     tmp = Path(tempfile.mkdtemp(prefix="anon_paren_"))
     try:
@@ -1563,6 +1563,76 @@ def order_tests():
             ties.append(" ".join(fitz.open(d / "tie_anonymized.pdf")[0].get_text().split()))
         check("two terms for the same text give the same replacement whatever the order of the config",
               ties[0] == ties[1], str(ties))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def town_size_tests():
+    """A town replaced by a fake of about the same length: a long name ('BOULOGNE-BILLANCOURT') gets joined towns of the
+    list, not a short town that leaves a gap before what follows on the line. The same width in a digital text and in
+    a scan, and the same fake whatever the form of the name."""
+    print("\n== the replacement of a town has the length of the original")
+    from anonymizer.fake import BE_TOWNS, FR_TOWNS
+    f = Faker(b"z" * 32)
+    towns = {k.upper() for k in {**FR_TOWNS, **BE_TOWNS}}
+    for name in ("BOULOGNE-BILLANCOURT", "VILLENEUVE-SAINT-GEORGES", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "LE PLESSIS-ROBINSON"):
+        town, code = f.town(name)
+        ok_len = abs(len(town) - len(name)) <= max(2, round(0.15 * len(name)))
+        check(f"a fake of '{name}' has about its length", ok_len, f"{town} ({len(town)} for {len(name)})")
+        parts = town.split("-")
+        check(f"a fake of '{name}' is towns of the list joined, not letters",
+              all(p.upper() in towns for p in parts), town)
+    check("the same town written in another form: the same fake",
+          f.town("Boulogne-Billancourt") == f.town("BOULOGNE-BILLANCOURT"))
+    check("a short town keeps a short fake (no compound of a short name)",
+          "-" not in f.town("PARIS")[0] and len(f.town("PARIS")[0]) <= 9)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_town_size_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 120), "Jean Dupont", fontsize=12, fontname="helv")
+        page.insert_text((72, 150), "BOULOGNE-BILLANCOURT (72000) (FRANCE)", fontsize=12, fontname="helv")
+        doc.save(tmp / "digital.pdf")
+        cfg = engine.scan_folder(tmp, "digital", None, "fra+eng", lambda m: None)["config"]
+        engine.run_anonymize(tmp, "digital", cfg, "fra+eng", False, lambda m: None)
+
+        def code_end(pdf):
+            # the right edge of the postcode word '(...)' that follows the town on the line
+            words = [w for w in fitz.open(pdf)[0].get_text("words") if abs(w[3] - 150) < 6 or abs(w[3] - 150) < 8]
+            codes = [w for w in words if re.fullmatch(r"\(\d{5}\)", w[4])]
+            return codes[0][2] if codes else None
+
+        end_in, end_out = code_end(tmp / "digital.pdf"), code_end(tmp / "digital_anonymized.pdf")
+        ratio = (end_out - 72) / max(end_in - 72, 1) if end_in and end_out else 0
+        check("a digital line: the replacement ends about where the original did (0.85 to 1.15 of its width)",
+              0.85 <= ratio <= 1.15, f"ratio {ratio:.2f} (ends {end_in} / {end_out})")
+        # the same line as a scan: the postcode's right edge, read by the OCR, against the original's
+        import io
+        from PIL import Image
+        scan_src = fitz.open()
+        spage = scan_src.new_page(width=595, height=842)
+        spage.insert_image(spage.rect, stream=doc[0].get_pixmap(dpi=200, alpha=False).tobytes("jpg", jpg_quality=85))
+        scan_src.save(tmp / "scan.pdf")
+        cfg = engine.scan_folder(tmp, "scan", None, "fra+eng", lambda m: None)["config"]
+        engine.run_anonymize(tmp, "scan", cfg, "fra+eng", False, lambda m: None)
+
+        def ocr_code_end(pdf):
+            img = Image.open(io.BytesIO(fitz.open(pdf)[0].get_pixmap(dpi=200, alpha=False).tobytes("png")))
+            words = [w for w in ocr.ocr_words(img, "fra+eng") if 380 < w["box"][1] < 430]
+            codes = [w for w in words if re.fullmatch(r"\(\d{5}\)", w["text"])]
+            start = min(w["box"][0] for w in words) if words else 0
+            return (start, codes[0]["box"][2]) if codes else None
+
+        before, after = ocr_code_end(tmp / "scan.pdf"), ocr_code_end(tmp / "scan_anonymized.pdf")
+        if before and after:
+            sratio = (after[1] - after[0]) / max(before[1] - before[0], 1)
+            check("a scan line: the replacement ends about where the original did (0.8 to 1.2 of its width)",
+                  0.8 <= sratio <= 1.2, f"ratio {sratio:.2f} ({before} / {after})")
+        else:
+            check("a scan line: the OCR reads the line", False, f"{before} / {after}")
+        check("a digital line: the country is still there",
+              "(FRANCE)" in " ".join(w[4] for w in fitz.open(tmp / "digital_anonymized.pdf")[0].get_text("words")))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -2164,6 +2234,7 @@ def main():
         parenthesised_town_tests()
         street_code_tests()
         order_tests()
+        town_size_tests()
         speedup_tests()
         font_unit_tests()
         font_scan_tests()
