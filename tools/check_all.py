@@ -1342,6 +1342,65 @@ def town_tests():
     check("a Swiss postcode keeps its length and its town", len(f.postal_city("1204 Genève").split(" ", 1)[0]) == 4)
 
 
+PAREN_TOWNS = [
+    # (text as a letter writes it, the value the detector takes, what the case is about)
+    ("BOULOGNE-BILLANCOURT (72000) (FRANCE)", "BOULOGNE-BILLANCOURT (72000)", "a town and its code, then the country"),
+    ("NANTERRE (92000)", "NANTERRE (92000)", "a town in capitals and its postcode in brackets"),
+    ("SAINT-CLOUD (92210)", "SAINT-CLOUD (92210)", "a hyphenated town"),
+    ("Adresse : 12 rue de la Paix\nNANTERRE (92000)", "NANTERRE (92000)", "the town on the line after an address, with a label"),
+    ("Nanterre (92000)", "Nanterre (92000)", "a town in title case"),
+]
+PAREN_ABSENT = [
+    ("Mutation (2024)", "a year in brackets is no postcode"),
+    ("Paris (75)", "a two-digit department is no postcode"),
+    ("Rue de Paris (75001)", "a street is no town (the words before the town are not taken)"),
+]
+
+
+def parenthesised_town_tests():
+    """A town followed by its postcode in brackets ('NANTERRE (92000)'), the form of many letters: the value is found,
+    the fake keeps the form and the town, the town alone is the same fake, and a year or a street is no town."""
+    print("\n== towns followed by a postcode in brackets")
+    for text, value, what in PAREN_TOWNS:
+        found = [m.value for m in pii.detect_all(text) if m.type == "POSTAL_CITY"]
+        check(f"{what}: found", value in found, f"{found}")
+    for text, what in PAREN_ABSENT:
+        found = [m.value for m in pii.detect_all(text) if m.type == "POSTAL_CITY"]
+        check(f"{what}", not found, f"{found}")
+    from anonymizer.fake import BE_TOWNS, FR_TOWNS
+    f = Faker(b"p" * 32)
+    fake = f.suggest("POSTAL_CITY", "NANTERRE (92000)")
+    m = re.fullmatch(r"(.+) \((\d{5})\)", fake)
+    check("the fake keeps the form 'TOWN (ddddd)'", bool(m), fake)
+    check("the fake town is the town of the term alone (same fake)",
+          bool(m) and m.group(1).upper() == f.city("NANTERRE").upper(), f"{fake} / {f.city('NANTERRE')}")
+    towns = {k.upper() for k in {**FR_TOWNS, **BE_TOWNS}}
+    long_fake = f.suggest("POSTAL_CITY", "BOULOGNE-BILLANCOURT (72000)")
+    check("the fake of a long town is a real town of the list, not letters",
+          long_fake.split(" (")[0].upper() in towns, long_fake)
+    # the whole thing on a digital letter: the towns and their codes are gone from the output, the country stays
+    tmp = Path(tempfile.mkdtemp(prefix="anon_paren_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        doc = fitz.open()
+        page = doc.new_page()
+        lines = ["Jean Dupont", "BOULOGNE-BILLANCOURT (72000) (FRANCE)", "NANTERRE (92000)", "SAINT-CLOUD (92210)"]
+        for i, line in enumerate(lines):
+            page.insert_text((72, 90 + 24 * i), line, fontsize=12)
+        doc.save(tmp / "lettre.pdf")
+        cfg = engine.scan_folder(tmp, "paren", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "paren", cfg, "fra+eng", False, lambda m: None)
+        out = " ".join(fitz.open(tmp / "lettre_anonymized.pdf")[0].get_text().split())
+        for town in ("BOULOGNE-BILLANCOURT", "NANTERRE", "SAINT-CLOUD"):
+            check(f"'{town}' is not in the output", town not in out.upper(), out)
+        for code in ("72000", "92000", "92210"):
+            check(f"the postcode {code} is not in the output", code not in out, out)
+        check("the country stays", "(FRANCE)" in out, out)
+        check("the letter has no leftover", not rep["files"][0]["leftovers"], str(rep["files"][0]["leftovers"]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def speedup_tests():
     """The helpers behind the speed-ups give exactly the results of the code they replaced."""
     print("\n== speed-up helpers")
@@ -1935,6 +1994,7 @@ def main():
         manual_text_tests()
         rotated_tests()
         town_tests()
+        parenthesised_town_tests()
         speedup_tests()
         font_unit_tests()
         font_scan_tests()

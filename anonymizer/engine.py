@@ -226,8 +226,13 @@ def _add_labeled(found: dict, words: list[dict], ocr_page: bool, file: str, pno:
 
 
 def _town_of(typ: str, value: str) -> str | None:
-    """The town of a postcode-and-city value ('75017 PARIS' -> 'PARIS') or of a birth place ('RENNES (35)' -> 'RENNES')."""
-    town = re.sub(r"^(?:[A-Z]{1,2}-)?\d{4,5}\s+", "", value) if typ == "POSTAL_CITY" else re.sub(r"\s*\(.*$", "", value)
+    """The town of a postcode-and-city value ('75017 PARIS' -> 'PARIS', 'NANTERRE (92000)' -> 'NANTERRE') or of a birth
+    place ('RENNES (35)' -> 'RENNES')."""
+    if typ == "POSTAL_CITY":
+        town = re.sub(r"\s*\((?:[A-Z]{1,2}-)?\d{4,5}\)$", "", value) if re.search(r"\)$", value) else \
+            re.sub(r"^(?:[A-Z]{1,2}-)?\d{4,5}\s+", "", value)
+    else:
+        town = re.sub(r"\s*\(.*$", "", value)
     return town.strip() or None
 
 

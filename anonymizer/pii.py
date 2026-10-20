@@ -205,6 +205,30 @@ def _v_postal(m):
     return None if city in _CITY_STOPLIST or city in _US_ADDRESS_WORDS else (m.start(), m.end())
 
 
+# words that are never the start of a town written before its postcode: a street type, a connector, a label
+_TOWN_NOT_FIRST = {"rue", "avenue", "av", "boulevard", "bd", "chemin", "allee", "allée", "route", "impasse", "quai",
+                   "place", "cours", "square", "passage", "de", "du", "des", "la", "le", "les", "et", "sur", "en",
+                   "adresse", "address", "ville", "commune", "city", "town"}
+
+
+def _v_town_code(m):
+    """A town before its postcode in brackets ('NANTERRE (92000)'): the value starts at the first word that can start a
+    town. The words before it (a label, a street type, an operation word) are left out; the town must not be a word
+    of the documents' labels."""
+    code = re.search(r"\((?:[A-Z]{1,2}-)?(\d+)\)", m.group()).group(1)
+    if len(code) == 4 and 1900 <= int(code) <= 2099:          # a year in brackets ('Mutation (2024)'), not a postcode
+        return None
+    words = list(re.finditer(r"[^\s\-]+", m.group(1)))
+    for w in words:
+        key = w.group().casefold()
+        if key in _CITY_STOPLIST or key in _US_ADDRESS_WORDS or key in _TOWN_NOT_FIRST or key in OPERATION_WORDS:
+            continue
+        if len(w.group()) < 3:
+            return None
+        return (m.start(1) + w.start(), m.end())
+    return None
+
+
 # words of the bank operation labels ('VIRT RECU MARION', 'PRLV SEPA REF', 'ACHAT-DEBIT'): they are never part of a
 # name or of a place, so they are taken out of those candidates before anything else reads them
 OPERATION_WORDS = {w.casefold() for w in """
@@ -320,6 +344,10 @@ DETECTORS = [
     # a US city line: 'Anywhere, USA 40000', 'Washington, DC 20011' (town, comma, state or USA, ZIP code)
     ("POSTAL_CITY", re.compile(rf"(?<![\w/])(?:{_CAP}{_WORD}*)(?:[ \t]+{_CAP}{_WORD}*){{0,2}},[ \t]*"
                                r"(?:USA|US|[A-Z]{2})[ \t]+\d{5}(?:-\d{4})?(?!\d)"), None),
+    # a town followed by its postcode in brackets (common on French and Belgian letters): 'NANTERRE (92000)',
+    # 'SAINT-CLOUD (92210)', 'BOULOGNE-BILLANCOURT (72000) (FRANCE)' (the country is not part of the value)
+    ("POSTAL_CITY", re.compile(r"(?<![\w/.\-])([A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]*(?:[ \-]+[A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]*){0,3})"
+                               r"[ \t]*\((?:[A-Z]{1,2}-)?\d{4,5}\)"), _v_town_code),
     # Belgian-style postcode + city: "9000 Gent", "B-1000 Bruxelles"
     ("POSTAL_CITY", re.compile(rf"(?<![\w/.\-])(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?[1-9]\d{{3,4}}[ ]+"
                                rf"(?:{_CAP}[A-ZÀ-Þ'’\-]{{2,}}|{_CAP}[a-zà-ÿ'’]+)(?:-{_CAP}?[a-zà-ÿ'’]+)*"

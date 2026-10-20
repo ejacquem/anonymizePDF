@@ -302,7 +302,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   two lines, the number ends it and is never the first digits of a postcode; on one line, a street name does not run
   on to the next line; the address after a label to the end of the line: 'Rue : 04 Library place'; English number
   first: '04 Library place'), POSTAL_CITY (postcode + city in Title case or CAPITALS, prefixes B-, F-, CH-, L-, NL-,
-  D-, I-, A-; not 'Code' / 'Banque' / 'Guichet'...), the town at the end of an address is a POSTAL_CITY too,
+  D-, I-, A-; not 'Code' / 'Banque' / 'Guichet'...), a town followed by its postcode in brackets ('NANTERRE (92000)',
+  'BOULOGNE-BILLANCOURT (72000) (FRANCE)': the value is the town and its code, `_v_town_code`; a year in brackets is no
+  postcode; the fake keeps the brackets and the town of the term alone, `fake.postal_city`, `engine._town_of`), the town
+  at the end of an address is a POSTAL_CITY too,
   ACCOUNT_NUMBER (after "N° de compte" / "Numéro client" / "Compte" / "Compte courant" / "RIB" on the same line, or without
   label when it is five or more digits and one capital letter ('0012345Y', '12345 Y', not running text), with spaces, '-', '.' or '/' as separators, French RIB, long digit runs, apostrophe-grouped digits
   `86'123'456'789'012` with masks, at least 3 groups so amounts `1'240.00` are not caught),

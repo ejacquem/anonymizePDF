@@ -681,6 +681,11 @@ class Faker:
         allowed = [t for t in towns if not any(g in towns[t] for g in self.reserved_digits)]
         new = self._pick(allowed, len(name), rng, {name})
         if new is None:
+            # no town of a similar length (a long name: 'BOULOGNE-BILLANCOURT'): a real town of the list, not letters
+            other = [t for t in allowed if _norm(t) != _norm(name)]
+            if other:
+                new = rng.choice(other)
+        if new is None:
             return self.scramble(name, rng), None
         return new, towns[new]
 
@@ -692,6 +697,13 @@ class Faker:
             rng = self.rng("us-town", _norm(city))
             new_city = self._pick(US_TOWNS, len(city), rng, {_norm(city)} | self.reserved) or rng.choice(US_TOWNS)
             return f"{_style_token(city, new_city)}, {us.group('st')} {self.digits(us.group('zip'), rng)}"
+        # a town before its postcode in brackets: 'NANTERRE (92000)' -> 'LILLE (59000)' (the same town as the term alone)
+        bracket = re.fullmatch(r"(?P<city>.+?)\s*\((?P<pre>(?:[A-Z]{1,2}-)?)(?P<code>\d{4,5})\)", value)
+        if bracket:
+            city = bracket.group("city")
+            new_city, new_code = self.town(city)
+            code = _code_like(new_code, len(bracket.group("code")), self.rng("postal-code", _norm(city)))
+            return f"{_style_token(city, new_city)} ({bracket.group('pre')}{code})"
         m = re.fullmatch(r"(?P<pre>(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?)(?P<code>\d{4,5})(?P<sp>\s+)(?P<city>.+)", value)
         if not m:
             return self.scramble(value, self.rng("postal", value))
