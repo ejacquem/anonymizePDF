@@ -659,17 +659,22 @@ def fit_font(text, max_w, h):
     return load_font(8)
 
 
-def scan_text_layout(original: str, new: str, box, bold: bool = False):
+def scan_text_layout(original: str, new: str, box, bold: bool = False, face=None):
     """Font, baseline position and horizontal scale so that `new` looks like `original` did in `box` (unpadded word box):
     same ink height (the size is measured on the original text, so tight OCR boxes give the right size) and same
     baseline, in bold if the original was. Never wider than the box: a longer text is squeezed sideways a little
-    (`sx`, see write_text), then written smaller (SIZE_FLOOR), never over the next field."""
+    (`sx`, see write_text), then written smaller (SIZE_FLOOR), never over the next field.
+    `face` (fontmatch.Face): the font the scan is written in; None = Arial (bold or not)."""
     x0, y0, x1, y1 = box
-    probe = load_font(100, bold)
+
+    def load(size, bold):
+        return face.font(size) if face is not None else load_font(size, bold)
+
+    probe = load(100, bold)
     _, top, _, bottom = probe.getbbox(original or new, anchor="ls")   # top < 0 (above baseline)
     ink = bottom - top
     size = max(int(round(100 * (y1 - y0) / ink)), 6) if ink > 0 else max(int((y1 - y0) * 0.8), 8)
-    font = load_font(size, bold)
+    font = load(size, bold)
     descent = max(font.getbbox(original or new, anchor="ls")[3], 0)   # part of the original below the baseline
     avail = max(x1 - x0, 1)
     sx = 1.0
@@ -678,7 +683,7 @@ def scan_text_layout(original: str, new: str, box, bold: bool = False):
         needed = avail / width
         scale = min(1.0, max(needed / SQUEEZE_FLOOR, SIZE_FLOOR))
         size = max(int(size * scale), 6)
-        font = load_font(size, bold)
+        font = load(size, bold)
         sx = max(min(1.0, avail / max(font.getlength(new), 1)), SQUEEZE_MIN)
     return font, (x0, y1 - descent), sx
 
@@ -772,10 +777,14 @@ def _mrz_font(char_w: float):
     return ImageFont.truetype(path, max(int(round(100 * char_w / adv)), 6))
 
 
-def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: bool, blackbox: bool):
+def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: bool, blackbox: bool, look=None,
+                 key=None):
     """A word written at an angle: turned straight in a patch of the page, erased and rewritten there (`new`, or
     nothing), then turned back. Only the pixels of the erased area are pasted back, the rest of the page is kept.
+    `look` (fontmatch.Look): the font and the quality to write with (None = Arial, sharp).
     Returns the area changed on the page (x0, y0, x1, y1), in pixels."""
+    from . import quality
+
     from PIL import ImageDraw
 
     x0, y0, x1, y1 = (int(round(v)) for v in box)
@@ -800,14 +809,21 @@ def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: boo
     t = (bx0, by0, bx1, by1)
     d = ImageDraw.Draw(turned)
     changed = t                                              # the area that is repainted (erased, then written)
+    q = look.quality if look is not None else None
     if blackbox:
         d.rectangle(t, fill=(0, 0, 0))
     else:
-        d.rectangle(t, fill=paper)
+        if q is not None:
+            quality.erase(turned, t, paper, q, key)
+        else:
+            d.rectangle(t, fill=paper)
         if new:
             # never wider than the original value: a longer replacement is written smaller, not over the next field
-            font, xy, sx = scan_text_layout(original, new, t, bold)
-            write_text(turned, xy, new, font, ink, sx)
+            font, xy, sx = scan_text_layout(original, new, t, bold, look.face if look is not None else None)
+            if q is not None:
+                quality.paint(turned, new, font, xy, sx, ink, q, key)
+            else:
+                write_text(turned, xy, new, font, ink, sx)
             l, tp, r, bt = font.getbbox(new, anchor="ls")
             changed = (min(t[0], xy[0] + l * sx), min(t[1], xy[1] + tp), max(t[2], xy[0] + r * sx),
                        max(t[3], xy[1] + bt))

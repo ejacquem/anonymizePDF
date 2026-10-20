@@ -30,7 +30,8 @@ Repo: `C:\Users\Lucas\Project\anonymizePDF` (Windows 10, Git Bash + PowerShell).
 - Keep the scope small, no build step for the frontend, no new heavy dependency (no OpenCV / scipy / PyTorch:
   image analysis is done with numpy + Pillow). The one exception: onnxruntime (CPU, face detection), offline with its
   model file in the repo.
-- Commit only when the user asks; commit messages end with the attribution line given in the session.
+- Commit after each modification, but wait for the user's approval before pushing; commit messages end with the
+  attribution line given in the session.
 
 ## 3. Layout
 
@@ -47,7 +48,13 @@ anonymizer/
   fake.py              Faker: deterministic fake values (HMAC with the secret key), name memory, all value types
   secret.py            per-PC secret key (created once, outside the repo)
   render.py            digital: FontBook, page_spans, style_at, free_right, insert_replacement, black_out_digital;
-                       scans: scan_text_layout, BoldMeter, ink_color, background_color, draw_mrz
+                       scans: scan_text_layout (face=), BoldMeter, ink_color, background_color, draw_mrz
+  fontmatch.py         font of scanned text (analysis by synthesis): CATALOG / faces(), template, compare,
+                       PageFonts (face_for, is_bold, page_quality, look, advance), Look
+  quality.py           scan quality: Quality (scale, blur, spread, grain), fit, colours, grain; painting with it:
+                       erase, paint, text_coverage (supersampled, degraded, seeded noise)
+  fonts/               free fonts (static regular + bold TTF, licences in fonts/licenses): DejaVu Sans / Serif,
+                       Roboto, Open Sans, Lato, Source Sans 3, Barlow, Courier Prime
   fields.py            identity documents: lines_of, find_labeled, is_id_document; MRZ: find_mrz, build_mrz, mrz_zone
   regions.py           find_codes, find_signatures (+ *_digital variants), is_signature_label, line_angles (skew)
   morph.py             square max / min / closing on arrays, two 1-D passes (same result as PIL's rank filters)
@@ -77,6 +84,8 @@ sample_data/Dossier Test 12/  one person in every form a folder writes a name (f
                               reversed), a second person as control (digital, 3 files; tools/make_test_names.py)
 sample_data/Dossier Test 11/  the reported cases, each line as written (digital + scan): masked cards with X, REF, BT id,
                               REYES / REYS / REYE spellings, 'MLE' in capitals, 'numero du compte' far right
+sample_data/Dossier Test 17/  fonts and scan qualities (tools/make_test_fonts.py): 16 fonts regular / bold on a scan at
+                              300 / 200 / 150 dpi, a digital page with a pasted picture of text; fonts_truth.json
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
                        make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
@@ -241,7 +250,9 @@ console running `app.py` and the last 12 lines in the job log.
 ocr_lang: "fra+eng"
 case_sensitive: false
 match_case: true                    # UPPER / lower / Title case of the original applied to the fake
-style: {mode: replace, digital_fill: none}   # mode: replace | blackbox ; digital_fill: none | white
+style: {mode: replace, digital_fill: none, font_match: true, quality_match: true}
+                                    # mode: replace | blackbox ; digital_fill: none | white
+                                    # font_match / quality_match: scans and pictures (section 10b); missing = true
 blackout: {photos: true, photos_only_on_id_documents: false, signatures: true, qr_codes: true}   # photos = faces
 mrz: regenerate                     # regenerate | keep   (old value 'blackout' is read as regenerate)
 replacements:
@@ -420,10 +431,45 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   median, bold if > 1.4× (calibrated against Test 1's digital twin). Fails on ID documents (mostly bold text, no
   regular reference). Font: Arial / Arial Bold. A replacement wider than the OCR box is squeezed sideways (`render.write_text`, mask resized)
   to 90 % of its width, then written smaller; never over the next field (`scan_text_layout`, same rule as digital).
+- Scans, font and quality (section 10b) replace the Arial and the flat patch when `style.font_match` /
+  `style.quality_match` are on (default).
 - MRZ (`draw_mrz`): OCR-B if installed, else Consolas. The character advance comes from the OCR box of the chevron
   line (`find_mrz`, not from the ink of the page: a card edge next to the MRZ made the text too wide). The old text is
   erased pixel by pixel (`_erase_ink`: dark pixels take the local paper colour), never with a flat rectangle, then the
   new lines are written with the same ink colour.
+
+## 10b. Font and quality of scanned text (`fontmatch.py`, `quality.py`; plan and results: docs/font_matching.md)
+
+- Candidates (`fontmatch.CATALOG`): Windows fonts (font folders, no admin) + `anonymizer/fonts`; a family not found
+  is skipped. A Face = family + bold (+ file).
+- Font of a word (`word_scores`): the OCR text rendered in every face (`template`, 64 px, cut to its ink), compared
+  with the ink of the word (`ink_crop`) at 24 px high: correlation of the shapes minus 1.6 x |log width ratio|. A face
+  far too wide / narrow (0.35) is not compared (`WIDTH_PRUNE`). Once the page quality is known the candidates are
+  blurred like the page (`softness`: blur + low resolution), so lost serifs are lost in the candidates too.
+- Font of a value (`PageFonts.face_for`): its words count twice, the other words of its OCR line once (Windows OCR
+  often gives label and value different line ids); the family wins over the words, then the weight is decided on the
+  value's words only (`is_bold`): regular and bold rendered and degraded with the page quality, bold when its error
+  is < 0.7 of the regular one (`BOLD_RATIO`). BoldMeter is the fallback (no measurable word).
+- Quality (`PageFonts.page_quality`, `quality.fit`): on the 20 longest words of the page (>= 3, else not fitted):
+  native resolution from the PDF image (`engine.native_scale`, not fitted), then blur and stroke spread by a
+  coordinate search over grids, error = linear fit of the degraded candidate to the pixels. Per value: grain (MAD of
+  the paper around the box, ink and its edges left out) and colours (`colours`: ink = paper + (darkest 5 % - paper) /
+  peak coverage of the degraded candidate: the ink of a full stroke, consistent with the fitted blur).
+- Painting (`quality.erase`, `quality.paint`): the box is painted with the paper colour plus grain (noise made at the
+  native resolution, seeded by page / value / line: a rerun gives the same file); the text is rendered 4x, spread,
+  brought to the native resolution and back, blurred, laid in the ink colour, grain on the strokes.
+- Slanted words (|angle| >= TILT_MIN) are not measured (their OCR box is not their ink): a slanted value is Arial with
+  the page quality (`page_fonts(skip=)`).
+- A word only partly covered by a value is cut by the widths of its measured font (`PageFonts.advance` ->
+  `pii.match_boxes(advance=)`), not Arial's (a monospaced e-mail cut like Arial left pieces of letters).
+- Pictures of digital pages (`_pixel_pass`): the same looks; every value is erased on a copy of the page image, the
+  fakes are written there, and each value's area (box + its text, a descender may go below the box) is inserted as a
+  new PNG over the redaction. Options off: Helvetica text as before.
+- Trace items of replaced values have `look` ('Calibri Bold, 200 dpi, blur 1.0px, spread +0.00px, grain 4'), shown in
+  the Trace tooltip; the page log lists the fonts used and the scan quality.
+- Limits: close look-alikes are mixed up on soft copies (Arial / Roboto, Courier New / Courier Prime, DejaVu Sans
+  Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; italics are not candidates;
+  ~0.1-0.3 s per value.
 
 ## 11. Identity documents: MRZ, photos, QR codes, signatures
 
@@ -512,6 +558,11 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
 - Detectors (`detector_tests`, no OCR): the strings the real files showed ('MONSIEUR' is no BIC, capitalised cities,
   Swiss VAT, apostrophe references and amounts, 'Code SWIFT' not a name, identity by shape).
 - `KEEP`: values that must stay readable in a digital output (no over-redaction), e.g. 'MONSIEUR'.
+- Fonts and quality (`font_unit_tests`, no OCR: synthetic pages written with a known face and quality are measured
+  back, grain, seeded noise, config switches; `font_scan_tests`, Dossier Test 17: font / weight / blur of the
+  original lines, the font each replacement was written in, the output measured again (font kind, blur of the
+  replacements vs the values they replaced, ink level, grain of the erased area), the pasted picture, a rerun gives
+  the same file, options off = Arial on a flat patch).
 - Every output has an empty second check (`suspects`): on the original files of the poor copy the same check lists
   the values it sees (a useful sanity check when the test documents change).
 - Several keys matter: some bugs only appear with some keys (`Inès` → `Ines`, `Thomas` → `Julien`).

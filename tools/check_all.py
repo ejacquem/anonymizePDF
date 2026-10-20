@@ -82,6 +82,12 @@ SENSITIVE_13 = ["Théo", "Aurélien", "Morin", "Clément", "Roux", "BE68 5390 07
 SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 3000 6000 0112 3456 7890 189",
                "contact@lumen-services.example", "+41 22 123 45 67", "BE 0403.199.700",
                "CHE-123.456.789", "Route de Florissant 14", "CH-1206", "86'123'456'789'012"]
+# values of the font test (Dossier Test 17, tools/make_test_fonts.py): lines in known fonts at three scan qualities, and a
+# picture of three lines in a digital page
+SENSITIVE_17 = ["Héloïse", "Vandamme", "BE91 0682 4813 5729", "+32 471 58 23 96", "heloise.vandamme@exemple.be",
+                "Tanneurs", "14/03/1987", "Bastien", "Lambotte", "BE96 0015 7392 0468", "Ludivine", "Mertens",
+                "+32 486 19 74 30", "Corentin", "Dewulf", "Platanes", "Anaëlle", "Verstraete", "Florian", "Hennebert",
+                "02/11/1979", "Solène", "Wauters", "BE13 0634 5710 2948", "+32 478 61 05 23"]
 SENSITIVE_15 = ["Ambre Lefèvre", "Clémence Roux", "Lucas Martin", "Théo Aurélien Morin", "Paul Durand", "Jean Petit"]
 # values that must stay readable in a digital output (no over-redaction): folder -> {file: [values]}
 # the headings of the statements that must stay readable: none of them is a name (Dossier Test 14)
@@ -205,6 +211,11 @@ EXPECT = {
     "Dossier Test 11": (SENSITIVE_11, {
         "cas_signales.pdf": ("digital", [], []),
         "cas_signales_scan.pdf": ("scan", [], []),
+    }),
+    # fonts and scan qualities: the replacements are written in the font and with the quality of their line
+    "Dossier Test 17": (SENSITIVE_17, {
+        "polices_scan.pdf": ("scan", [], []),
+        "polices_image_collee.pdf": ("mixed", [], []),
     }),
     "Dossier Test 05": (STATEMENT_0, {
         "contrat_image_collee.pdf": ("mixed", [], []),
@@ -1353,6 +1364,313 @@ def speedup_tests():
         check("verify: the read keeps one reading per page", len(read.pages) == 1 and read.pages[0].layer.count("MOREAU") == 1)
 
 
+def _synthetic_page(f, q, lines, size=42, ink=(40, 40, 40), paper=(240, 238, 230), key=0):
+    """A page image written with quality.paint and quality q: every line 'label : value', the label in the regular
+    weight of f's family, the value in face f (a bold value after a regular label, as on real documents). Returns the
+    image and its words (exact boxes, one OCR line per line): what the font and quality detectors must find back."""
+    from PIL import Image
+    from anonymizer import fontmatch, quality
+
+    img = Image.new("RGB", (1600, 110 * len(lines) + 60), paper)
+    quality.erase(img, (0, 0, img.width, img.height), paper, q, ("page", key))
+    regular = (fontmatch.face(f.family, False) or f).font(size)
+    font = f.font(size)
+    words = []
+    for li, (label, value) in enumerate(lines):
+        y = 90 + 110 * li
+        x = 40
+        for part, fnt in ((label + " :", regular), (value, font)):
+            quality.paint(img, part, fnt, (x, y), 1.0, ink, q, ("line", key, li, part))
+            for w in part.split(" "):
+                l, t, r, b = fnt.getbbox(w, anchor="ls")
+                words.append({"text": w, "box": (x + l, y + t, x + r, y + b), "line": ("s", li), "conf": 100.0,
+                              "value": fnt is font})
+                x += fnt.getlength(w + " ")
+    return img, words
+
+
+def font_unit_tests():
+    """Font and quality matching without OCR: fonts available, a page written with a known font and quality is
+    measured back (font, weight, blur, spread, colours, grain), the noise is the same on every run, config switches."""
+    print("\n== font and quality matching (synthetic pages)")
+    from dataclasses import replace
+    from anonymizer import fontmatch, quality, render
+
+    fams = {f.family for f in fontmatch.faces()}
+    check("fonts: Arial and the bundled free fonts are candidates",
+          {"Arial", "DejaVu Sans", "DejaVu Serif", "Roboto", "Open Sans", "Lato", "Source Sans 3", "Barlow",
+           "Courier Prime"} <= fams, str(sorted(fams)))
+    bundled = sorted((ROOT / "anonymizer" / "fonts").glob("*.ttf"))
+    ok = True
+    for p in bundled:
+        try:
+            fitz.Font(fontfile=str(p)).text_length("Héloïse 0123", fontsize=10)
+        except Exception:                                  # noqa: BLE001
+            ok = False
+    check(f"fonts: the {len(bundled)} bundled fonts open in PyMuPDF too", ok and len(bundled) >= 16)
+    lines = [("Titulaire", "Madame Héloïse Vandamme"), ("Adresse", "Rue des Tanneurs 47"),
+             ("Courriel", "heloise.vandamme@exemple.be"), ("Conseiller", "Monsieur Bastien Lambotte")]
+    qualities = [quality.Quality(),
+                 quality.Quality(scale=200 / 300, blur=1.0, spread=0.25, grain=4.0),
+                 quality.Quality(scale=0.5, blur=1.6, grain=7.0)]
+    cases = [("Arial", False), ("Times New Roman", False), ("Calibri", False), ("Georgia", True),
+             ("Courier New", False), ("Verdana", True), ("Roboto", False), ("DejaVu Serif", False), ("Lato", True)]
+    from PIL import Image
+
+    exact = kind = weight = blur_ok = ink_ok = n = 0
+    sharp_exact = sharp_n = 0
+    misses, dark = [], []
+    for qi, q in enumerate(qualities):
+        for fi, (family, bold) in enumerate(cases):
+            f = fontmatch.face(family, bold)
+            if f is None:
+                continue
+            img, words = _synthetic_page(f, q, lines, key=(qi, fi))
+            gray = np.asarray(img.convert("L"))
+            pf = fontmatch.PageFonts(gray, words, q.scale)
+            value = [w["box"] for w in words if w["line"] == ("s", 0) and w["value"]]   # 'Madame Héloïse Vandamme'
+            box = (min(b[0] for b in value), min(b[1] for b in value), max(b[2] for b in value), max(b[3] for b in value))
+            look = pf.look(img, box)
+            n += 1
+            got = look.face
+            exact += got is not None and got.family == family
+            kind += got is not None and got.kind == f.kind
+            weight += got is not None and got.bold == bold
+            if qi == 0:
+                sharp_n += 1
+                sharp_exact += got is not None and got.family == family and got.bold == bold
+            if not (got is not None and got.family == family and got.bold == bold):
+                misses.append(f"{f.name} q{qi} -> {got.name if got else None}")
+            pq = pf.page_quality()
+            blur_ok += abs(pq.blur - q.blur) <= 0.45 and abs(pq.spread - q.spread) <= 0.3
+            # the same value painted with the measured look on blank paper: as dark as the original
+            twin = Image.new("RGB", img.size, look.paper or (240, 238, 230))
+            font, xy, sx = render.scan_text_layout("Madame Héloïse Vandamme", "Madame Héloïse Vandamme", box,
+                                                   got.bold if got else False, got)
+            quality.paint(twin, "Madame Héloïse Vandamme", font, xy, sx, look.ink, look.quality, "twin")
+            x0, y0, x1, y1 = (int(v) for v in box)
+            d_orig = np.percentile(gray[y0:y1, x0:x1], 3)
+            d_twin = np.percentile(np.asarray(twin.convert("L"))[y0:y1, x0:x1], 3)
+            ink_ok += abs(float(d_orig) - float(d_twin)) <= 20
+            dark.append(f"{f.name} q{qi} {d_orig:.0f}/{d_twin:.0f}")
+    check(f"detector: every font of a sharp synthetic page is found, with its weight ({sharp_exact}/{sharp_n})",
+          sharp_exact == sharp_n, "; ".join(misses))
+    check(f"detector: a soft synthetic page gives a font of the same kind (sans / serif / mono) ({kind}/{n}, "
+          f"the same family {exact}/{n})", kind >= n - 1 and exact >= 0.75 * n, "; ".join(misses))
+    check(f"detector: the weight of a synthetic page is found back ({weight}/{n})", weight >= n - 2, "; ".join(misses))
+    check(f"quality: blur and spread of a synthetic page are found back ({blur_ok}/{n})", blur_ok >= n - 2)
+    check(f"quality: the value painted with the measured look is as dark as the original ({ink_ok}/{n})",
+          ink_ok >= n - 1, "; ".join(dark))
+
+    # grain: a paper painted with a known grain is measured back; the same key gives the same pixels
+    from PIL import Image
+    for g in (3.0, 8.0):
+        img = Image.new("RGB", (400, 200), (235, 233, 225))
+        quality.erase(img, (0, 0, 400, 200), (235, 233, 225), quality.Quality(grain=g), "grain")
+        got = quality.grain(np.asarray(img.convert("L")), (100, 60, 300, 140))
+        check(f"quality: a paper grain of {g:.0f} is measured as {got:.1f}", abs(got - g) <= 0.35 * g)
+    q = quality.Quality(scale=0.5, blur=1.2, grain=6.0)
+    a, b, c = (Image.new("RGB", (600, 120), (240, 240, 240)) for _ in range(3))
+    font = fontmatch.default_face().font(40)
+    for im, key in ((a, "k1"), (b, "k1"), (c, "k2")):
+        quality.erase(im, (0, 0, 600, 120), (240, 240, 240), q, key)
+        quality.paint(im, "Margot Clément", font, (20, 80), 1.0, (30, 30, 30), q, key)
+    check("quality: the same place gives the same grain on every run (a rerun gives the same file)",
+          np.array_equal(np.asarray(a), np.asarray(b)) and not np.array_equal(np.asarray(a), np.asarray(c)))
+    # a squeezed text stays in its box, a descender is written below the baseline
+    cov, (left, top) = quality.text_coverage(font, "Margot", (100.5, 80.25), 0.8, replace(q, grain=0))
+    ink_cols = np.nonzero(cov.max(axis=0) > 0.5)[0]
+    width = font.getlength("Margot") * 0.8
+    check("quality: the text coverage starts at its origin and is squeezed by sx",
+          abs(left + ink_cols[0] - 100.5) <= 4 and abs((ink_cols[-1] - ink_cols[0]) - width) <= 6,
+          f"{left + ink_cols[0]} / {ink_cols[-1] - ink_cols[0]} vs {width:.0f}")
+
+    # the grainy erase covers exactly what the flat rectangle covered (nothing of the value is left at an edge)
+    import random as _random
+    from PIL import ImageDraw
+    rnd, same = _random.Random(1), True
+    for _ in range(200):
+        x0, y0 = rnd.uniform(-5, 50), rnd.uniform(-5, 25)
+        box = (x0, y0, x0 + rnd.uniform(0, 20), y0 + rnd.uniform(0, 10))
+        flat, grainy = Image.new("RGB", (64, 32)), Image.new("RGB", (64, 32))
+        ImageDraw.Draw(flat).rectangle(box, fill=(200, 200, 200))
+        quality.erase(grainy, box, (200, 200, 200), quality.Quality(), "edge")
+        same &= np.array_equal(np.asarray(flat), np.asarray(grainy))
+    check("quality: the grainy erase paints exactly the pixels of the flat rectangle", same)
+
+    # config: the two switches default to on (older configs), can be turned off, survive the review table
+    base = "replacements:\n  - {find: \"Héloïse\", replace: \"Margot\", type: PERSON}\n"
+    on = engine.parse_config(base)["style"]
+    off = engine.parse_config(base + "style: {mode: replace, font_match: false, quality_match: false}\n")["style"]
+    check("config: font_match / quality_match are on by default, off when written false",
+          on["font_match"] and on["quality_match"] and not off["font_match"] and not off["quality_match"])
+    again = engine.parse_config(configmodel.to_yaml(configmodel.to_model(
+        base + "style: {mode: replace, font_match: false, quality_match: true}\n")))["style"]
+    check("config: the switches survive the review table round trip", not again["font_match"] and again["quality_match"])
+
+
+def _ocr_page(page):
+    img = ocr.render_page(page, 300)
+    return img, ocr.ocr_words(img, "fra+eng")
+
+
+def _page_pixels(path: Path) -> list:
+    """The pages of a PDF rendered at 100 dpi (the file is closed again: Windows keeps an open file locked)."""
+    with fitz.open(path) as d:
+        return [pg.get_pixmap(dpi=100).samples for pg in d]
+
+
+def _line_box(ln: dict) -> tuple:
+    return tuple(v * 300 / 72 for v in ln["value_box"])
+
+
+def font_scan_tests():
+    """Font and quality matching on the scans of Dossier Test 17 (tools/make_test_fonts.py, fonts_truth.json): the font
+    of every line is found on the original, the replacement is written in it, and the output, measured again, shows
+    the same font and the same quality as the text around it. Options off: Arial on a flat patch, as before."""
+    print("\n== font and quality matching (Dossier Test 17)")
+    from anonymizer import fontmatch, quality
+
+    src = ROOT / "sample_data" / "Dossier Test 17"
+    if not (src / "fonts_truth.json").exists():
+        print("  (no Dossier Test 17: skipped)")
+        return
+    truth = json.loads((src / "fonts_truth.json").read_text(encoding="utf-8"))
+    scan_truth = truth["polices_scan.pdf"]
+    pages = {p["page"]: p for p in scan_truth["pages"]}
+    doc = fitz.open(src / "polices_scan.pdf")
+
+    # the original: native resolution, font and weight of every line, quality of every page
+    measured = {}
+    for pno, page in enumerate(doc, 1):
+        scale = engine.native_scale(page, 300)
+        check(f"page {pno}: native resolution {pages[pno]['dpi']} dpi is read from the image",
+              abs(scale * 300 - pages[pno]["dpi"]) <= 2, f"{scale * 300:.0f}")
+        img, words = _ocr_page(page)
+        measured[pno] = (img, words, fontmatch.PageFonts(np.asarray(img.convert("L")), words, scale))
+    fam_ok = kind_ok = bold_ok = 0
+    misses = []
+    for ln in scan_truth["lines"]:
+        f, _ = measured[ln["page"]][2].face_for(_line_box(ln))
+        want = fontmatch.face(ln["family"], ln["bold"])
+        fam_ok += f is not None and f.family == ln["family"]
+        kind_ok += f is not None and want is not None and f.kind == want.kind
+        bold_ok += f is not None and f.bold == ln["bold"]
+        if f is None or f.family != ln["family"] or f.bold != ln["bold"]:
+            misses.append(f"p{ln['page']} {ln['family']}{' Bold' if ln['bold'] else ''} -> {f.name if f else None}")
+    n = len(scan_truth["lines"])
+    check(f"detector: font family of the scanned lines ({fam_ok}/{n})", fam_ok >= n - 4, "; ".join(misses))
+    check(f"detector: sans / serif / mono of the scanned lines ({kind_ok}/{n})", kind_ok >= n - 1, "; ".join(misses))
+    check(f"detector: weight of the scanned lines ({bold_ok}/{n})", bold_ok >= n - 2, "; ".join(misses))
+    grains = {}
+    for pno, (img, words, pf) in measured.items():
+        q = pf.page_quality()
+        want = pages[pno]["blur"] * 300 / pages[pno]["dpi"]       # the generator's blur, in pixels of the 300 dpi page
+        check(f"page {pno}: blur {q.blur:.1f}px measured (generated {want:.1f}px)", abs(q.blur - want) <= 0.6)
+        g = np.asarray(img.convert("L"))
+        grains[pno] = np.median([quality.grain(g, _line_box(ln)) for ln in scan_truth["lines"] if ln["page"] == pno])
+    check(f"grain: the clean page has less grain than the copies ({grains[1]:.1f} < {grains[2]:.1f}, {grains[3]:.1f})",
+          grains[1] < grains[2] and grains[1] < grains[3])
+
+    tmp = Path(tempfile.mkdtemp(prefix="anon_fonts_"))
+    try:
+        for name in ("polices_scan.pdf", "polices_image_collee.pdf"):
+            shutil.copy(src / name, tmp / name)
+        cfg = engine.scan_folder(tmp, "fonts", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "fonts", cfg, "fra+eng", False, lambda m: None)
+        files = {f["file"]: f for f in rep["files"]}
+        out_path = tmp / "polices_scan_anonymized.pdf"
+        first = _page_pixels(out_path)
+
+        # the font each replacement was written in = the font of its line
+        trace = [t for t in files["polices_scan.pdf"].get("trace", []) if t.get("look")]
+        used = {}
+        for ln in scan_truth["lines"]:
+            b = [v * 72 / 300 for v in _line_box(ln)]
+            hit = [t for t in trace if t["page"] == ln["page"] and t["box"][0] < b[2] and t["box"][2] > b[0]
+                   and t["box"][1] < b[3] and t["box"][3] > b[1]]
+            used[(ln["page"], ln["value"])] = hit[0]["look"].split(",")[0] if hit else None
+        written = sum(1 for ln in scan_truth["lines"]
+                      if used[(ln["page"], ln["value"])] == ln["family"] + (" Bold" if ln["bold"] else ""))
+        check(f"anonymized scan: the replacement is written in the font of its line ({written}/{n})", written >= n - 5,
+              "; ".join(f"{k} -> {v}" for k, v in used.items() if v is None))
+
+        # the output measured again: the replacement reads as that font, with the quality of the page
+        same_font = same_kind = same_ink = same_grain = total = 0
+        notes, blurs = [], []
+        with fitz.open(out_path) as out:
+            for pno, page in enumerate(out, 1):
+                img, words = _ocr_page(page)
+                g = np.asarray(img.convert("L"))
+                orig_img, orig_words, orig_pf = measured[pno]
+                orig_g = np.asarray(orig_img.convert("L"))
+                pf = fontmatch.PageFonts(g, words, orig_pf.scale)     # the output is a new 300 dpi image: the
+                replaced, originals = [], []                           # scan's own resolution is the reference
+                for ln in (x for x in scan_truth["lines"] if x["page"] == pno):
+                    name = used[(pno, ln["value"])]
+                    if not name:
+                        continue
+                    total += 1
+                    box = _line_box(ln)
+                    f, _ = pf.face_for(box)
+                    want = fontmatch.face(name.replace(" Bold", ""), name.endswith(" Bold"))
+                    same_font += f is not None and f.name == name
+                    same_kind += f is not None and want is not None and f.kind == want.kind and f.bold == want.bold
+                    if f is None or f.name != name:
+                        notes.append(f"p{pno} {name} read as {f.name if f else None}")
+                    replaced += pf.value_words(box)
+                    originals += orig_pf.value_words(box)
+                    ink_new = np.percentile(g[int(box[1]):int(box[3]), int(box[0]):int(box[2])], 3)
+                    ink_old = np.percentile(orig_g[int(box[1]):int(box[3]), int(box[0]):int(box[2])], 3)
+                    same_ink += abs(float(ink_new) - float(ink_old)) <= 30
+                    gn, go = quality.grain(g, box, reach=0), quality.grain(orig_g, box, reach=0)
+                    same_grain += abs(gn - go) <= max(2.0, 0.5 * go)
+                # the blur of all the replacements of the page together = the blur of the values they replace
+                repl = fontmatch.PageFonts(g, [words[i] for i in replaced], pf.scale).page_quality()
+                orig = fontmatch.PageFonts(orig_g, [orig_words[i] for i in originals], pf.scale).page_quality()
+                blurs.append((pno, repl.blur, orig.blur))
+        check(f"output: the replacement reads as a font of the kind and weight it was written in ({same_kind}/{total}, "
+              f"the same font {same_font}/{total})", same_kind >= total - 2 and same_font >= 0.8 * total,
+              "; ".join(notes))
+        check("output: the replacements have the blur of their page "
+              + ", ".join(f"p{p} {a:.1f}/{b:.1f}px" for p, a, b in blurs),
+              all(abs(a - b) <= 0.5 for _, a, b in blurs))
+        check(f"output: the replacement has the ink level of the value ({same_ink}/{total})", same_ink >= total - 2)
+        check(f"output: the erased area has the grain of the paper ({same_grain}/{total})", same_grain >= total - 2)
+
+        # image text of a digital page: written in the font of the picture, as a new picture
+        pasted = [t for t in files["polices_image_collee.pdf"].get("trace", []) if t["kind"].startswith("pixel match")]
+        fonts_pasted = sorted(t.get("look", "").split(",")[0] for t in pasted if t.get("replacement"))
+        want = sorted(ln["family"] + (" Bold" if ln["bold"] else "") for ln in truth["polices_image_collee.pdf"]["lines"])
+        check("picture in a digital page: each replacement in the font of its line",
+              Counter(fonts_pasted) == Counter(want), f"{fonts_pasted} vs {want}")
+
+        # a rerun gives the same file (the grain is seeded by the place)
+        engine.run_anonymize(tmp, "fonts", cfg, "fra+eng", False, lambda m: None, only=["polices_scan.pdf"])
+        again = _page_pixels(out_path)
+        check("a second run gives the same anonymized scan", first == again)
+
+        # options: off = Arial on a flat patch (as before); font off, quality on = Arial with the scan's quality
+        for fm, qm in ((False, False), (False, True)):
+            c = cfg.replace("font_match: true", f"font_match: {str(fm).lower()}") \
+                   .replace("quality_match: true", f"quality_match: {str(qm).lower()}")
+            r = engine.run_anonymize(tmp, "fonts", c, "fra+eng", False, lambda m: None, only=["polices_scan.pdf"])
+            entry = next(f for f in r["files"] if f["file"] == "polices_scan.pdf")
+            tr = [t for t in entry.get("trace", []) if t["kind"].startswith("scan match")]
+            looks = {t.get("look", "") for t in tr if t.get("replacement")}
+            if not qm:
+                with fitz.open(out_path) as d:
+                    g = np.asarray(ocr.render_page(d[2], 300).convert("L"))                     # the grainy copy
+                flat = [quality.grain(g, [v * 300 / 72 for v in t["box"]], reach=0) for t in tr if t["page"] == 3]
+                check("options off: no font measured, Arial on a flat patch as before",
+                      looks == {""} and np.median(flat) < 1.0, f"{looks} grain {np.median(flat):.1f}")
+            else:
+                check("font_match off, quality_match on: Arial with the quality of the scan",
+                      bool(looks) and all(lk.startswith("Arial") and "blur" in lk for lk in looks), str(looks))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def key_and_fake_tests(tmp: Path):
     print("\n== secret key and fake values")
     use_key(tmp / "k" / "secret.key")
@@ -1428,6 +1746,8 @@ def main():
         rotated_tests()
         town_tests()
         speedup_tests()
+        font_unit_tests()
+        font_scan_tests()
         key_and_fake_tests(tmp)
         for k in range(1 if args.quick else args.keys):
             print(f"\n######## random key {k + 1}")

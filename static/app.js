@@ -363,7 +363,7 @@ function drawChanges(which) {
   const shapes = [...changes.replaced.map((c) => ({ ...c, cls: "chg" })), ...changes.removed.map((c) => ({ ...c, cls: "chg removed" }))];
   if (btnTrace.classList.contains("on")) {
     traceBoxes().forEach((t) => shapes.push({ page: t.page, box: t.box, cls: "chg trace",
-      title: `${t.kind}${t.value ? ": " + t.value : ""}${t.replacement ? " → " + t.replacement : ""}` }));
+      title: `${t.kind}${t.value ? ": " + t.value : ""}${t.replacement ? " → " + t.replacement : ""}${t.look ? "\nwritten in " + t.look : ""}` }));
   }
   [...v.list.children].forEach((el, i) => {
     el.querySelectorAll(".chg").forEach((n) => n.remove());
@@ -1382,6 +1382,8 @@ function settingsHtml(s) {
       <input type="checkbox" id="ocrVerify"${state.ocrVerify ? " checked" : ""}> also on digital PDFs</label>
     <span>Replace with</span>${sel("mode", [["replace", "fake text"], ["blackbox", "a black box (every value)"]])}
     <span>Digital PDFs</span>${sel("digital_fill", [["none", "keep the page background"], ["white", "white box behind the text"]])}
+    <span>Scans, pictures</span><span>${chk("font_match", "same font", "Write the fake values in the font of the text around them (off: Arial)")}
+      ${chk("quality_match", "same quality", "Same blur, stroke weight, ink and paper grain as the scan (off: sharp text on a flat patch)")}</span>
     <span>Case</span><span>${chk("match_case", "keep UPPER / lower case", "MARCHAND -> BEAUMONT, Vermeulen -> Hendrickx")}
       ${chk("case_sensitive", "case-sensitive search", "Off: 'marchand' also matches 'MARCHAND'")}</span>
     <span>Black boxes</span><span>${chk("photos", "faces", "Faces of people (photos, portraits, ID photos): the head is covered")}
