@@ -1674,7 +1674,7 @@ def suspect_suggestions(config_text: str, files: list[dict], rel: str = "") -> t
         offered.append(s)
         model["entries"].append({"find": s["find"], "replace": s["replace"], "type": s["type"], "active": False,
                                  "info": f"second check: still readable in {s['file']} p.{s['page']} - check it, "
-                                         f"remove the # to replace it"})
+                                         f"tick it to replace it"})
     return configmodel.to_yaml(model, model.get("folder") or rel), offered
 
 
