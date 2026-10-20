@@ -1099,6 +1099,37 @@ def second_pass_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def incremental_report_tests():
+    """The report of an anonymization is saved after every file: when the second file starts, the first one is in
+    anon_report.json already, so a batch that stops keeps the analysis of the files it has done."""
+    print("\n== report saved file by file")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_report_"))
+    try:
+        for name in ("un.pdf", "deux.pdf"):
+            doc = fitz.open()
+            doc.new_page().insert_text((72, 72), f"Jean Dupont {name}", fontsize=12)
+            doc.save(tmp / name)
+        cfg = "\n".join(["ocr_lang: \"fra+eng\"", "case_sensitive: false", "match_case: true",
+                         "style: {mode: replace, digital_fill: none}", "replacements:",
+                         "  - {find: \"Dupont\", replace: \"Martin\", type: PERSON}", "regex: []"])
+        seen = []
+
+        def progress(done, total, name=""):
+            # called before each file: what is on disk at that moment
+            path = tmp / engine.REPORT_NAME
+            files = json.loads(path.read_text(encoding="utf-8"))["files"] if path.exists() else []
+            seen.append((done, [f["file"] for f in files]))
+
+        rep = engine.run_anonymize(tmp, "report", cfg, "fra+eng", False, lambda m: None, progress=progress)
+        # the files are taken in name order: 'deux.pdf' before 'un.pdf'
+        check("the second file starts with the first one saved in the report",
+              (1, ["deux.pdf"]) in seen, str(seen))
+        check("the report of the run lists both files", [f["file"] for f in rep["files"]] == ["deux.pdf", "un.pdf"])
+        check("no temporary report is left next to it", not (tmp / (engine.REPORT_NAME + ".tmp")).exists())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def first_letter_tests():
     """The first letter of a name is replaced with the rest of it: 'M. Albert Dupont' never keeps its 'A' (a scan was
     left with 'A' before the fake first name, from the colon skip). Diagonal first letters (A, V, W, Y) are the risk.
@@ -1898,6 +1929,7 @@ def main():
         colon_tests()
         street_name_tests()
         second_pass_tests()
+        incremental_report_tests()
         first_letter_tests()
         account_and_street_names_tests()
         manual_text_tests()

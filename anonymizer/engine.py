@@ -1649,6 +1649,30 @@ def _is_removed(removed: list, kind: str, box) -> bool:
     return False
 
 
+def _kept_entries(folder: Path, only: list[str] | None) -> list[dict]:
+    """The entries of the report that a run on some files (`only`) keeps: those of the other files. A full run keeps none."""
+    rep_path = folder / REPORT_NAME
+    if only is None or not rep_path.exists():
+        return []
+    try:
+        return [f for f in json.loads(rep_path.read_text(encoding="utf-8")).get("files", []) if f.get("file") not in only]
+    except (OSError, ValueError):
+        return []
+
+
+def _save_report(folder: Path, rel: str, files: list[dict], t_all: float, ocr_verify: bool,
+                 quality_offset: float = 0.0) -> dict:
+    """The report of the run so far, written through a temporary file: a stop in the middle of a write leaves the
+    previous report whole."""
+    report = {"folder": rel, "generated": dt.datetime.now().isoformat(timespec="seconds"),
+              "total_seconds": round(time.time() - t_all, 1), "ocr_verify": ocr_verify,
+              "quality_offset": quality_offset, "files": files}
+    tmp = folder / (REPORT_NAME + ".tmp")
+    tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(folder / REPORT_NAME)
+    return report
+
+
 def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log,
                   only: list[str] | None = None, removed: list | None = None, progress=None,
                   quality_offset: float = 0.0) -> dict:
@@ -1671,6 +1695,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         raise ValueError("No PDF in this folder")
     log(f"Config: {len(cfg['terms'])} replacement(s), {len(cfg['regex'])} regex rule(s). {len(pdfs)} file(s)."
         + (f" Fake text quality {quality_offset:+.2f} from the detected one." if quality_offset else ""))
+    # the entries of the other files of the folder (a run on some files keeps theirs): read before the report is saved
+    kept = _kept_entries(folder, only)
     files = []
     for i, pdf in enumerate(pdfs, start=1):
         _report(progress, i - 1, len(pdfs), pdf.name)
@@ -1744,22 +1770,10 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         entry["seconds"] = round(time.time() - t0, 1)
         log(f"   done in {entry['seconds']}s")
         files.append(entry)
+        # saved after every file: a batch that stops keeps the analysis of the files it has done
+        report = _save_report(folder, rel, kept + files, t_all, ocr_verify, quality_offset)
     _report(progress, len(pdfs), len(pdfs))
     done = files                                        # the files of this run (the report may keep others)
-    if only is not None:                                # one file: keep the report of the other files
-        kept = []
-        rep_path = folder / REPORT_NAME
-        if rep_path.exists():
-            try:
-                kept = [f for f in json.loads(rep_path.read_text(encoding="utf-8")).get("files", [])
-                        if f.get("file") not in only]
-            except (OSError, ValueError):
-                kept = []
-        files = kept + files
-    report = {"folder": rel, "generated": dt.datetime.now().isoformat(timespec="seconds"),
-              "total_seconds": round(time.time() - t_all, 1), "ocr_verify": ocr_verify,
-              "quality_offset": quality_offset, "files": files}
-    (folder / REPORT_NAME).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     total = sum(f["replaced"] for f in done)
     log(f"Finished: {total} replacement(s) in {len(done)} file(s), {report['total_seconds']}s")
     return report

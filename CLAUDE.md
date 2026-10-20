@@ -243,6 +243,9 @@ console running `app.py` and the last 12 lines in the job log.
      `LEAK_TYPES`, dates and identity values on ID pages, honorific names. A value close to a replacement (ratio ≥ 0.8
      after OCR digit folding, `_ocr_fold`) is a replacement read back by the OCR, not a leak. Test: `check_all`
      reports the second check of every output (`suspects`).
+   - The report is saved after every file (`_save_report`, through `anon_report.json.tmp`), so a batch or a run that
+     stops keeps the analysis of the files it has done; the output of a file is written when that file is done. The
+     config of a batch is written when the scan of its folder ends (`scan_folder`).
    - Report `anon_report.json` per file: mode, pages, replaced, seconds, items, leftovers, warnings,
      `blackouts: [{page, kind, box (PDF points)}]`, `mrz: [{page, action, format, lines}]`. Each item (one per
      original value) has `boxes: [{page, box (PDF points)}]` = where the value was: scan, digital and pixel-pass
