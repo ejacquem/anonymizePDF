@@ -566,6 +566,11 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 Run it after every change (exit code 0 = all passed; ~3 min with 2 keys, `--quick` = 1 key and no option tests,
 `--folder "Dossier Test 04"` to target, `--keep` to keep outputs). It copies `sample_data/*` to a temp dir and uses
 temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing into `sample_data/`.
+A run with a failure keeps its key (copied to the temp folder, `anonymizePDF_check_keys`, outside the repo) and the summary
+prints it with the replay command: `python tools/check_all.py --key <file> [--folder ...]` (the file is only read; the
+user's key and the kept keys are never committed). `tools/key_hunt.py` runs one digital test file with many random keys
+(parallel processes, the folder's scan and the names model as check_all) and keeps the keys that leave a sensitive
+value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane.pdf --keys 150 --jobs 5`.
 - Per output file: no error; expected mode (digital / scan / mixed); **leaks** in the text layer, a fresh OCR of every
   page and the metadata (names as whole words, numbers / multi-word values as substrings, accent-insensitive);
   report leftovers empty; expected black-box kinds, each black in the rendering; nothing under a box in digital
@@ -604,6 +609,9 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
 - Every output has an empty second check (`suspects`): on the original files of the poor copy the same check lists
   the values it sees (a useful sanity check when the test documents change).
 - Several keys matter: some bugs only appear with some keys (`Inès` → `Ines`, `Thomas` → `Julien`).
+  Case solved with key_hunt (1 key in 150): the '4471' of Dossier Test 01 was a false alarm of the leak search, which
+  joined the lines of the text: the fake 'BE96ZZZ0969601447' above '17.947.729' made a '4471'. A value of one token
+  is now searched line by line (`found_in`); a value of several words still across lines.
 - UI changes: check in the Browser pane (it may be hidden: rAF and scroll events then do not fire).
 
 ### 12b. Real public documents: `python tools/check_public_docs.py`

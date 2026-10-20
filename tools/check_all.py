@@ -18,7 +18,8 @@ Usage:
   python tools/check_all.py                 # 2 random keys, all folders, option tests (a few minutes)
   python tools/check_all.py --quick         # 1 key, no option tests
   python tools/check_all.py --keys 3 --folder "Dossier Test 04" --keep
-Exit code 0 = everything passed.
+  python tools/check_all.py --key C:/path/secret.key   # replay with a given key (the summary of a failed run names it)
+Exit code 0 = everything passed. The key of a run with a failure is kept, outside the repo, and its path is printed.
 """
 from __future__ import annotations
 
@@ -252,6 +253,12 @@ def found_in(secret_value: str, text: str) -> bool:
         plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
         words = {norm(w) for w in re.split(r"[^\w]+", plain) if w}
         return norm(secret_value) in words
+    if not re.search(r"\s", secret_value):
+        # one token ('4471', an account number): it is not cut by a line break. Searched in the text without its
+        # line breaks, the end of one fake ('...01447') and the start of the next line ('17.947') made a '4471'
+        # (Dossier Test 01, some keys only: tools/key_hunt.py found it).
+        needle = norm(secret_value)
+        return any(needle in norm(line) for line in text.splitlines())
     return norm(secret_value) in norm(text)
 
 
@@ -549,6 +556,13 @@ def detector_tests():
         [{"text": t, "box": (10 + 90 * i, 10, 10 + 90 * i + 80, 30), "line": ("n", 0), "conf": 100.0}
          for i, t in enumerate(["Nom", "/", "Name", "Jacquemin"])])}
     check("a name after its label on the same line is still read", ("surname", "Jacquemin") in named, str(named))
+    # the leak search joins the words of a line, never two lines: with a key of check_all the fake 'BE96ZZZ0969601447'
+    # above '17.947.729' made a '4471' out of two different fakes
+    check("a number is not found across two lines", not found_in("4471", "BE96ZZZ0969601447\n17.947.729"))
+    check("a number is found inside a line, spaces and stars included",
+          found_in("4471", "Carte 6703 **** **** 4471 12/03") and found_in("6703 **** **** 4471", "Carte 6703 **** **** 4471"))
+    check("a value of several words is found when the line is cut",
+          found_in("Rue de la Station 47", "Domicile : Rue de la\nStation 47"))
 
 
 def reported_cases_tests():
@@ -1882,18 +1896,38 @@ def key_and_fake_tests(tmp: Path):
           f"{hits['Vermeulen']} vs max {max(others)}")
 
 
+def note_key_failures(key_file: Path, start: int, bad_keys: list, given: bool):
+    """A key whose run has a failure is copied outside the temporary directory (and outside the repo), so the same
+    key can be replayed with --key; a key given with --key is only named."""
+    names = [n for ok, n in RESULTS[start:] if not ok]
+    if not names:
+        return
+    if given:
+        bad_keys.append((key_file, names))
+        return
+    keep_dir = Path(tempfile.gettempdir()) / "anonymizePDF_check_keys"
+    keep_dir.mkdir(exist_ok=True)
+    kept = keep_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{key_file.parent.name}.key"
+    shutil.copy(key_file, kept)
+    bad_keys.append((kept, names))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--keys", type=int, default=2, help="number of random secret keys to run with")
     ap.add_argument("--quick", action="store_true", help="1 key, no option tests")
     ap.add_argument("--folder", action="append", help="only this test folder (repeatable)")
     ap.add_argument("--keep", action="store_true", help="keep the temporary directory (outputs, configs, reports)")
+    ap.add_argument("--key", help="run the folders with this secret key file (replays a failure; the file is only read)")
     args = ap.parse_args()
+    if args.key and not Path(args.key).is_file():
+        sys.exit(f"--key: {args.key} is not a file")
     if not ocr.available():
         sys.exit("No OCR engine available: the scan checks cannot run.")
     folders = args.folder or list(EXPECT)
     tmp = Path(tempfile.mkdtemp(prefix="anon_check_"))
     saved = os.environ.get("ANON_SECRET_FILE")
+    bad_keys: list[tuple[Path, list[str]]] = []
     ner = load_ner(quiet=True)
     t0 = time.time()
     try:
@@ -1923,13 +1957,19 @@ def main():
         contract_tests()
         quality_offset_tests()
         key_and_fake_tests(tmp)
-        for k in range(1 if args.quick else args.keys):
-            print(f"\n######## random key {k + 1}")
-            use_key(tmp / f"key{k}" / "secret.key")
+        keys = [Path(args.key)] if args.key else [tmp / f"key{k}" / "secret.key" for k in range(1 if args.quick else args.keys)]
+        for k, key_file in enumerate(keys):
+            print(f"\n######## {'given' if args.key else 'random'} key {k + 1}")
+            use_key(key_file)
+            start = len(RESULTS)
             full_run(folders, tmp / f"run{k}", ner)
+            note_key_failures(key_file, start, bad_keys, args.key is not None)
         if not args.quick:
-            use_key(tmp / "key_opts" / "secret.key")
+            key_file = Path(args.key) if args.key else tmp / "key_opts" / "secret.key"
+            use_key(key_file)
+            start = len(RESULTS)
             option_tests(tmp / "opts", ner)
+            note_key_failures(key_file, start, bad_keys, args.key is not None)
     finally:
         if saved is None:
             os.environ.pop("ANON_SECRET_FILE", None)
@@ -1943,6 +1983,9 @@ def main():
     print(f"\n{len(RESULTS) - len(failed)} passed, {len(failed)} failed ({time.time() - t0:.0f}s)")
     for n in failed:
         print("  FAILED:", n)
+    for path, names in bad_keys:
+        print(f"  key of a run with {len(names)} failure(s): {path}")
+        print(f'    replay: python tools/check_all.py --key "{path}"')
     sys.exit(1 if failed else 0)
 
 

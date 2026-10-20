@@ -301,6 +301,7 @@ The portraits of `make_test_faces.py` are public-domain photographs from Wikimed
 ```bash
 python tools/check_all.py            # all test folders, 2 random keys + config options (a few minutes)
 python tools/check_all.py --quick    # 1 key, no option tests
+python tools/check_all.py --key "C:/path/to/secret.key"   # replay a failed run (its summary names the key)
 ```
 It anonymizes copies of the test documents (never `sample_data/` itself, never with your real secret key) and checks
 every output: no sensitive value in the text layer, in a new OCR of each page or in the metadata; the expected
