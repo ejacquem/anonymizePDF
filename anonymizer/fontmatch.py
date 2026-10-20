@@ -217,17 +217,25 @@ def fit_rows(gray: np.ndarray, ink_box, tpl: np.ndarray, soft: float = 0.0):
     pt = tpl.mean(axis=1)
     k0 = (y1 - y0) / tpl.shape[0]
     ys = np.arange(ya, yb, dtype=float)
+    tops = np.arange(y0 - 4, y0 + 4.01, 0.5)
+    xp = np.arange(len(pt))
+    ym = pc - pc.mean()
+    yy = float(ym @ ym)
     best = None
     for k in k0 * np.arange(0.8, 1.21, 0.01):
         sigma = soft / k                                  # the page's blur, in template rows
         p = quality.blur(pt[None, :], sigma)[0] if sigma >= 0.3 else pt
-        for top in np.arange(y0 - 4, y0 + 4.01, 0.5):
-            pred = np.interp((ys - top) / k, np.arange(len(p)), p, left=0.0, right=0.0)
-            if pred.std() < 1e-6:
-                continue
-            c = float(np.corrcoef(pred, pc)[0, 1])
-            if best is None or c > best[0]:
-                best = (c, k, top)
+        # every top at once: the prediction of each (a row), then its correlation with the scan's profile
+        pred = np.interp(((ys[None, :] - tops[:, None]) / k).ravel(), xp, p, left=0.0, right=0.0).reshape(len(tops), -1)
+        xm = pred - pred.mean(axis=1, keepdims=True)
+        xx = np.einsum("ij,ij->i", xm, xm)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            c = (xm @ ym) / np.sqrt(xx * yy)
+        c[pred.std(axis=1) < 1e-6] = -np.inf              # a flat prediction says nothing
+        c[~np.isfinite(c)] = -np.inf
+        i = int(np.argmax(c))                             # the first of equal ones, as the loop on tops did
+        if np.isfinite(c[i]) and (best is None or c[i] > best[0]):
+            best = (float(c[i]), k, float(tops[i]))
     return (best[1], best[2]) if best else None
 
 
@@ -270,6 +278,29 @@ def compare(ref, tpl: np.ndarray, soft: float = 0.0) -> float:
     return ncc - WIDTH_WEIGHT * abs(width)
 
 
+def compare_many(ref, tpls: list, soft: float = 0.0) -> list[float]:
+    """compare() of several candidates against the same word at once: the candidates are brought to the word's size
+    and softened as a stack, and the correlations are taken per image. Each score is bit for bit what compare() gives
+    for that candidate alone."""
+    if not isinstance(ref, Shape):
+        ref = shape_of(ref)
+    if not tpls:
+        return []
+    extra = soft * SHAPE_H / max(ref.height, 1)
+    stack = np.stack([_resize(t, ref.c.shape[1], SHAPE_H) for t in tpls])
+    stack = quality.blur_stack(stack, math.sqrt(1.0 + extra * extra))
+    n = len(tpls)
+    stack = stack - stack.reshape(n, -1).mean(axis=1)[:, None, None]
+    norms = np.sqrt((stack * stack).reshape(n, -1).sum(axis=1))
+    dots = (ref.c[None] * stack).reshape(n, -1).sum(axis=1)
+    out = []
+    for t, norm, dot in zip(tpls, norms, dots):
+        den = ref.norm * float(norm)
+        ncc = float(dot) / den if den > 0 else 0.0
+        out.append(ncc - WIDTH_WEIGHT * abs(math.log((t.shape[1] / t.shape[0]) / ref.aspect)))
+    return out
+
+
 def _letters(text: str) -> int:
     return sum(ch.isalnum() for ch in text)
 
@@ -293,8 +324,9 @@ def word_scores(gray: np.ndarray, word: dict, soft: float = 0.0):
         return None
     cut = min(widths.values()) + WIDTH_PRUNE
     # a font far too wide or too narrow is not compared shape by shape: it gets the score of a poor shape match
-    out = {f: compare(ref, t, soft) if widths[f] <= cut else POOR_SHAPE - WIDTH_WEIGHT * widths[f]
-           for f, t in tpls.items()}
+    near = [f for f in tpls if widths[f] <= cut]
+    scored = dict(zip(near, compare_many(ref, [tpls[f] for f in near], soft)))
+    out = {f: scored[f] if f in scored else POOR_SHAPE - WIDTH_WEIGHT * widths[f] for f in tpls}
     return (out, crop) if out else None
 
 
@@ -348,6 +380,7 @@ class PageFonts:
         self._raw: dict[int, tuple | None] = {}
         self._mass_ref = None
         self._scores: dict[int, tuple | None] = {}
+        self._bold: dict[tuple, float | None] = {}
         self._quality = None
 
     def raw_scores(self, i: int):
@@ -446,6 +479,12 @@ class PageFonts:
         """How bold the value's words look in `family`, 0 = regular, 1 = bold, from two clues (see RESIDUAL_BOLD):
         which rendering, regular or bold, degraded with the page's quality, explains their pixels best, and how much
         ink they hold for their size compared with the page's text. None when it cannot be measured."""
+        key = (tuple(own), family)
+        if key not in self._bold:                          # asked again for the same value by the layout steps
+            self._bold[key] = self._bold_score(own, family)
+        return self._bold[key]
+
+    def _bold_score(self, own: list[int], family: str) -> float | None:
         reg, bd = face(family, False), face(family, True)
         if not reg or not bd or reg.path == bd.path:
             return None

@@ -1503,6 +1503,76 @@ def speedup_tests():
             os.environ["ANON_OCR_CACHE_DIR"] = saved_dir
         shutil.rmtree(shared_dir, ignore_errors=True)
 
+    # the blur adds the taps in place for a big array: bit for bit the same as the plain sums
+    from anonymizer import fontmatch, quality
+
+    def blur_sums(a, sigma):                                 # the previous version
+        r = max(int(math.ceil(3 * sigma)), 1)
+        x = np.arange(-r, r + 1)
+        k = np.exp(-x * x / (2 * sigma * sigma))
+        k /= k.sum()
+        p = np.pad(a.astype(float), r, mode="edge")
+        h, w = a.shape
+        rows = sum(k[i] * p[:, i:i + w] for i in range(2 * r + 1))
+        return sum(k[i] * rows[i:i + h, :] for i in range(2 * r + 1))
+
+    same = all(np.array_equal(quality.blur(a, s), blur_sums(a, s))
+               for a, s in ((rng.random((24, 60)), 1.0), (rng.random((60, 200)), 2.0), (rng.random((400, 300)), 2.5),
+                            (rng.random((1, 80)), 0.9)))
+    check("blur: in place for a big array = the plain sums, bit for bit", same)
+
+    # fit_rows: every top at once = the two loops it replaced (the same scale and top)
+    def fit_rows_loops(gray, ink_box, tpl, soft=0.0):        # the previous version
+        x0, y0, x1, y1 = (int(v) for v in ink_box)
+        m = 6
+        H = gray.shape[0]
+        ya, yb = max(y0 - m, 0), min(y1 + m, H)
+        region = gray[ya:yb, x0:x1].astype(float)
+        paper_, ink_ = np.percentile(region, 90), np.percentile(region, 1)
+        pc = np.clip((paper_ - region) / (paper_ - ink_), 0, 1).mean(axis=1)
+        pt = tpl.mean(axis=1)
+        k0 = (y1 - y0) / tpl.shape[0]
+        ys = np.arange(ya, yb, dtype=float)
+        best = None
+        for k in k0 * np.arange(0.8, 1.21, 0.01):
+            sigma = soft / k
+            p = quality.blur(pt[None, :], sigma)[0] if sigma >= 0.3 else pt
+            for top in np.arange(y0 - 4, y0 + 4.01, 0.5):
+                pred = np.interp((ys - top) / k, np.arange(len(p)), p, left=0.0, right=0.0)
+                if pred.std() < 1e-6:
+                    continue
+                c = float(np.corrcoef(pred, pc)[0, 1])
+                if best is None or c > best[0]:
+                    best = (c, k, top)
+        return (best[1], best[2]) if best else None
+
+    from PIL import ImageDraw
+    pairs = 0
+    agree = 0
+    for family, text, size, soft in (("Arial", "Jacquemin", 44, 0.0), ("Georgia", "Vermeulen", 52, 1.2),
+                                     ("Courier New", "Rue de Paris", 40, 0.0), ("Verdana", "Élodie", 36, 1.6)):
+        face = fontmatch.face(family)
+        if face is None:
+            continue
+        page = Image.new("L", (520, 130), 238)
+        ImageDraw.Draw(page).text((24, 88), text, font=face.font(size), anchor="ls", fill=30)
+        g = np.asarray(page)
+        got = fontmatch.ink_crop(g, (20, 30, 500, 100))
+        tpl = fontmatch.template(face, text)
+        if got is None or tpl is None:
+            continue
+        pairs += 1
+        agree += fontmatch.fit_rows(g, got[1], tpl, soft) == fit_rows_loops(g, got[1], tpl, soft)
+    check(f"fit_rows: all tops at once = the loops ({agree}/{pairs} words, same scale and top)", pairs >= 2 and agree == pairs)
+
+    # the faces of a word compared as a stack = one by one, to the last bit
+    crop = rng.random((31, 77)) ** 3
+    ref = fontmatch.shape_of(crop)
+    cands = [rng.random((int(rng.integers(40, 90)), int(rng.integers(60, 400)))) ** 2 for _ in range(7)]
+    one = [fontmatch.compare(ref, t, soft) for soft in (0.0, 1.4) for t in cands]
+    many = [v for soft in (0.0, 1.4) for v in fontmatch.compare_many(ref, cands, soft)]
+    check("faces of a word compared as a stack = one by one, bit for bit", one == many)
+
 
 def _synthetic_page(f, q, lines, size=42, ink=(40, 40, 40), paper=(240, 238, 230), key=0):
     """A page image written with quality.paint and quality q: every line 'label : value', the label in the regular

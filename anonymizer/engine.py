@@ -909,15 +909,19 @@ def _face_name(face, is_bold: bool) -> str:
     return face.name if face is not None else "Arial" + (" Bold" if is_bold else "")
 
 
-def page_looks(img, pf, plan, cfg: dict, bold_of) -> list:
+def page_looks(img, pf, plan, cfg: dict, bold_of, covered=()) -> list:
     """The look of every replacement of a page (font, quality, colours), measured before anything is painted.
     None per value when the matching is off (pf None: Arial, sharp, as before). bold_of(box, value): the
-    BoldMeter's answer."""
+    BoldMeter's answer. A value that ends under a black box or in the MRZ (`covered`: areas in pixels) is not
+    written, so its look is not measured (None)."""
     style = cfg["style"]
     if pf is None or not plan:
         return [None] * len(plan)
     out = []
     for m, boxes in plan:
+        if _inside(boxes[0], covered):
+            out.append(None)
+            continue
         look = pf.look(img, boxes[0], bold_hint=bold_of(boxes[0], m.value), match_font=style["font_match"])
         if not style["quality_match"]:
             look.quality = None
@@ -1161,13 +1165,14 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
     plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
     todo, erased = [], []                              # erased: every redacted box (all lines of every value)
     bold = render.BoldMeter(img, words)
-    looks = page_looks(img, pf, plan, cfg, bold.is_bold)
+    covered = black_px + ([zone] if zone else [])
+    looks = page_looks(img, pf, plan, cfg, bold.is_bold, covered)
     for (m, boxes), look in zip(plan, looks):
         m.replacement = _adjust(cfg, m)
         rec = {"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes, k),
                "placed": False}
         records.append(rec)
-        if _inside(boxes[0], black_px + ([zone] if zone else [])):
+        if _inside(boxes[0], covered):
             rec["covered"] = True                      # covered by a black box / rebuilt with the MRZ
             continue
         rec["placed"] = not blackbox and bool(m.replacement)
@@ -1478,7 +1483,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     covered = photos + codes + signs + manual + ([zone] if zone else [])
     # measure everything before painting (ink colour, free space on the right)
     bold = render.BoldMeter(img, words)
-    matched = page_looks(img, pf, plan, cfg, bold.is_bold)
+    matched = page_looks(img, pf, plan, cfg, bold.is_bold, covered)
     looks = []
     for (m, boxes), look in zip(plan, matched):
         is_bold = look.face.bold if look is not None and look.face is not None else bold.is_bold(boxes[0], m.value)

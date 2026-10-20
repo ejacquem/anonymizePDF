@@ -88,8 +88,37 @@ def blur(a: np.ndarray, sigma: float) -> np.ndarray:
     k /= k.sum()
     p = np.pad(a.astype(float), r, mode="edge")
     h, w = a.shape
-    rows = sum(k[i] * p[:, i:i + w] for i in range(2 * r + 1))
-    return sum(k[i] * rows[i:i + h, :] for i in range(2 * r + 1))
+    if a.size < 2000:                                   # small: the plain sums are the quicker
+        rows = sum(k[i] * p[:, i:i + w] for i in range(2 * r + 1))
+        return sum(k[i] * rows[i:i + h, :] for i in range(2 * r + 1))
+    # the same additions in the same order (the result is bit for bit the same), in place: no temporary per tap
+    rows = k[0] * p[:, 0:w]
+    for i in range(1, 2 * r + 1):
+        rows += k[i] * p[:, i:i + w]
+    out = k[0] * rows[0:h, :]
+    for i in range(1, 2 * r + 1):
+        out += k[i] * rows[i:i + h, :]
+    return out
+
+
+def blur_stack(a: np.ndarray, sigma: float) -> np.ndarray:
+    """blur() of every 2-D image of a stack (n, h, w) at once: the same additions in the same order on each image,
+    so each result is bit for bit what blur() gives for that image alone."""
+    if sigma < 0.3:
+        return a.astype(float)
+    r = max(int(math.ceil(3 * sigma)), 1)
+    x = np.arange(-r, r + 1)
+    k = np.exp(-x * x / (2 * sigma * sigma))
+    k /= k.sum()
+    p = np.pad(a.astype(float), ((0, 0), (r, r), (r, r)), mode="edge")
+    n, h, w = a.shape
+    rows = k[0] * p[:, :, 0:w]
+    for i in range(1, 2 * r + 1):
+        rows += k[i] * p[:, :, i:i + w]
+    out = k[0] * rows[:, 0:h, :]
+    for i in range(1, 2 * r + 1):
+        out += k[i] * rows[:, i:i + h, :]
+    return out
 
 
 def _spread(hi: np.ndarray, spread: float) -> np.ndarray:

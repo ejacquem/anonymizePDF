@@ -567,6 +567,15 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   second OCR of a page is a lookup. In memory only, bounded by the number of words (`ocr.CACHE_WORDS`, least recently
   used out); the words are copied in and out. Never on disk next to the documents. The one disk use is the test suite's:
   `ANON_OCR_CACHE_DIR` (a folder of the run's temporary directory) shares the readings between its processes.
+- Profile of a scanned page (`cProfile` on `run_anonymize` of the insurance contract, Dossier Test 17, 3 pages, 33 s):
+  the time was in the font and quality measures (`fontmatch.PageFonts`), not in the OCR (3 s of 54 s for the folder).
+  Done, results identical: `fit_rows` takes all the tops of a scale at once (np.corrcoef called 69 000 times was 8 s of
+  33; the argmax is the first of the equal ones, as the loop), `bold_score` is remembered per (words, family) (the layout
+  steps asked it again and again), `quality.blur` adds the taps in place for a big array (same additions in the same
+  order, bit for bit the same), `word_scores` compares the faces of a word as a stack (`compare_many`, `blur_stack`:
+  also bit for bit). 33 s -> 23.5 s. A value that ends under a black box or in the MRZ gets no look measured
+  (`page_looks(covered=)`, scan pages and pictures). Left: the face detector windows (~1.6 s a page at 300 dpi, the
+  model's cost), the probe renderings (`_rendered`, PIL text drawing of every word in ~46 faces), page quality fit.
 - Every speed-up keeps the results identical. Check it with `tools/snapshot_results.py`: `save` before and after a
   change (`--code <root>` runs an exported older commit), then `compare` prints IDENTICAL (configs, reports, output
   hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs.
