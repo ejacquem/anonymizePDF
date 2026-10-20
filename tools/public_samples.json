@@ -1,0 +1,68 @@
+{
+  "_about": "Public bank and insurance documents found on the internet, used by tools/check_public_docs.py. The PDFs are NOT in git (sample_data/Dossier Public*/ is ignored): run tools/fetch_public_samples.py to download them. Each file is checked against its sha256. They are third-party documents: this list only records where they come from.",
+  "files": [
+    {
+      "group": "Dossier Public Banque",
+      "name": "bnc_guide_releve_bai.pdf",
+      "url": "https://bnc.ca/content/dam/bnc/outils-apps/entreprises/guides/guide-releve-compte-bai-fr.pdf",
+      "sha256": "8c6a21f5fc73a470e4271b4bda57ee1f6c1ec6dea4cf44de254d9be72e8cd5de",
+      "bytes": 509015,
+      "source": "Banque Nationale du Canada: 'Relevé de compte bancaire BAI, Guide de l'utilisateur' (18 pages, Word export). A technical specification with example records.",
+      "kind": "digital, example records in tables, some pictures"
+    },
+    {
+      "group": "Dossier Public Banque",
+      "name": "gwu_bank_statement_sample.pdf",
+      "url": "https://undergraduate.admissions.gwu.edu/sites/g/files/zaxdzs4676/files/2022-08/sample_bank_statement.pdf",
+      "sha256": "e498748f9b73596ff50915159cad9cb1dad71cd0cc5938d521c641c83ae8eb7e",
+      "bytes": 3864009,
+      "source": "George Washington University admissions: 'Sample Bank Statement' (a Shinhan Bank certificate of deposit with the placeholder sponsor 'Martha Washington').",
+      "kind": "scanned image of a bank form, text labels and a signature in a script font"
+    },
+    {
+      "group": "Dossier Public Assurance",
+      "name": "dc_declaration_sample.pdf",
+      "url": "https://Disb.dc.gov/sites/default/files/dc/sites/disb/publication/attachments/Declaration%20Page%20Sample%20Homeowners%2012.pdf",
+      "sha256": "15f6169d85104faa0578806fb951090026ca9d318faf4fdb2e24725703a565bb",
+      "bytes": 83734,
+      "source": "District of Columbia Department of Insurance, Securities and Banking: sample homeowners declarations page (fictional insureds John and Susy Doe).",
+      "kind": "digital, one page, English, US address formats"
+    },
+    {
+      "group": "Dossier Public Assurance",
+      "name": "ok_declarations_sample.pdf",
+      "url": "https://www.oid.ok.gov/wp-content/uploads/2024/04/UnderstandingYourHOPolicyDeclarations.pdf",
+      "sha256": "f1ac6443ce2a56d77d8036420a3d92a8b2a47a88789d40c10e69d221900d1b0b",
+      "bytes": 195783,
+      "source": "Oklahoma Insurance Department: 'Understanding your homeowners insurance declarations page' (example named insured John E. Doe).",
+      "kind": "digital explainer with a sample declarations page drawn as text and pictures"
+    },
+    {
+      "group": "Dossier Public Assurance",
+      "name": "ok_declarations_sample_bridgford.pdf",
+      "url": "https://www.bridgfordlaw.com/wp-content/uploads/2021/08/Sample_home_Dec_page.pdf",
+      "sha256": "c45d89d2330a8dbb4e4c0c5fd44c9762062ea52f0d375c151ef5d073cddffd77",
+      "bytes": 240580,
+      "source": "Sample homeowners declarations page ('COMPANY ABZ', named insureds John D Sample and Jane A Sample) published on a law firm website. Licence not known.",
+      "kind": "searchable scan: one picture with an invisible OCR text layer, English"
+    },
+    {
+      "group": "Dossier Public Assurance",
+      "name": "ca_assurance_habitation_fiche.pdf",
+      "url": "https://www.credit-agricole.fr/content/dam/assetsca/cr891/commun/documents/fiches-memos/assurances/Assur_Hab_Proprietaire_Integrale.pdf",
+      "sha256": "a12d79cdf4a38da73b7bf888d7343483a1a72ea2208f6b1b48a62156aaf90798",
+      "bytes": 612757,
+      "source": "Crédit Agricole: product sheet 'Assurance habitation propriétaire intégrale' (Pacifica). No personal data: company identity and general terms only.",
+      "kind": "digital, one page, French, company addresses and phone numbers"
+    },
+    {
+      "group": "Dossier Public Assurance",
+      "name": "sg_mrh_conditions_generales.pdf",
+      "url": "https://static.sg.fr/bigfiles/pri/MRH_CG_G190315_DEMAT_17102025_A.pdf",
+      "sha256": "e681fb1ed9a71bbbed7e0a858049ea5fb21b850d379c2bb5becb3d72fb4e678e",
+      "bytes": 1039113,
+      "source": "Société Générale Assurances: general conditions 'Assurance habitation' (64 pages, ref. H 190 315, 06/2026). No personal data.",
+      "kind": "digital, 64 pages of French legal text, a cover photo of two people, scanned pages"
+    }
+  ]
+}

@@ -23,6 +23,8 @@ Repo: `C:\Users\Lucas\Project\anonymizePDF` (Windows 10, Git Bash + PowerShell).
   `sample_data/` only contains generated fake documents).
 - Never commit or share the secret key (`secret.key`); never put a constant salt / key back in the code.
 - Never ask for or open real client documents; use / extend the generated test documents instead.
+- Public documents (`sample_data/Dossier Public*/`, bank and insurance samples from the internet) are third-party files:
+  never commit them; only their list and checksums (`tools/public_samples.json`) are in git.
 - Privacy first: when in doubt, cover more (over-redaction) rather than leak. A black box must remove the data from
   the file, not only hide it.
 - Keep the scope small, no build step for the frontend, no new heavy dependency (no OpenCV / scipy / PyTorch:
@@ -81,7 +83,9 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 08);
                        make_test_idcard.py also writes the poor copy (Dossier Test 09); make_test_transfers.py (Dossier
                        Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12);
-                       snapshot_results.py (before / after comparison of the results, section 11b)
+                       snapshot_results.py (before / after comparison of the results, section 11b);
+                       check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
+                       section 12b: the PDFs are downloaded, never committed)
 ```
 The original numbered CLI scripts were removed long ago.
 
@@ -506,6 +510,19 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   the values it sees (a useful sanity check when the test documents change).
 - Several keys matter: some bugs only appear with some keys (`Inès` → `Ines`, `Thomas` → `Julien`).
 - UI changes: check in the Browser pane (it may be hidden: rAF and scroll events then do not fire).
+
+### 12b. Real public documents: `python tools/check_public_docs.py`
+
+- Bank and insurance documents found on the internet (government and bank samples, an insurer's general conditions),
+  listed with their URL and sha256 in `tools/public_samples.json`. The PDFs are NOT in git: `sample_data/Dossier
+  Public*/` is ignored. Run `python tools/fetch_public_samples.py` once (`--check` only reports); a file whose checksum
+  changed is refused.
+- The checks are the behaviour the app should have, on real layouts (US addresses, English scans read by the French
+  OCR, a 64-page legal text in the same folder, CSV records of account numbers, a scanned bank certificate). A FAILING
+  check is a weakness of the app: the checks are not adjusted to the current output. `SPEC` and `DETECTOR_CASES` say
+  what each expectation is about.
+- Not part of `check_all.py` yet: run it on its own (about 8 minutes, `--quick` skips the 64-page document).
+- The scanned copies are made by the script (pages rendered at 200 dpi) in a temporary folder, never kept.
 
 ## 13. Known limits / ideas
 

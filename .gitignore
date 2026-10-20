@@ -15,3 +15,6 @@ __pycache__/
 
 # real client documents (test folder with real PDFs / images): never commit, whatever the patterns above
 sample_data/Dossier Test Reel/
+
+# third-party public documents (bank and insurance samples): downloaded by tools/fetch_public_samples.py, never committed
+sample_data/Dossier Public*/
