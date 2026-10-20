@@ -9,6 +9,7 @@ chin, so that the whole head is covered, not only the eyes.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +31,10 @@ def _load():
         if hashlib.sha256(MODEL.read_bytes()).hexdigest() != MODEL_SHA256:
             raise RuntimeError(f"face model changed or damaged: {MODEL}")
         import onnxruntime as ort
-        _session = ort.InferenceSession(str(MODEL), providers=["CPUExecutionProvider"])
+        opts = ort.SessionOptions()
+        if os.environ.get("ANON_ORT_THREADS"):         # the test suite runs several processes: one thread each
+            opts.intra_op_num_threads = int(os.environ["ANON_ORT_THREADS"])
+        _session = ort.InferenceSession(str(MODEL), sess_options=opts, providers=["CPUExecutionProvider"])
     return _session
 
 

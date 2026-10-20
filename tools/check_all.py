@@ -24,9 +24,12 @@ Exit code 0 = everything passed. The key of a run with a failure is kept, outsid
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import math
+import multiprocessing as mp
 import os
 import re
 import secrets as pysecrets
@@ -1448,6 +1451,58 @@ def speedup_tests():
         check("verify: a value still in the file is found (text layer)", [x["find"] for x in left] == ["Lilas"], str(left))
         check("verify: the read keeps one reading per page", len(read.pages) == 1 and read.pages[0].layer.count("MOREAU") == 1)
 
+    # the readings of the OCR are remembered: the same image is read once, the copies are independent, the memory is
+    # bounded, and a folder shared between processes (the test run's own) gives the reading to another process
+    calls = []
+    real = {name: getattr(ocr, name) for name in ("windows_words", "tesseract_words")}
+
+    def counting(name):
+        def read(img, lang="fra+eng", *a, **k):
+            calls.append(name)
+            return [{"text": "Lilas", "box": (1, 2, 30, 12), "line": ("w", 0), "conf": 100.0}]
+        return read
+
+    shared_dir = Path(tempfile.mkdtemp(prefix="anon_ocrcache_"))
+    saved_dir = os.environ.get("ANON_OCR_CACHE_DIR")
+    try:
+        ocr.windows_words, ocr.tesseract_words = counting("windows"), counting("tesseract")
+        os.environ["ANON_OCR_CACHE_DIR"] = str(shared_dir)
+        ocr.clear_cache()
+        page = Image.fromarray(rng.integers(0, 256, (60, 80, 3), dtype=np.uint8))
+        first = ocr.ocr_words(page)
+        second = ocr.ocr_words(page)
+        check("ocr cache: the same image is read once", len(calls) == 1 and first == second, str(calls))
+        second[0]["text"] = "changé"
+        check("ocr cache: the words given back are copies", ocr.ocr_words(page)[0]["text"] == "Lilas")
+        other = page.copy()
+        other.putpixel((0, 0), (1, 2, 3) if other.getpixel((0, 0)) != (1, 2, 3) else (4, 5, 6))
+        ocr.ocr_words(other)
+        check("ocr cache: another image is read again", len(calls) == 2)
+        ocr.clear_cache()
+        ocr.ocr_words(page)
+        check("ocr cache: a reading kept by another process (shared folder) is not read again", len(calls) == 2)
+        os.environ["ANON_OCR_CACHE_DIR"] = ""
+        ocr.clear_cache()
+        ocr.ocr_words(page)
+        check("ocr cache: nothing is written to disk without the shared folder",
+              len(calls) == 3 and len(list(shared_dir.glob("*.pkl"))) == 2)
+        words_limit = ocr.CACHE_WORDS
+        ocr.CACHE_WORDS = 3                                # one word per reading: room for two readings
+        ocr.clear_cache()
+        for n in range(6):
+            ocr.ocr_words(Image.new("RGB", (20 + n, 20), (n, n, n)))
+        check("ocr cache: the memory is bounded", ocr._cache_size <= 4 and len(ocr._cache) <= 2,
+              f"{len(ocr._cache)} readings, {ocr._cache_size} words")
+        ocr.CACHE_WORDS = words_limit
+    finally:
+        ocr.windows_words, ocr.tesseract_words = real["windows_words"], real["tesseract_words"]
+        ocr.clear_cache()
+        if saved_dir is None:
+            os.environ.pop("ANON_OCR_CACHE_DIR", None)
+        else:
+            os.environ["ANON_OCR_CACHE_DIR"] = saved_dir
+        shutil.rmtree(shared_dir, ignore_errors=True)
+
 
 def _synthetic_page(f, q, lines, size=42, ink=(40, 40, 40), paper=(240, 238, 230), key=0):
     """A page image written with quality.paint and quality q: every line 'label : value', the label in the regular
@@ -1947,95 +2002,177 @@ def key_and_fake_tests(tmp: Path):
           f"{hits['Vermeulen']} vs max {max(others)}")
 
 
-def note_key_failures(key_file: Path, start: int, bad_keys: list, given: bool):
+def note_key_failures(key_file: Path, names: list[str], bad_keys: dict, given: bool):
     """A key whose run has a failure is copied outside the temporary directory (and outside the repo), so the same
-    key can be replayed with --key; a key given with --key is only named."""
-    names = [n for ok, n in RESULTS[start:] if not ok]
+    key can be replayed with --key; a key given with --key is only named. bad_keys: key file -> (kept copy, failures)."""
     if not names:
         return
-    if given:
-        bad_keys.append((key_file, names))
-        return
-    keep_dir = Path(tempfile.gettempdir()) / "anonymizePDF_check_keys"
-    keep_dir.mkdir(exist_ok=True)
-    kept = keep_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{key_file.parent.name}.key"
-    shutil.copy(key_file, kept)
-    bad_keys.append((kept, names))
+    if key_file not in bad_keys:
+        kept = key_file
+        if not given:
+            keep_dir = Path(tempfile.gettempdir()) / "anonymizePDF_check_keys"
+            keep_dir.mkdir(exist_ok=True)
+            kept = keep_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{key_file.parent.name}.key"
+            shutil.copy(key_file, kept)
+        bad_keys[key_file] = (kept, [])
+    bad_keys[key_file][1].extend(names)
+
+
+# ---------------------------------------------------------------------------
+# the run: independent jobs, in parallel processes
+# ---------------------------------------------------------------------------
+# Every group of tests, every test folder with one key and the option tests are a job of their own: own temporary
+# directory, own secret key, own process. What a job prints is kept and shown in the order of a sequential run, so the
+# output reads the same whatever the number of processes. The readings of the OCR are shared between the jobs through a
+# folder of the run's temporary directory (ocr.ANON_OCR_CACHE_DIR): a test document is read once, not once per group
+# and per key.
+
+GROUPS = [
+    "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
+    "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
+    "split_word_tests", "colon_tests", "street_name_tests", "second_pass_tests", "suspect_suggestion_tests",
+    "first_letter_tests", "account_and_street_names_tests", "manual_text_tests", "rotated_tests", "town_tests",
+    "speedup_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
+    "key_and_fake_tests",
+]
+SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests"}     # left out by --fast
+# seconds a job took on a sequential run (group or folder name): the longest jobs are started first
+WEIGHT = {"font_scan_tests": 152, "config options": 105, "quality_offset_tests": 80, "Dossier Test 17": 71,
+          "Dossier Test 05": 68, "Dossier Test 01": 46, "Dossier Test 00": 45, "contract_tests": 42,
+          "Dossier Test 02": 32, "font_unit_tests": 30, "second_pass_tests": 23, "Dossier Test 06": 22,
+          "Dossier Test 08": 21, "colon_tests": 15, "Dossier Test 16": 13, "Dossier Test 10": 12,
+          "Dossier Test 11": 12, "Dossier Test 07": 10, "first_letter_tests": 9}
+
+_NER = None
+
+
+def _names_model():
+    global _NER
+    if _NER is None:
+        _NER = load_ner(quiet=True)
+    return _NER
+
+
+def run_job(job: dict, capture: bool = True):
+    """One job, in this process: returns (its results, what it printed, its seconds)."""
+    t0 = time.time()
+    start = len(RESULTS)
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out) if capture else contextlib.nullcontext():
+            use_key(Path(job["key"]))
+            if job["kind"] == "group":
+                fn = globals()[job["name"]]
+                fn(Path(job["tmp"])) if job["name"] == "key_and_fake_tests" else fn()
+            elif job["kind"] == "folder":
+                full_run([job["folder"]], Path(job["tmp"]) / f"run{job['k']}", _names_model())
+            elif job["kind"] == "options":
+                option_tests(Path(job["tmp"]) / "opts", _names_model())
+    except Exception:  # noqa: BLE001  (a crashing job is a failed check, the other jobs go on)
+        import traceback
+        text = traceback.format_exc()
+        out.write(text)
+        check(f"{job['label']}: the job ran to its end", False, text[-300:])
+    return RESULTS[start:], out.getvalue(), time.time() - t0
+
+
+def build_jobs(args, tmp: Path, folders: list[str]) -> list[dict]:
+    """The jobs in the order of a sequential run (the 'header' entries are only printed)."""
+    def new_key(name: str) -> Path:
+        path = tmp / name / "secret.key"
+        use_key(path)
+        secret.load_or_create()               # created here, once: two processes must not race to write a key
+        return path
+
+    # the test groups (not the folder runs) use one fixed key, not a secret one: they check thresholds on measured
+    # pixels (the weight of short words in the contract), and these depend a little on the fakes, so a random key per
+    # run would make them flaky. The random keys are the folder runs' and the options'; tools/key_hunt.py hunts the rest.
+    group_key = tmp / "key_groups" / "secret.key"
+    group_key.parent.mkdir()
+    group_key.write_text(hashlib.sha256(b"anonymizePDF check_all unit groups").hexdigest(), encoding="ascii")
+    given = Path(args.key) if args.key else None
+    run_keys = [given] if given else [new_key(f"key{k}") for k in range(1 if args.quick else args.keys)]
+    jobs = []
+    for name in GROUPS:
+        if not (args.fast and name in SLOW_GROUPS):
+            jobs.append({"kind": "group", "name": name, "label": name, "key": group_key, "tmp": tmp})
+    for k, key_file in enumerate(run_keys):
+        jobs.append({"kind": "header", "text": f"\n######## {'given' if given else 'random'} key {k + 1}"})
+        for folder in folders:
+            jobs.append({"kind": "folder", "k": k, "folder": folder, "label": f"{folder}, key {k + 1}",
+                         "key": key_file, "tmp": tmp})
+    if not args.quick and not args.fast:
+        jobs.append({"kind": "options", "label": "config options", "key": given or new_key("key_opts"), "tmp": tmp})
+    return jobs
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--keys", type=int, default=2, help="number of random secret keys to run with")
     ap.add_argument("--quick", action="store_true", help="1 key, no option tests")
+    ap.add_argument("--fast", action="store_true", help="skips the long font / contract / "
+                                                         "option runs, keeps every other check and all the folders")
     ap.add_argument("--folder", action="append", help="only this test folder (repeatable)")
     ap.add_argument("--keep", action="store_true", help="keep the temporary directory (outputs, configs, reports)")
     ap.add_argument("--key", help="run the folders with this secret key file (replays a failure; the file is only read)")
+    ap.add_argument("--jobs", type=int, default=min(6, os.cpu_count() or 1),
+                    help="processes that run the jobs at the same time (1 = one after the other, output as it comes)")
     args = ap.parse_args()
     if args.key and not Path(args.key).is_file():
         sys.exit(f"--key: {args.key} is not a file")
     if not ocr.available():
         sys.exit("No OCR engine available: the scan checks cannot run.")
+    sys.stdout.reconfigure(errors="replace")
     folders = args.folder or list(EXPECT)
     tmp = Path(tempfile.mkdtemp(prefix="anon_check_"))
-    saved = os.environ.get("ANON_SECRET_FILE")
-    bad_keys: list[tuple[Path, list[str]]] = []
-    ner = load_ner(quiet=True)
+    saved = {k: os.environ.get(k) for k in ("ANON_SECRET_FILE", "ANON_OCR_CACHE_DIR", "OMP_NUM_THREADS",
+                                           "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ANON_ORT_THREADS")}
+    bad_keys: dict = {}
+    seconds: list[tuple[float, str]] = []
     t0 = time.time()
     try:
-        detector_tests()
-        reported_cases_tests()
-        invisible_copy_tests()
-        text_loss_tests()
-        names_tests()
-        common_words_tests()
-        text_overlap_tests()
-        bank_identifier_tests()
-        config_edit_tests()
-        review_skip_tests()
-        split_word_tests()
-        colon_tests()
-        street_name_tests()
-        second_pass_tests()
-        suspect_suggestion_tests()
-        first_letter_tests()
-        account_and_street_names_tests()
-        manual_text_tests()
-        rotated_tests()
-        town_tests()
-        speedup_tests()
-        font_unit_tests()
-        font_scan_tests()
-        scan_text_tests()
-        contract_tests()
-        quality_offset_tests()
-        key_and_fake_tests(tmp)
-        keys = [Path(args.key)] if args.key else [tmp / f"key{k}" / "secret.key" for k in range(1 if args.quick else args.keys)]
-        for k, key_file in enumerate(keys):
-            print(f"\n######## {'given' if args.key else 'random'} key {k + 1}")
-            use_key(key_file)
-            start = len(RESULTS)
-            full_run(folders, tmp / f"run{k}", ner)
-            note_key_failures(key_file, start, bad_keys, args.key is not None)
-        if not args.quick:
-            key_file = Path(args.key) if args.key else tmp / "key_opts" / "secret.key"
-            use_key(key_file)
-            start = len(RESULTS)
-            option_tests(tmp / "opts", ner)
-            note_key_failures(key_file, start, bad_keys, args.key is not None)
+        (tmp / "ocr_cache").mkdir()
+        os.environ["ANON_OCR_CACHE_DIR"] = str(tmp / "ocr_cache")
+        if args.jobs > 1:                          # several processes: each one on its own core (numpy, onnxruntime)
+            for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ANON_ORT_THREADS"):
+                os.environ[name] = "1"
+        jobs = build_jobs(args, tmp, folders)
+        runnable = [i for i, j in enumerate(jobs) if j["kind"] != "header"]
+        pool, handles = None, {}
+        if args.jobs > 1:
+            pool = mp.get_context("spawn").Pool(args.jobs)
+            for i in sorted(runnable, key=lambda i: -WEIGHT.get(jobs[i].get("folder") or jobs[i]["label"], 5)):     # the longest first
+                handles[i] = pool.apply_async(run_job, (jobs[i],))
+        for i, job in enumerate(jobs):
+            if job["kind"] == "header":
+                print(job["text"])
+                continue
+            results, text, took = handles[i].get() if pool else run_job(job, capture=False)
+            print(text, end="")
+            RESULTS.extend(results) if pool else None
+            seconds.append((took, job["label"]))
+            failed_here = [n for ok, n in results if not ok]
+            if failed_here and job["kind"] in ("folder", "options"):
+                note_key_failures(Path(job["key"]), failed_here, bad_keys, args.key is not None)
+        if pool:
+            pool.close()
+            pool.join()
     finally:
-        if saved is None:
-            os.environ.pop("ANON_SECRET_FILE", None)
-        else:
-            os.environ["ANON_SECRET_FILE"] = saved
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         if args.keep:
             print(f"\nkept: {tmp}")
         else:
             shutil.rmtree(tmp, ignore_errors=True)
     failed = [n for ok, n in RESULTS if not ok]
     print(f"\n{len(RESULTS) - len(failed)} passed, {len(failed)} failed ({time.time() - t0:.0f}s)")
+    print("  longest jobs: " + ", ".join(f"{label} {took:.0f}s" for took, label in sorted(seconds, reverse=True)[:5]))
     for n in failed:
         print("  FAILED:", n)
-    for path, names in bad_keys:
+    for path, names in bad_keys.values():
         print(f"  key of a run with {len(names)} failure(s): {path}")
         print(f'    replay: python tools/check_all.py --key "{path}"')
     sys.exit(1 if failed else 0)

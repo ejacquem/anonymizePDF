@@ -562,17 +562,31 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   image: do not use it as the reference there.
 - A digital page is rendered once at `ocr.DIGITAL_DPI` for the face and code searches (`_digital`).
 - The ink level of a page (`fields.ink_threshold`) is computed once per MRZ search, and passed on.
-- Not done on purpose: an on-disk OCR cache (scan and anonymize read the same page twice); it would add files next to
-  the originals.
+- OCR cache (`ocr.ocr_words`): the reading of an image is remembered, keyed by the pixels (sha1 of the array, ~20 ms for
+  a page), the engine and the language. The scan and the anonymization render the same page the same way, so the
+  second OCR of a page is a lookup. In memory only, bounded by the number of words (`ocr.CACHE_WORDS`, least recently
+  used out); the words are copied in and out. Never on disk next to the documents. The one disk use is the test suite's:
+  `ANON_OCR_CACHE_DIR` (a folder of the run's temporary directory) shares the readings between its processes.
 - Every speed-up keeps the results identical. Check it with `tools/snapshot_results.py`: `save` before and after a
   change (`--code <root>` runs an exported older commit), then `compare` prints IDENTICAL (configs, reports, output
   hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs.
 
 ## 12. Test suite: `python tools/check_all.py`
 
-Run it after every change (exit code 0 = all passed; ~3 min with 2 keys, `--quick` = 1 key and no option tests,
-`--folder "Dossier Test 04"` to target, `--keep` to keep outputs). It copies `sample_data/*` to a temp dir and uses
+Run it after every change (exit code 0 = all passed; about 7.5 min with 2 keys on 4 cores / 8 threads, it was 17 min
+one job after the other; `--quick` = 1 key and no option tests, `--fast` = also leaves out the long font / contract runs
+(`SLOW_GROUPS`), `--folder "Dossier Test 04"` to target, `--keep` to keep outputs, `--jobs N` processes at once, default 6,
+1 = one after the other with live output). It copies `sample_data/*` to a temp dir and uses
 temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing into `sample_data/`.
+The run is a list of jobs (`build_jobs`, `run_job`): each group of tests, each test folder with each key, and the option
+tests. A job runs in a spawned process with its own temporary directory and key; what it prints is kept and shown in the
+order of a sequential run, so the output does not depend on `--jobs`. The longest jobs start first (`WEIGHT`, seconds
+of a sequential run) and the summary names the five longest. The test groups use one fixed key (a hash of a label, not a
+secret): their thresholds are measures on pixels (the weight of short words in `contract_tests` fails by one word with
+some random keys); the folder runs and the option tests use the random ones. Workers get one thread each (OMP / OpenBLAS
+/ MKL and `ANON_ORT_THREADS`, read by `faces._load`). The jobs share the readings of the OCR through a folder of the
+run's temporary directory (`ANON_OCR_CACHE_DIR`, see section 11b); the gain is small (OCR is ~1.5 s of a 50 s folder
+run), the time is in painting the fakes.
 A run with a failure keeps its key (copied to the temp folder, `anonymizePDF_check_keys`, outside the repo) and the summary
 prints it with the replay command: `python tools/check_all.py --key <file> [--folder ...]` (the file is only read; the
 user's key and the kept keys are never committed). `tools/key_hunt.py` runs one digital test file with many random keys

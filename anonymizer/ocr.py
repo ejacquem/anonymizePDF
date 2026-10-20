@@ -13,9 +13,13 @@ All engines return the same thing: a list of words {"text", "box": (x0, y0, x1, 
 from __future__ import annotations
 
 import difflib
+import hashlib
 import os
+import pickle
 import re
 import shutil
+import threading
+from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
 
@@ -104,13 +108,89 @@ def describe(lang: str = "fra+eng") -> str:
 
 
 def ocr_words(img, lang: str = "fra+eng") -> list[dict]:
-    """Words of a page image with the active engine. `lang` uses Tesseract codes ('fra+eng')."""
+    """Words of a page image with the active engine. `lang` uses Tesseract codes ('fra+eng').
+    The reading of an image is remembered (see the cache below): the same page is read at the scan and again at the
+    anonymization."""
     e = engine()
-    if e == "tesseract":
-        return tesseract_words(img, lang)
-    if e == "windows":
-        return windows_words(img, lang)
-    raise RuntimeError("no OCR engine: install Tesseract, or the Windows OCR packages (pip install -r requirements.txt)")
+    if e not in ("tesseract", "windows"):
+        raise RuntimeError("no OCR engine: install Tesseract, or the Windows OCR packages (pip install -r requirements.txt)")
+    key = _cache_key(img, e, lang)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    words = tesseract_words(img, lang) if e == "tesseract" else windows_words(img, lang)
+    _cache_put(key, words)
+    return [dict(w) for w in words]
+
+
+# ---------------------------------------------------------------------------
+# cache of the readings
+# ---------------------------------------------------------------------------
+# Key: the pixels of the image (and its mode / size), the engine and the language it reads. The same page is rendered
+# the same way at the scan and at the anonymization, so the second OCR is a lookup. Kept in memory, bounded by the
+# number of words (the app runs for hours); never written next to the documents. The test suite sets
+# ANON_OCR_CACHE_DIR to a folder of its own temporary directory so that its worker processes share their readings
+# (the files are pickles of our own words: nothing is read from anywhere else).
+CACHE_WORDS = 400_000
+_cache: OrderedDict = OrderedDict()
+_cache_size = 0
+_cache_lock = threading.Lock()
+
+
+def _cache_key(img, e: str, lang: str) -> str:
+    import numpy as np
+
+    h = hashlib.sha1()                                   # not for security: the fastest way to tell two images apart
+    h.update(f"{e}|{_windows_tag(lang) if e == 'windows' else lang}|{img.mode}|{img.size}".encode())
+    h.update(np.ascontiguousarray(img))                  # the pixels, without a copy
+    return h.hexdigest()
+
+
+def _cache_get(key: str):
+    with _cache_lock:
+        words = _cache.get(key)
+        if words is not None:
+            _cache.move_to_end(key)
+            return [dict(w) for w in words]
+    directory = os.environ.get("ANON_OCR_CACHE_DIR")
+    if directory:
+        try:
+            with open(Path(directory) / (key + ".pkl"), "rb") as f:
+                words = pickle.load(f)
+        except (OSError, pickle.PickleError, EOFError):
+            return None
+        _cache_put(key, words, to_disk=False)
+        return [dict(w) for w in words]
+    return None
+
+
+def _cache_put(key: str, words: list[dict], to_disk: bool = True) -> None:
+    global _cache_size
+    with _cache_lock:
+        if key in _cache:
+            return
+        _cache[key] = [dict(w) for w in words]
+        _cache_size += len(words) + 1
+        while _cache_size > CACHE_WORDS and len(_cache) > 1:
+            _, old = _cache.popitem(last=False)
+            _cache_size -= len(old) + 1
+    directory = os.environ.get("ANON_OCR_CACHE_DIR")
+    if directory and to_disk:
+        try:
+            path = Path(directory) / (key + ".pkl")
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")
+            with open(tmp, "wb") as f:
+                pickle.dump(words, f)
+            os.replace(tmp, path)              # a reader never sees half a file
+        except OSError:
+            pass
+
+
+def clear_cache() -> None:
+    global _cache_size
+    with _cache_lock:
+        _cache.clear()
+        _cache_size = 0
 
 
 # ---------------------------------------------------------------------------
