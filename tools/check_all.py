@@ -536,6 +536,19 @@ def detector_tests():
     check("identity by shape: surname, given name and document number", ("PERSON", "MARTINEAU") in shape
           and ("PERSON", "Julie") in shape and ("DOC_NUMBER", "X4RTBPFW4") in shape)
     check("identity by shape: no boilerplate", not any(v in ("SPECIMEN", "RÉPUBLIQUE", "FRA") for _, v in shape))
+    # the passport of Dossier Test 03 as Windows OCR reads it: the label 'Surname' comes out as 'Sumame', which was
+    # taken for the surname written after the label, and the real surname under it was never looked at
+    lines = ["Nom I Sumame", "LEFÈVRE", "Prénoms I Given names", "Camille, Hélène", "Date de naissance I Date of birth",
+             "14 05 1992", "Lieu de naissance I Place of birth", "ROUEN (76)"]
+    ocr_words_03 = [{"text": t, "box": (700, 60 * i, 700 + 12 * len(t), 60 * i + 30), "line": ("p", i), "conf": 100.0}
+                    for i, t in enumerate(lines)]
+    labeled = {(f["kind"], f["value"]) for f in fields.find_labeled(ocr_words_03)}
+    check("passport: 'Nom I Sumame' gives the surname under the label", ("surname", "LEFÈVRE") in labeled
+          and not any(v == "Sumame" for _, v in labeled), str(sorted(labeled)))
+    named = {(f["kind"], f["value"]) for f in fields.find_labeled(
+        [{"text": t, "box": (10 + 90 * i, 10, 10 + 90 * i + 80, 30), "line": ("n", 0), "conf": 100.0}
+         for i, t in enumerate(["Nom", "/", "Name", "Jacquemin"])])}
+    check("a name after its label on the same line is still read", ("surname", "Jacquemin") in named, str(named))
 
 
 def reported_cases_tests():

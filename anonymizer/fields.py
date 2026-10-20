@@ -147,6 +147,15 @@ _LABEL_WORDS = {"nom", "name", "names", "prénoms", "prenoms", "given", "surname
                 "carte", "card", "identité", "identity", "identiteitskaart", "personalausweis", "/", "|", "l", "i", "1"}
 
 
+_LONG_LABEL_WORDS = sorted(_ascii_key(w) for w in _LABEL_WORDS if len(w) >= 5)
+
+
+def _label_misread(text: str) -> bool:
+    """A label word the OCR garbled ('Sumame' for 'Surname'): not the name written after the label."""
+    key = _ascii_key(re.sub(r"[^\w]", "", text))
+    return len(key) >= 5 and bool(difflib.get_close_matches(key, _LONG_LABEL_WORDS, n=1, cutoff=0.75))
+
+
 _NAME_TOKEN = re.compile(r"^[A-ZÀ-ÝÉÈ][A-Za-zÀ-ÿ'’\-]*$")
 
 
@@ -158,7 +167,8 @@ def inline_value(ln: dict, words: list[dict], kind: str) -> str | None:
         return None
     toks = [words[i] for i in ln["words"]]
     k = 0
-    while k < len(toks) and re.sub(r"[^\w/|]", "", toks[k]["text"]).casefold() in _LABEL_WORDS:
+    while k < len(toks) and (re.sub(r"[^\w/|]", "", toks[k]["text"]).casefold() in _LABEL_WORDS
+                             or _label_misread(toks[k]["text"])):
         k += 1
     rest = [t["text"] for t in toks[k:]]
     if not rest or not all(_NAME_TOKEN.match(t) and len(t) >= 2 for t in rest):

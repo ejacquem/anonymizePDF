@@ -356,6 +356,9 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   the shape finds the label words: 'Date', 'Code', 'Country' replaced as names). Labelled values that are a label
   word ('Sumame' read as the surname) are dropped in `_add_labeled`. Every date of an identity
   document is a birth / identity date (replaced). Also used by the second check.
+- A name written on the label's own line ('Nom / Name Jacquemin', `fields.inline_value`) skips the label words, and
+  the label words the OCR garbled ('Nom I Sumame': `_label_misread`, 75 % like a long label word). Without that
+  'Sumame' was taken for the surname and the real one on the line below ('LEFÈVRE') was never read (Dossier Test 03).
 - Identity fields (`fields.find_labeled`): label lines (FR/EN/NL; OCR reads `/` as `I`, `°` as `'`) and the value
   line right below (left-aligned, within ~2 line heights) or after `:`. Kinds: surname, given, birth_date,
   birth_place, doc_number, sex, expiry, issue, country, address (several tight lines). `is_id_document`: MRZ found,
