@@ -30,6 +30,7 @@ UP = 4                                   # supersampling of the renderings
 BLURS = (0.0, 0.4, 0.7, 1.0, 1.4, 1.9, 2.5, 3.2)
 SPREADS = (-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0)    # page pixels, multiples of 1 / UP
 MARGIN = 6                               # pixels around a word's ink for the fit (the blur spills out)
+SPREAD_GAIN = 0.03                       # a stroke spread is kept only if it lowers the fit's error this much
 MIN_SAMPLES = 3                          # words needed to fit the quality of a page
 
 
@@ -164,7 +165,10 @@ def fit(samples: list[Sample], scale: float = 1.0) -> Quality:
         return q
     best = min(BLURS, key=lambda b: _total(samples, replace(q, blur=b)))
     q = replace(q, blur=best)
-    best = min(SPREADS, key=lambda d: _total(samples, replace(q, spread=d)))
+    errors = {d: _total(samples, replace(q, spread=d)) for d in SPREADS}
+    best = min(errors, key=errors.get)
+    if errors[best] > (1 - SPREAD_GAIN) * errors[0.0]:
+        best = 0.0                       # no clear gain: strokes kept as printed (a faded or JPEG copy can fake it)
     q = replace(q, spread=best)
     best = min(BLURS, key=lambda b: _total(samples, replace(q, blur=b)))
     q = replace(q, blur=best)

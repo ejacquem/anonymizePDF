@@ -85,13 +85,18 @@ _NAME_CONNECTORS = {"and", "et", "und", "y", "&", "of", "de", "la", "le", "du", 
 
 
 @functools.lru_cache(maxsize=8192)
+def _ocr_m(key: str) -> str:
+    """The letter m as OCR misreads it on a scan ('Nlonsieur', 'rnadame', 'Niadame'), written back as an m."""
+    return re.sub(r"rn|nl|ni(?=[aeo])|iii", "m", key)
+
+
 def is_label_word(token: str) -> bool:
     """A stop word, or a word one or two letters away from one ('SUCCËSSION', 'COMPTÈ', 'COMTPES', 'Monsieul' from an
     OCR or a typo): no name. Accents do not count (_pkey)."""
     key = _pkey(token.strip(".,;:-'’"))
     if not key:
         return False
-    if key in _STOP_KEYS:
+    if key in _STOP_KEYS or _ocr_m(key) in _STOP_KEYS:
         return True
     return len(key) >= 5 and any(len(s) >= 5 and abs(len(s) - len(key)) <= 2 and
                                  SequenceMatcher(None, key, s).ratio() >= 0.85 for s in _STOP_KEYS)
@@ -869,6 +874,41 @@ def font_advance(pf, cfg: dict):
     return pf.advance if pf is not None and cfg["style"]["font_match"] else None
 
 
+def layout_value(pf, original: str, part: str, b, face, is_bold: bool) -> list:
+    """How the replacement `part` of a value is written in its box b (pixels): [(text, face, bold, font, (x, baseline),
+    sx)], one per run of the same font (or per word when the box is filled).
+    With the page measured (pf): the size and baseline of the value's own letters; each word in the weight of the
+    word it replaces when the fake has as many words as OCR read in the box ('Lucas' regular, 'JACQUEMIN' bold: the
+    fake surname in bold, the fake first name not); and, when something follows the value on its line, the box is
+    filled (no gap before the comma). Without: one run in `face` (None = Arial), sized on the box, as before."""
+    runs = [(part, face, is_bold)]
+    metrics, fill = None, False
+    if pf is not None:
+        metrics = pf.metrics(b, face, is_bold)
+        fill = pf.followed(b)
+        words = part.split(" ")
+        faces_w = pf.word_faces(b, face, len(words)) if face is not None else None
+        if face is not None and not faces_w:          # the weight of this line's own words (a value on two lines)
+            own_bold = pf.is_bold(pf.value_words(b), face.family)
+            if own_bold is not None and own_bold != face.bold:
+                face = fontmatch.face(face.family, own_bold) or face
+                runs = [(part, face, face.bold)]
+        if faces_w:
+            runs = []
+            for w, f in zip(words, faces_w):           # neighbouring words of the same face: one run
+                if runs and runs[-1][1] == f:
+                    runs[-1] = (runs[-1][0] + " " + w, f, f.bold)
+                else:
+                    runs.append((w, f, f.bold))
+    size, baseline = metrics if metrics else (None, None)
+    return [(t, runs[k][1], runs[k][2], font, xy, sx)
+            for t, k, font, xy, sx in render.scan_runs_layout(original, runs, b, size, baseline, fill)]
+
+
+def _face_name(face, is_bold: bool) -> str:
+    return face.name if face is not None else "Arial" + (" Bold" if is_bold else "")
+
+
 def page_looks(img, pf, plan, cfg: dict, bold_of) -> list:
     """The look of every replacement of a page (font, quality, colours), measured before anything is painted.
     None per value when the matching is off (pf None: Arial, sharp, as before). bold_of(box, value): the
@@ -1065,16 +1105,27 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
                 render.insert_rotated(page, ext, m.replacement, style, fonts)
                 continue
             # a value on several lines gets its replacement on the same lines, each line cut in proportion to its width
-            parts = _cut_lines(m.replacement, [b[2] - b[0] for b in boxes]) if len(boxes) > 1 else [m.replacement]
+            parts = _cut_lines(m.replacement, [b[2] - b[0] for b in boxes], m.value) if len(boxes) > 1 \
+                else [m.replacement]
             for b, part in zip(boxes, parts):
                 if part:                                   # each line keeps its own baseline
                     line_style = (render.style_at(spans, b) or style) if len(boxes) > 1 else style
                     render.insert_replacement(page, b, part, line_style, fonts)
 
 
-def _cut_lines(text: str, widths: list[float]) -> list[str]:
-    """Cuts a replacement into as many lines as the original value had, at word boundaries, each line getting about
-    the share of the width the original line had ('SQUARE' / 'Sophie Wouters 8' -> 'SQUARE' / 'Jolien Lemaire 2')."""
+def _cut_lines(text: str, widths: list[float], original: str = "") -> list[str]:
+    """Cuts a replacement into as many lines as the original value had, at word boundaries. When the replacement has
+    as many words as the original (its lines separated by newlines), each line gets the words of the same rank
+    ('i\\venue' / 'de la Closière 7' -> 'Avenue' / 'de la Chapelle 2'); else each line gets about the share of the
+    width the original line had ('SQUARE' / 'Sophie Wouters 8' -> 'SQUARE' / 'Jolien Lemaire 2')."""
+    words = text.split()
+    counts = [len(line.split()) for line in original.split("\n")] if original else []
+    if len(counts) == len(widths) and all(counts) and sum(counts) == len(words):
+        out, k = [], 0
+        for c in counts:
+            out.append(" ".join(words[k:k + c]))
+            k += c
+        return out
     spaces = [i for i, c in enumerate(text) if c == " "]
     if not spaces:
         return [text] + [""] * (len(widths) - 1)
@@ -1152,7 +1203,8 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
             _erase_patch(canvas, b, bg, look, (pno, "pixel", j), k)
         if zone:
             ImageDraw.Draw(canvas).rectangle(zone, fill=render.background_color(img, zone))
-        areas = {j: _write_patch(canvas, m, b, ink, look, (pno, "pixel", j)) for j, (m, b, ink, look, bg) in patched}
+        areas = {j: _write_patch(canvas, pf, m, b, ink, look, (pno, "pixel", j))
+                 for j, (m, b, ink, look, bg) in patched}
         for j, (m, b, ink, look, bg) in patched:
             _place_patch(page, canvas, b, areas[j], k)
     for m, b, ink, look, bg in todo:
@@ -1194,18 +1246,23 @@ def _erase_patch(canvas, b, bg, look, key, k: float):
         ImageDraw.Draw(canvas).rectangle(r, fill=tuple(bg))
 
 
-def _write_patch(canvas, m, b, ink, look, key) -> tuple:
+def _write_patch(canvas, pf, m, b, ink, look, key) -> tuple:
     """The fake value written on the copy of the page image, in the matched font and quality. Returns the area
     the text covers (pixels)."""
     face = look.face
-    font, xy, sx = render.scan_text_layout(m.value, m.replacement, b, face.bold if face is not None else False, face)
-    if look.quality is not None:
-        quality.paint(canvas, m.replacement, font, xy, sx, ink, look.quality, key)
-    else:
-        render.write_text(canvas, xy, m.replacement, font, tuple(ink), sx)
-    l, t, r, bt = font.getbbox(m.replacement, anchor="ls")
+    area = None
     blur = 3 * look.quality.blur + 2 if look.quality is not None else 1
-    return (xy[0] + l * sx - blur, xy[1] + t - blur, xy[0] + r * sx + blur, xy[1] + bt + blur)
+    for r, (text, _, _, font, xy, sx) in enumerate(layout_value(pf, m.value, m.replacement, b, face,
+                                                                face.bold if face is not None else False)):
+        if look.quality is not None:
+            quality.paint(canvas, text, font, xy, sx, ink, look.quality, key + (r,))
+        else:
+            render.write_text(canvas, xy, text, font, tuple(ink), sx)
+        l, t, rt, bt = font.getbbox(text, anchor="ls")
+        box = (xy[0] + l * sx - blur, xy[1] + t - blur, xy[0] + rt * sx + blur, xy[1] + bt + blur)
+        area = box if area is None else (min(area[0], box[0]), min(area[1], box[1]), max(area[2], box[2]),
+                                         max(area[3], box[3]))
+    return area
 
 
 def _place_patch(page, canvas, b, text_area, k: float):
@@ -1438,7 +1495,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             continue
         changed = []
         # a value on several lines: its replacement is cut across the same lines (see _digital_replace)
-        parts = _cut_lines(m.replacement or "", [b[2] - b[0] for b in boxes]) if len(boxes) > 1 \
+        parts = _cut_lines(m.replacement or "", [b[2] - b[0] for b in boxes], m.value) if len(boxes) > 1 \
             else [m.replacement or ""]
         for i, b in enumerate(boxes):
             part = "" if blackbox else parts[i] if i < len(parts) else ""
@@ -1458,16 +1515,16 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                   m.value, part, described if part else "")
             changed.append(box)
             if part:
-                font, xy, sx = render.scan_text_layout(m.value, part, b, is_bold, face)
                 lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
                 ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
                 color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
-                if q is not None:
-                    quality.paint(img, part, font, xy, sx, color, q, key)
-                else:
-                    render.write_text(img, xy, part, font, color, sx)
-                name = face.name if face is not None else "Arial" + (" Bold" if is_bold else "")
-                fonts_used[name] = fonts_used.get(name, 0) + 1
+                for r, (text, f, bd, font, xy, sx) in enumerate(layout_value(
+                        pf if look is not None else None, m.value, part, b, face, is_bold)):
+                    if q is not None:
+                        quality.paint(img, text, font, xy, sx, color, q, key + (r,))
+                    else:
+                        render.write_text(img, xy, text, font, color, sx)
+                    fonts_used[_face_name(f, bd)] = fonts_used.get(_face_name(f, bd), 0) + 1
         records.append({"page": pno, "original": m.value, "replacement": m.replacement,
                         "box": _pt_box(changed), "placed": not blackbox and any(parts)})
     if mrz:

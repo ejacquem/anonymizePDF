@@ -126,14 +126,16 @@ def default_face(bold: bool = False) -> Face | None:
 # measures
 # ---------------------------------------------------------------------------
 
-def ink_crop(gray: np.ndarray, box, margin: float = 0.15):
+def ink_crop(gray: np.ndarray, box, margin: float = 0.15, cut=(False, False)):
     """The ink of a word: (coverage 0..1 cropped to the ink, ink box in page pixels), None without contrast.
-    The OCR box is widened a little (OCR boxes can cut a stroke), then cut to the ink inside it."""
+    The OCR box is widened a little (OCR boxes can cut a stroke), then cut to the ink inside it. cut (left, right):
+    sides where punctuation was cut off the word (clean_word): not widened there, the punctuation stays out."""
     x0, y0, x1, y1 = box
     h = max(y1 - y0, 1)
     H, W = gray.shape
-    xa, ya = max(int(x0 - margin * h), 0), max(int(y0 - margin * h), 0)
-    xb, yb = min(int(math.ceil(x1 + margin * h)), W), min(int(math.ceil(y1 + margin * h)), H)
+    xa = max(int(x0 - (0 if cut[0] else margin * h)), 0)
+    xb = min(int(math.ceil(x1 + (0 if cut[1] else margin * h))), W)
+    ya, yb = max(int(y0 - margin * h), 0), min(int(math.ceil(y1 + margin * h)), H)
     if xb - xa < 4 or yb - ya < 4:
         return None
     crop = gray[ya:yb, xa:xb].astype(float)
@@ -150,8 +152,9 @@ def ink_crop(gray: np.ndarray, box, margin: float = 0.15):
 
 
 @lru_cache(maxsize=50000)
-def template(f: Face, text: str) -> np.ndarray | None:
-    """`text` rendered in face `f` (coverage 0..1), cropped to its ink."""
+@lru_cache(maxsize=50000)
+def _rendered(f: Face, text: str):
+    """(`text` rendered in face `f` at PROBE pixels, coverage 0..1 cropped to its ink; the row of its baseline)."""
     font = f.font(PROBE)
     l, t, r, b = font.getbbox(text, anchor="ls")
     if r - l < 2 or b - t < 2:
@@ -161,7 +164,71 @@ def template(f: Face, text: str) -> np.ndarray | None:
     bb = img.getbbox()
     if not bb:
         return None
-    return np.asarray(img.crop(bb)).astype(float) / 255.0
+    return np.asarray(img.crop(bb)).astype(float) / 255.0, (4 - t) - bb[1]
+
+
+def template(f: Face, text: str) -> np.ndarray | None:
+    """`text` rendered in face `f` (coverage 0..1), cropped to its ink."""
+    got = _rendered(f, text)
+    return got[0] if got else None
+
+
+_PUNCT = ",.;:!?()[]«»\"'’"
+
+
+def clean_word(word: dict) -> dict:
+    """An OCR word without the punctuation glued to it ('VERHAEGEN,' -> 'VERHAEGEN'), its box cut in proportion to
+    the characters (Arial widths): the faint tail of a comma is not in the ink the scan shows, so it would make the
+    word look smaller and misplace the candidate on it."""
+    text = word["text"].strip()
+    core = text.strip(_PUNCT)
+    if "\\" in core or "|" in core:                  # an OCR misreading ('i\venue'): its letters cannot be drawn again
+        return {**word, "text": ""}
+    if not core or core == text:
+        return word
+    from .pii import _advance
+
+    lead = len(text) - len(text.lstrip(_PUNCT))
+    total = _advance(text) or len(text)
+    pre = (_advance(text[:lead]) or 0.0) if lead else 0.0
+    post = _advance(text[lead + len(core):]) or 0.0
+    x0, y0, x1, y1 = word["box"]
+    w = x1 - x0
+    return {**word, "text": core, "box": (x0 + w * pre / total, y0, x1 - w * post / total, y1),
+            "cut": (bool(lead), len(text) > lead + len(core))}
+
+
+def fit_rows(gray: np.ndarray, ink_box, tpl: np.ndarray, soft: float = 0.0):
+    """Scale and top row that put the rendered word `tpl` (PROBE pixels high font) on the word of the scan whose
+    ink is in `ink_box`: the ink of each row (its row profile) of the rendering, scaled and moved, correlated with
+    the scan's (a capital, an ascender or a faint descender only weighs what its ink weighs). Returns (scale,
+    top) in page pixels, None when there is nothing to fit."""
+    x0, y0, x1, y1 = (int(v) for v in ink_box)
+    m = 6
+    H = gray.shape[0]
+    ya, yb = max(y0 - m, 0), min(y1 + m, H)
+    region = gray[ya:yb, x0:x1].astype(float)
+    if region.shape[0] < 6 or region.shape[1] < 3:
+        return None
+    paper, ink = np.percentile(region, 90), np.percentile(region, 1)
+    if paper - ink < 35:
+        return None
+    pc = np.clip((paper - region) / (paper - ink), 0, 1).mean(axis=1)
+    pt = tpl.mean(axis=1)
+    k0 = (y1 - y0) / tpl.shape[0]
+    ys = np.arange(ya, yb, dtype=float)
+    best = None
+    for k in k0 * np.arange(0.8, 1.21, 0.01):
+        sigma = soft / k                                  # the page's blur, in template rows
+        p = quality.blur(pt[None, :], sigma)[0] if sigma >= 0.3 else pt
+        for top in np.arange(y0 - 4, y0 + 4.01, 0.5):
+            pred = np.interp((ys - top) / k, np.arange(len(p)), p, left=0.0, right=0.0)
+            if pred.std() < 1e-6:
+                continue
+            c = float(np.corrcoef(pred, pc)[0, 1])
+            if best is None or c > best[0]:
+                best = (c, k, top)
+    return (best[1], best[2]) if best else None
 
 
 SHAPE_H = 24                        # height both images are compared at (pixels)
@@ -213,7 +280,7 @@ def word_scores(gray: np.ndarray, word: dict, soft: float = 0.0):
     text = word["text"].strip()
     if _letters(text) < MIN_LETTERS:
         return None
-    got = ink_crop(gray, word["box"])
+    got = ink_crop(gray, word["box"], cut=word.get("cut", (False, False)))
     if not got:
         return None
     crop, _ = got
@@ -241,9 +308,16 @@ def _overlap(a, b) -> float:
     return max(w, 0) * max(h, 0)
 
 
-# bold when the bold rendering leaves less than this share of the regular one's error (Dossier Test 17: bold
-# words <= 0.56, regular >= 0.81)
-BOLD_RATIO = 0.7
+# Weight of a word, two clues averaged (0 = regular, 1 = bold, bold above 0.5):
+# - the error left by the bold rendering against the regular one (degraded like the page): 1 -> 0, 0.4 -> 1;
+# - the ink mass of the word (a blur spreads ink, it keeps its total) against the regular rendering's, relative to
+#   the page (its words are mostly regular: their median is the reference), on the log scale between regular and
+#   bold. Dossier Test 17, 234 words: 228 right with the first clue, 231 with the second, 233 with both.
+RESIDUAL_BOLD = 0.4
+# the page's reference ink mass: a low quantile of its words (bold words only raise it; a page can be half bold)
+MASS_QUANTILE = 30
+WORD_WEIGHT_SPREAD = 0.3             # the words of a value have two weights when their bold scores spread this much
+INK_LIGHTER = 30                    # a value's ink this much lighter than the page's: the page's is used
 SAMPLE_WORDS = 20                   # words of the page measured for its quality
 
 
@@ -270,14 +344,16 @@ class PageFonts:
         self.words = words
         self.scale = min(scale, 1.0)
         self.skip = set(skip)       # words that are not measured: slanted words (their OCR box is not their ink)
+        self.clean = [clean_word(w) for w in words]    # what is measured: the words without glued punctuation
         self._raw: dict[int, tuple | None] = {}
+        self._mass_ref = None
         self._scores: dict[int, tuple | None] = {}
         self._quality = None
 
     def raw_scores(self, i: int):
         """Face scores of word i against sharp candidates (to choose the words the page quality is fitted on)."""
         if i not in self._raw:
-            self._raw[i] = None if i in self.skip else word_scores(self.gray, self.words[i])
+            self._raw[i] = None if i in self.skip else word_scores(self.gray, self.clean[i])
         got = self._raw[i]
         return got[0] if got else None
 
@@ -299,12 +375,12 @@ class PageFonts:
         if i not in self._scores:
             soft = self.softness()
             self._scores[i] = self._raw.get(i) if soft < 0.5 and i in self._raw else \
-                word_scores(self.gray, self.words[i], soft if soft >= 0.5 else 0.0)
+                word_scores(self.gray, self.clean[i], soft if soft >= 0.5 else 0.0)
         return self._scores[i]
 
     def _sample(self, i: int, f: Face):
-        text = self.words[i]["text"].strip()
-        got = ink_crop(self.gray, self.words[i]["box"])
+        text = self.clean[i]["text"].strip()
+        got = ink_crop(self.gray, self.clean[i]["box"], cut=self.clean[i].get("cut", (False, False)))
         tpl = template(f, text) if got else None
         return quality.sample(self.gray, got[1], tpl) if tpl is not None else None
 
@@ -325,32 +401,151 @@ class PageFonts:
             self._quality = quality.fit(samples, self.scale)
         return self._quality
 
+    def _mass(self, i: int, f: Face) -> float | None:
+        """Ink mass of word i (darkness summed around its ink, the blur spill included) over the mass of the word
+        rendered in f at the same height."""
+        w = self.clean[i]
+        got = ink_crop(self.gray, w["box"], cut=w.get("cut", (False, False)))
+        tpl = template(f, w["text"].strip()) if got else None
+        if tpl is None or tpl.sum() <= 0:
+            return None
+        x0, y0, x1, y1 = (int(v) for v in got[1])
+        pad = int(3 * self.page_quality().blur) + 3
+        cut = w.get("cut", (False, False))
+        region = self.gray[max(y0 - pad, 0):y1 + pad,
+                           max(x0 - (0 if cut[0] else pad), 0):x1 + (0 if cut[1] else pad)].astype(float)
+        dark = np.clip(np.percentile(region, 90) - region, 0, None)
+        dark[dark < 8] = 0                                    # the paper's grain is no ink
+        k = (y1 - y0) / tpl.shape[0]
+        return float(dark.sum() / (tpl.sum() * k * k))
+
+    def mass_reference(self) -> float | None:
+        """The ink mass ratio of the page's regular text: the MASS_QUANTILE percentile over the sample words, each
+        in the regular weight of the family that fits it best. None with fewer than 5 words."""
+        if self._mass_ref is None:
+            idx = sorted((i for i, w in enumerate(self.clean) if _letters(w["text"]) >= 4 and i not in self.skip),
+                         key=lambda i: -_letters(self.clean[i]["text"]))
+            step = max(len(idx) // (2 * SAMPLE_WORDS), 1)
+            ratios = []
+            for i in idx[::step][:2 * SAMPLE_WORDS]:
+                s = self.raw_scores(i)
+                if s:
+                    best = max(s, key=s.get)
+                    r = self._mass(i, face(best.family, False) or best)
+                    if r:
+                        ratios.append(r)
+            self._mass_ref = float(np.percentile(ratios, MASS_QUANTILE)) if len(ratios) >= 5 else 0.0
+        return self._mass_ref or None
+
     def is_bold(self, own: list[int], family: str) -> bool | None:
-        """Weight of the value's words in `family`: the regular or the bold rendering, degraded with the page's
-        quality, that explains their pixels best. None when it cannot be measured."""
+        """Weight of the value's words in `family` (see bold_score). None when it cannot be measured."""
+        score = self.bold_score(own, family)
+        return None if score is None else score > 0.5
+
+    def bold_score(self, own: list[int], family: str) -> float | None:
+        """How bold the value's words look in `family`, 0 = regular, 1 = bold, from two clues (see RESIDUAL_BOLD):
+        which rendering, regular or bold, degraded with the page's quality, explains their pixels best, and how much
+        ink they hold for their size compared with the page's text. None when it cannot be measured."""
         reg, bd = face(family, False), face(family, True)
         if not reg or not bd or reg.path == bd.path:
             return None
         q = self.page_quality()
-        r_reg = r_bd = 0.0
+        ref = self.mass_reference()
+        votes = total = 0.0
         for i in own:
             if not self.scores(i):
                 continue
             s_reg, s_bd = self._sample(i, reg), self._sample(i, bd)
             if not s_reg or not s_bd:
                 continue
-            k = min(_letters(self.words[i]["text"]), 8)
-            r_reg += k * quality.residual(s_reg, q)
-            r_bd += k * quality.residual(s_bd, q)
-        if not r_reg:
-            return None
-        return r_bd < BOLD_RATIO * r_reg
+            r_reg = quality.residual(s_reg, q)
+            x = min(max((1 - quality.residual(s_bd, q) / max(r_reg, 1e-9)) / (1 - RESIDUAL_BOLD), 0.0), 1.0)
+            m_reg = self._mass(i, reg) if ref else None
+            t_reg, t_bd = template(reg, self.clean[i]["text"].strip()), template(bd, self.clean[i]["text"].strip())
+            if m_reg and t_reg is not None and t_bd is not None:
+                bold_mass = (t_bd.sum() / t_bd.shape[0] ** 2) / (t_reg.sum() / t_reg.shape[0] ** 2)
+                if bold_mass > 1.05:
+                    x_m = math.log(max(m_reg / ref, 1e-3)) / math.log(bold_mass)
+                    x = (x + min(max(x_m, -0.5), 1.5)) / 2
+            k = min(_letters(self.clean[i]["text"]), 8)
+            votes += k * x
+            total += k
+        return votes / total if total else None
 
     def value_words(self, box) -> list[int]:
         """The OCR words under a value's box (a box per line of the value; a value can be a part of a word)."""
         area = (box[2] - box[0]) * (box[3] - box[1])
         return [i for i, w in enumerate(self.words)
                 if _overlap(w["box"], box) > 0.3 * min((w["box"][2] - w["box"][0]) * (w["box"][3] - w["box"][1]), area)]
+
+    def metrics(self, box, face: Face | None, bold: bool = False) -> tuple[float, float] | None:
+        """(size, baseline) in pixels of the text of a value, from its own words: each word rendered in `face`
+        (None: Arial) is fitted on the scan row by row (fit_rows), which gives its size and where its baseline is;
+        the medians over the words. Measured word by word, because the box of a long value on a slightly tilted line
+        is taller than its letters. When none of its words can be measured (misread by the OCR), the size comes from
+        the other words of its line and the baseline is None (from the box). None when nothing can be measured."""
+        f = face or default_face(bold)
+        if f is None:
+            return None
+        soft = self.softness()
+        own = self.value_words(box)
+        got = self._fit_words(own, f, soft) or self._fit_words(self.line_words(own), f, soft, baseline=False)
+        if not got:
+            return None
+        sizes, bases = got
+        if not bases:                                  # measured on the line only: the baseline from the box
+            return float(np.median(sizes)), None
+        return float(np.median(sizes)), float(np.median(bases))
+
+    def _fit_words(self, idx, f: Face, soft: float, baseline: bool = True):
+        """Sizes and baselines (pixels) of the words idx fitted in face f (fit_rows); None when none fits. The
+        baselines are left out when they are not wanted (words of the line: the value's own may sit lower)."""
+        sizes, bases = [], []
+        for i in idx:
+            w = self.clean[i]
+            text = w["text"].strip()
+            if i in self.skip or _letters(text) < 1:
+                continue
+            got, rendered = ink_crop(self.gray, w["box"], cut=w.get("cut", (False, False))), _rendered(f, text)
+            if not got or not rendered:
+                continue
+            fit = fit_rows(self.gray, got[1], rendered[0], soft)
+            if not fit:
+                continue
+            k, top = fit
+            sizes.append(PROBE * k)
+            if baseline:
+                bases.append(top + rendered[1] * k)
+        return (sizes, bases) if sizes else None
+
+    def word_faces(self, box, main: Face | None, count: int) -> list[Face] | None:
+        """The face of each word of a value in `box`: the family of the value, the weight of each word ('Lucas' in
+        regular, 'JACQUEMIN' in bold). None when the words cannot be told apart (not `count` OCR words in the box)."""
+        if main is None or count < 1:
+            return None
+        own = sorted(self.value_words(box), key=lambda i: self.words[i]["box"][0])
+        if len(own) != count:
+            return None
+        scores = [self.bold_score([i], main.family) for i in own]
+        known = [x for x in scores if x is not None]
+        if known and max(known) - min(known) >= WORD_WEIGHT_SPREAD:
+            weights = [main.bold if x is None else x > 0.5 for x in scores]     # two weights: each word its own
+        else:
+            pooled = self.bold_score(own, main.family)                         # one weight: all the words together
+            weights = [main.bold if pooled is None else pooled > 0.5] * len(own)
+        return [face(main.family, b) or main for b in weights]
+
+    def followed(self, box) -> bool:
+        """Something is written right after the box on its line: the end of a word it is a part of ('VERHAEGEN,'),
+        or the next word, within one and a half text heights."""
+        h = box[3] - box[1]
+        for w in self.words:
+            x0, y0, x1, y1 = w["box"]
+            if min(y1, box[3]) - max(y0, box[1]) < 0.5 * min(y1 - y0, h):
+                continue
+            if x1 > box[2] + 2 and x0 < box[2] + 1.5 * h:
+                return True
+        return False
 
     def advance(self, word: dict, text: str) -> float | None:
         """Width of `text` in the face measured for `word` (an OCR word of this page) and its line, in the face's own
@@ -407,19 +602,51 @@ class PageFonts:
             bold = bool(bold_hint)
         return face(family, bold), margin
 
+    def _colours(self, img, i: int, q):
+        """(paper, ink) measured on word i in the face that fits it best, None when it cannot be measured."""
+        s = self.scores(i)
+        if not s:
+            return None
+        smp = self._sample(i, max(s, key=s.get))
+        return quality.colours(img, smp, q, (255, 255, 255)) if smp else None
+
     def look(self, img, box, bold_hint: bool | None = None, match_font: bool = True) -> Look:
         """Everything a replacement in `box` needs: face (None when not measured, or match_font is off: Arial), the
-        page quality with the grain around the box, the paper and ink colours of the value."""
+        page quality with the grain around the box, the paper and ink colours of the value: measured on its own
+        longest word, else on the words of its line, else on the page's longest words (a value whose words OCR
+        misread cannot be measured itself)."""
         f, margin = self.face_for(box, bold_hint) if match_font else (None, 0.0)
         q = self.page_quality()
         q = replace(q, grain=quality.grain(self.gray, box))
-        paper = ink = None
         own = self.value_words(box)
-        ref = f or default_face(bool(bold_hint))
-        if ref is not None and own:
-            i = max(own, key=lambda j: _letters(self.words[j]["text"]))
-            if self.scores(i):
-                smp = self._sample(i, ref)
-                if smp:
-                    paper, ink = quality.colours(img, smp, q, (255, 255, 255))
+        by_length = lambda idx: sorted(idx, key=lambda j: -_letters(self.clean[j]["text"]))   # noqa: E731
+        colours = None
+        for i in by_length(own) + by_length(self.line_words(own)):
+            colours = self._colours(img, i, q)
+            if colours:
+                break
+        page = self.page_colours(img)
+        if page and (not colours or _lum(colours[1]) > _lum(page[1]) + INK_LIGHTER):
+            colours = (colours[0] if colours else page[0], page[1])    # a few short words measure too light an ink
+        paper, ink = colours or (None, None)
         return Look(f, margin, q, paper, ink)
+
+    def page_colours(self, img):
+        """(paper, ink) of the page's text: the medians over its 8 longest measurable words. None without them."""
+        if not hasattr(self, "_page_colours"):
+            got = []
+            for i in sorted((i for i, w in enumerate(self.clean) if _letters(w["text"]) >= 5 and i not in self.skip),
+                            key=lambda j: -_letters(self.clean[j]["text"])):
+                c = self._colours(img, i, self.page_quality())
+                if c:
+                    got.append(c)
+                if len(got) >= 8:
+                    break
+            self._page_colours = None if len(got) < 3 else (
+                tuple(int(v) for v in np.median([c[0] for c in got], axis=0)),
+                tuple(int(v) for v in np.median([c[1] for c in got], axis=0)))
+        return self._page_colours
+
+
+def _lum(rgb) -> float:
+    return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]

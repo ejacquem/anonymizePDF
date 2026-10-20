@@ -234,6 +234,8 @@ _NAME_WORD = (r"(?!(?i:et|le|la|les|de|du|des|pour|avec|sur|sous|dans|au|aux|en|
               r"sont|a|ont|pas|qui|que|se|ne|ou|mais|donc|à|un|une|ce|cet|cette|ces|son|sa|ses|leur|leurs)\b)"
               r"[^\W\d_][\w'’\-]*")
 _FR_STREET = "rue|avenue|boulevard|chaussée|chaussee|place|allée|allee|impasse|chemin|quai|square|cours|route|passage|villa"
+# OCR splits the A of a scanned 'Avenue' in two marks: 'i\venue', '/\venue'
+_FR_STREET += r"|[/il1|]\\venue"
 _NOT_UNIT = r"(?!(?i:appartement|appt|apt|bâtiment|batiment|bât|bat|étage|etage|escalier|bte|bp|résidence|residence)\b)"
 # an address can be written on two lines ('SQUARE' / 'Sophie Wouters 8'), and its name can have small words
 _SPACE = r"[ \t\n]"
@@ -275,7 +277,10 @@ DETECTORS = [
     # identity documents: '14 05 1992' (not inside a longer run of numbers such as a phone number)
     ("DATE", re.compile(r"(?<!\d)(?<!\d )(?:0[1-9]|[12]\d|3[01]) (?:0[1-9]|1[0-2]) (?:19|20)\d{2}(?! ?\d)"), None),
     ("DATE", re.compile(rf"(?<!\d)\d{{1,2}}(?:er)?\s+(?i:{_MONTHS})\s+(?:19|20)\d{{2}}"), None),
-    ("PHONE", re.compile(r"(?<![\w+])(?:\+|00)\d{1,3}[ .\-/]?(?:\(0\)[ .\-/]?)?\d(?:[ .\-/]?\d){6,10}(?!\d)"), _v_phone),
+    # an international number may go on to the next line ('... joint au +32 4' / '341 27 90 ...'): the '+' or '00'
+    # in front keeps other numbers out
+    ("PHONE", re.compile(r"(?<![\w+])(?:\+|00)\d{1,3}[ .\-/\n]?(?:\(0\)[ .\-/]?)?\d(?:[ .\-/\n]?\d){6,10}(?!\d)"),
+     _v_phone),
     ("PHONE", re.compile(r"(?<![\w+])0[1-9]\d{0,2}(?:[ .\-/]?\d{2,3}){2,4}(?!\d)"), _v_phone),
     # a North American number: '1 202 111-2222', '(202) 111-2222', '202.111.2222'
     ("PHONE", re.compile(r"(?<![\w+])(?:1[ .\-])?\(?\d{3}\)?[ .\-]\d{3}[ .\-]\d{4}(?!\d)"), None),

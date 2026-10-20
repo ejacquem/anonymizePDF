@@ -659,33 +659,73 @@ def fit_font(text, max_w, h):
     return load_font(8)
 
 
-def scan_text_layout(original: str, new: str, box, bold: bool = False, face=None):
-    """Font, baseline position and horizontal scale so that `new` looks like `original` did in `box` (unpadded word box):
-    same ink height (the size is measured on the original text, so tight OCR boxes give the right size) and same
-    baseline, in bold if the original was. Never wider than the box: a longer text is squeezed sideways a little
-    (`sx`, see write_text), then written smaller (SIZE_FLOOR), never over the next field.
-    `face` (fontmatch.Face): the font the scan is written in; None = Arial (bold or not)."""
+def _loader(face, bold: bool):
+    return (lambda size: face.font(size)) if face is not None else (lambda size: load_font(size, bold))
+
+
+FILL_SPACE = 0.6      # filling a box: each space between words may grow by this share of a space,
+FILL_STRETCH = 1.08   # then the letters may be stretched this much
+
+
+def scan_runs_layout(original: str, runs: list, box, size: float | None = None, baseline: float | None = None,
+                     fill: bool = False):
+    """Layout of a replacement made of runs [(text, face, bold)] written one after the other on one line, each in its
+    own font (a first name in regular and a surname in bold), so that it looks like `original` did in `box` (unpadded
+    word box): same ink height and baseline. `size` / `baseline` (pixels): measured on the scan when known (the
+    letters of the words themselves: the box of a long value on a slightly tilted line is taller than its letters),
+    else from the box. Never wider than the box: a longer text is squeezed sideways a little (`sx`, see write_text),
+    then written smaller (SIZE_FLOOR), never over the next field. `fill`: something follows the value on its line (a
+    comma, the next word): a shorter replacement is spread to the box (wider spaces, then letters stretched a
+    little), so no gap is left before what follows.
+    Returns [(text, run index, font, (x, baseline), sx)]: one per run, or one per word when filling."""
     x0, y0, x1, y1 = box
-
-    def load(size, bold):
-        return face.font(size) if face is not None else load_font(size, bold)
-
-    probe = load(100, bold)
-    _, top, _, bottom = probe.getbbox(original or new, anchor="ls")   # top < 0 (above baseline)
-    ink = bottom - top
-    size = max(int(round(100 * (y1 - y0) / ink)), 6) if ink > 0 else max(int((y1 - y0) * 0.8), 8)
-    font = load(size, bold)
-    descent = max(font.getbbox(original or new, anchor="ls")[3], 0)   # part of the original below the baseline
+    loads = [_loader(face, bold) for _, face, bold in runs]
+    ref = original or " ".join(t for t, _, _ in runs)
+    if size is None:
+        _, top, _, bottom = loads[0](100).getbbox(ref, anchor="ls")   # top < 0 (above baseline)
+        ink = bottom - top
+        size = 100 * (y1 - y0) / ink if ink > 0 else (y1 - y0) * 0.8
+    size = max(int(round(size)), 6)
+    if baseline is None:
+        descent = max(loads[0](size).getbbox(ref, anchor="ls")[3], 0)   # part of the original below the baseline
+        baseline = y1 - descent
     avail = max(x1 - x0, 1)
+    pieces = [(w, k) for k, (t, _, _) in enumerate(runs) for w in (t.split(" ") if fill else [t]) if w or not fill]
+
+    def measure(sz):
+        fonts = {k: loads[k](sz) for k in range(len(runs))}
+        gaps = [fonts[k].getlength(" ") if n else 0.0 for n, (_, k) in enumerate(pieces)]  # a space before all but one
+        return fonts, gaps, sum(fonts[k].getlength(t) for t, k in pieces) + sum(gaps)
+
+    fonts, gaps, width = measure(size)
     sx = 1.0
-    width = font.getlength(new)
     if width > avail:
         needed = avail / width
         scale = min(1.0, max(needed / SQUEEZE_FLOOR, SIZE_FLOOR))
         size = max(int(size * scale), 6)
-        font = load(size, bold)
-        sx = max(min(1.0, avail / max(font.getlength(new), 1)), SQUEEZE_MIN)
-    return font, (x0, y1 - descent), sx
+        fonts, gaps, width = measure(size)
+        sx = max(min(1.0, avail / max(width, 1)), SQUEEZE_MIN)
+    elif fill and width < avail:
+        n = sum(1 for g in gaps if g)
+        if n:
+            grow = min((avail - width) / n, FILL_SPACE * max(gaps))
+            gaps = [g + grow if g else g for g in gaps]
+            width += grow * n
+        sx = min(avail / max(width, 1), FILL_STRETCH)
+    out, x = [], x0
+    for (t, k), gap in zip(pieces, gaps):
+        x += gap * sx
+        out.append((t, k, fonts[k], (x, baseline), sx))
+        x += fonts[k].getlength(t) * sx
+    return out
+
+
+def scan_text_layout(original: str, new: str, box, bold: bool = False, face=None, size: float | None = None,
+                     baseline: float | None = None):
+    """Font, baseline position and horizontal scale so that `new` looks like `original` did in `box`, in one font
+    (`face`, a fontmatch.Face: the font the scan is written in; None = Arial, bold or not). See scan_runs_layout."""
+    _, _, font, xy, sx = scan_runs_layout(original, [(new, face, bold)], box, size, baseline)[0]
+    return font, xy, sx
 
 
 def stretch_layout(text: str, box, bold: bool = False):

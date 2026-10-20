@@ -607,6 +607,8 @@ class Faker:
 
     def street(self, value: str) -> str:
         rng = self.rng("street", value)
+        # an 'Avenue' whose A the OCR split in two marks ('i\venue', '/\venue', see pii._FR_STREET) is an avenue
+        value = re.sub(r"(?<!\w)[/il1|]\\venue", "Avenue", value)
         dated = self._date_street(value, rng)          # 'avenue du 11 novembre' -> another day and month
         if dated is not None:
             return dated

@@ -86,5 +86,29 @@ Changes made on the way:
   widths left pieces of letters).
 - The grainy erase paints exactly the pixels the flat rectangle painted.
 
+## 8. Second round: an insurance contract scanned at a middle / low quality (Dossier Test 17)
+
+`contrat_assurance_scan.pdf`: 3 pages, paragraphs with the values in the middle of sentences, names written 'Prénom
+**NOM**' (surname in bold), reversed, all bold, in capitals and Title case, a name and an address split across two
+lines, several fonts per page (Verdana labels, Times / Calibri / Garamond paragraphs, Georgia headings, Segoe UI
+signatures), 200 and 150 dpi, faded ink, pages turned by 0.8, -1.0 and 0.6 degree.
+
+Found and fixed:
+- a name in two weights was written in one ('Rachid DELACROIX' all regular): each word now takes its own weight;
+- fakes 10-15 % too big in the paragraphs (the box of a long value on a turned page): size and baseline fitted word
+  by word on the letters;
+- a comma glued to a word (OCR 'VERHAEGEN,') made the word look smaller and regular: punctuation is left out;
+- weight on faded Calibri at 200 dpi: the error test alone overlapped (regular 0.58-0.88, bold 0.34-0.77): the ink
+  mass is a second clue, the two averaged (233/234 words);
+- gaps before a comma when the fake is shorter: the box is filled (spaces, then letters a little);
+- a split address cut by widths ('Avenue de' squeezed in the box of one word): cut by words;
+- inks too light on some short values: the page's ink as a floor;
+- a stroke spread of -0.25 px fitted on a faded page thinned every fake: kept only with a clear gain;
+- detection: 'Avenue' read 'i\venue' (the street was left), a phone number over a line break (left), 'Monsieur' read
+  'Nlonsieur' (replaced as a first name).
+
+Left as is: a single short word can only be stretched 8 %, so a small gap can stay before its comma; the descender of
+a letter far outside the OCR box (the tail of a Garamond 'J') can leave a dot.
+
 Known limits: look-alike fonts on soft copies; a page entirely in bold reads as regular with ink spread; no italics;
 fonts outside the catalog get the closest candidate.

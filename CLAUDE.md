@@ -85,7 +85,9 @@ sample_data/Dossier Test 12/  one person in every form a folder writes a name (f
 sample_data/Dossier Test 11/  the reported cases, each line as written (digital + scan): masked cards with X, REF, BT id,
                               REYES / REYS / REYE spellings, 'MLE' in capitals, 'numero du compte' far right
 sample_data/Dossier Test 17/  fonts and scan qualities (tools/make_test_fonts.py): 16 fonts regular / bold on a scan at
-                              300 / 200 / 150 dpi, a digital page with a pasted picture of text; fonts_truth.json
+                              300 / 200 / 150 dpi, a digital page with a pasted picture of text, a 3-page insurance
+                              contract (values in sentences, 'Prénom NOM' with the surname in bold, names and an
+                              address split across lines, pages turned < 1 degree, 200 / 150 dpi); fonts_truth.json
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
                        make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
@@ -313,6 +315,9 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - Bank operation labels (`pii.OPERATION_WORDS`: VIRT, RECU, PRLV, SEPA, REF, RET, DAB, FR, ACHAT-DEBIT, ...) are taken
   out of PERSON / ORG / LOCATION candidates (`strip_operations`, in `_detect_words` and the second check): 'VIRT RECU
   MARION' is the name 'MARION', and a label alone is dropped. Add a label to the list when a statement shows one.
+- OCR misreadings handled by the detectors: an 'Avenue' whose A is read as two marks ('i\venue', '/\venue':
+  `pii._FR_STREET`, `fake.street` writes 'Avenue'), an international phone number going on to the next line ('+32 4' /
+  '341 27 90'), the m of a title read 'nl' / 'rn' / 'ni' ('Nlonsieur': `engine._ocr_m` in `is_label_word`).
 - PERSON: titles in any case ('MLE', 'Mle', 'Mme'); `Prénom NOM` with up to two middle names and a surname cut to 2+
   letters ('Merve Chantal Gaëlle REYES', 'Chantal Gaëlle RE'); capitals only ('REYES MERVE') are candidates, and a
   capitals run that holds another value ('BIC BNPAFRPP') is no name (`detect_structured`, CAPS_NAME_RANK). Candidates
@@ -446,15 +451,36 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   with the ink of the word (`ink_crop`) at 24 px high: correlation of the shapes minus 1.6 x |log width ratio|. A face
   far too wide / narrow (0.35) is not compared (`WIDTH_PRUNE`). Once the page quality is known the candidates are
   blurred like the page (`softness`: blur + low resolution), so lost serifs are lost in the candidates too.
+- Words are measured without the punctuation OCR glues to them (`clean_word`: 'VERHAEGEN,' -> 'VERHAEGEN', the box
+  cut before the comma and not widened on that side: the faint comma tail made words look smaller and regular). A word
+  with '\' or '|' (an OCR misreading, 'i\venue') is not measured.
 - Font of a value (`PageFonts.face_for`): its words count twice, the other words of its OCR line once (Windows OCR
   often gives label and value different line ids); the family wins over the words, then the weight is decided on the
-  value's words only (`is_bold`): regular and bold rendered and degraded with the page quality, bold when its error
-  is < 0.7 of the regular one (`BOLD_RATIO`). BoldMeter is the fallback (no measurable word).
+  value's words only (`bold_score`, bold above 0.5): the mean of two clues, the error of the bold rendering against
+  the regular one (degraded like the page; 1 -> 0, 0.4 -> 1) and the ink mass of the word against the regular
+  rendering's (a blur keeps the total ink) relative to the page's regular text (30th percentile of its words: a page
+  can be half bold). 233/234 words of Dossier Test 17 (228 and 231 with each clue alone). BoldMeter is the fallback.
+- Words of one value in two weights ('Lucas' regular, 'JACQUEMIN' bold): when the fake has as many words as OCR read
+  in the box (`word_faces`), and the words' bold scores spread by >= 0.3, each word is written in its own weight;
+  else all in the pooled weight (4-digit groups of an IBAN alone are weak evidence). `engine.layout_value`,
+  `render.scan_runs_layout` (runs of text in different fonts on one line). A line of a value on two lines takes the
+  weight of its own words.
+- Size and baseline (`PageFonts.metrics`): every word of the value rendered in its face and fitted row by row on the
+  scan (`fit_rows`: scale and top that correlate the ink per row), medians over the words; the box of a long value on
+  a page turned by 0.8 degree is taller than its letters (fakes were 10-15 % too big). A value whose words cannot be
+  measured takes the size of its line's other words.
+- Filling (`layout_value`, `scan_runs_layout(fill=)`): when something follows the value on its line (a comma, the next
+  word: `PageFonts.followed`), a shorter fake spreads to its box: spaces up to +60 %, letters up to 8 %.
+- A value on two lines is cut by the words of the same rank when the fake has as many words (`engine._cut_lines`:
+  'i\venue' / 'de la Closière 7' -> 'Avenue' / 'de la Chapelle 2'), else by the widths of the lines.
 - Quality (`PageFonts.page_quality`, `quality.fit`): on the 20 longest words of the page (>= 3, else not fitted):
   native resolution from the PDF image (`engine.native_scale`, not fitted), then blur and stroke spread by a
   coordinate search over grids, error = linear fit of the degraded candidate to the pixels. Per value: grain (MAD of
   the paper around the box, ink and its edges left out) and colours (`colours`: ink = paper + (darkest 5 % - paper) /
-  peak coverage of the degraded candidate: the ink of a full stroke, consistent with the fitted blur).
+  peak coverage of the degraded candidate: the ink of a full stroke, consistent with the fitted blur), measured on
+  the value's longest word, else its line; the page's ink (median of its 8 longest words) when that is missing or
+  30 levels lighter (`INK_LIGHTER`: a few short words or digits measured too light an ink). A stroke spread is kept
+  only when it lowers the fit's error by 3 % (`SPREAD_GAIN`: a faded copy faked -0.25 px and thinned every fake).
 - Painting (`quality.erase`, `quality.paint`): the box is painted with the paper colour plus grain (noise made at the
   native resolution, seeded by page / value / line: a rerun gives the same file); the text is rendered 4x, spread,
   brought to the native resolution and back, blurred, laid in the ink colour, grain on the strokes.
@@ -558,6 +584,9 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
 - Detectors (`detector_tests`, no OCR): the strings the real files showed ('MONSIEUR' is no BIC, capitalised cities,
   Swiss VAT, apostrophe references and amounts, 'Code SWIFT' not a name, identity by shape).
 - `KEEP`: values that must stay readable in a digital output (no over-redaction), e.g. 'MONSIEUR'.
+- Text of scans in sentences (`scan_text_tests`, no OCR: punctuation, line cuts, filling, 'i\venue', a phone over a
+  line break, 'Nlonsieur'; `contract_tests`, the insurance contract: no leftover / suspect, every word of every value
+  in the weight of the word it replaced, letters of the line's size on the turned pages, ink as dark).
 - Fonts and quality (`font_unit_tests`, no OCR: synthetic pages written with a known face and quality are measured
   back, grain, seeded noise, config switches; `font_scan_tests`, Dossier Test 17: font / weight / blur of the
   original lines, the font each replacement was written in, the output measured again (font kind, blur of the

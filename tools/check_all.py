@@ -87,7 +87,13 @@ SENSITIVE_8 = ["Jean", "DUPONT", "Rue des Lilas 12", "75017", "PARIS", "FR76 300
 SENSITIVE_17 = ["Héloïse", "Vandamme", "BE91 0682 4813 5729", "+32 471 58 23 96", "heloise.vandamme@exemple.be",
                 "Tanneurs", "14/03/1987", "Bastien", "Lambotte", "BE96 0015 7392 0468", "Ludivine", "Mertens",
                 "+32 486 19 74 30", "Corentin", "Dewulf", "Platanes", "Anaëlle", "Verstraete", "Florian", "Hennebert",
-                "02/11/1979", "Solène", "Wauters", "BE13 0634 5710 2948", "+32 478 61 05 23"]
+                "02/11/1979", "Solène", "Wauters", "BE13 0634 5710 2948", "+32 478 61 05 23",
+                # the insurance contract: values in sentences, 'Prénom NOM' with the surname in bold, tilted scan
+                "Mathis", "VERHAEGEN", "Verhaegen", "Glycines", "+32 478 52 19 64", "mathis.verhaegen@exemple.be",
+                "BE66 0016 4820 7391", "23/04/1986", "Élise", "FONTENOY", "Fontenoy", "+32 4 223 61 08",
+                "e.fontenoy@exemple.be", "Clara", "DELCOURT", "Delcourt", "11/09/1988", "Noah", "02/02/2015",
+                "+32 495 38 70 12", "86.04.23-157.17", "BE94 3631 7052 8846", "Julien", "MARCOTTY", "Closière",
+                "+32 4 341 27 90", "j.marcotty@exemple.be"]
 SENSITIVE_15 = ["Ambre Lefèvre", "Clémence Roux", "Lucas Martin", "Théo Aurélien Morin", "Paul Durand", "Jean Petit"]
 # values that must stay readable in a digital output (no over-redaction): folder -> {file: [values]}
 # the headings of the statements that must stay readable: none of them is a name (Dossier Test 14)
@@ -216,6 +222,7 @@ EXPECT = {
     "Dossier Test 17": (SENSITIVE_17, {
         "polices_scan.pdf": ("scan", [], []),
         "polices_image_collee.pdf": ("mixed", [], []),
+        "contrat_assurance_scan.pdf": ("scan", [], []),
     }),
     "Dossier Test 05": (STATEMENT_0, {
         "contrat_image_collee.pdf": ("mixed", [], []),
@@ -1671,6 +1678,113 @@ def font_scan_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def scan_text_tests():
+    """Text of scans in sentences, without OCR: punctuation glued to a word, a replacement cut across two lines by its
+    words, a shorter replacement filling its box before a comma, and the OCR misreadings of real scans ('i\\venue',
+    a phone number going on to the next line, 'Nlonsieur')."""
+    print("\n== text of scans in sentences (no OCR)")
+    from anonymizer import fontmatch, render
+
+    w = fontmatch.clean_word({"text": "VERHAEGEN,", "box": (100, 10, 200, 40), "line": 1})
+    check("an OCR word loses the comma glued to it, its box is cut before the comma",
+          w["text"] == "VERHAEGEN" and 185 < w["box"][2] < 199 and w["cut"] == (False, True), str(w))
+    check("a misread OCR word ('i\\venue') is not measured",
+          fontmatch.clean_word({"text": "i\\venue", "box": (0, 0, 9, 9)})["text"] == "")
+    check("a replacement on two lines takes the words of the same rank ('i\\venue' / 'de la Closière 7')",
+          engine._cut_lines("Avenue de la Chapelle 2", [60, 300], "i\\venue\nde la Closière 7")
+          == ["Avenue", "de la Chapelle 2"])
+    check("... and is cut by the widths of the lines when the word counts differ",
+          engine._cut_lines("Avenue Louise 54", [60, 300], "Rue\nde la Closière 7") == ["Avenue", "Louise 54"])
+    face = fontmatch.face("Times New Roman")
+    box = (100, 60, 520, 100)
+    runs = [("Rachid", face, False), ("DELACROIX", fontmatch.face("Times New Roman", True) or face, True)]
+    plain = render.scan_runs_layout("Mathis VERHAEGEN", runs, box, 40, 95)
+    filled = render.scan_runs_layout("Mathis VERHAEGEN", runs, box, 40, 95, fill=True)
+
+    def right(layout):
+        t, _, font, (x, _), sx = layout[-1]
+        return x + font.getlength(t) * sx
+
+    check("a name in two weights is laid out as two runs, the surname after the first name",
+          len(plain) == 2 and plain[1][3][0] > plain[0][3][0] + plain[0][2].getlength("Rachid"))
+    check("before a comma, a shorter replacement fills most of its box (wider spaces), and stays inside it",
+          right(plain) < box[2] - 8 and right(filled) - right(plain) >= 0.6 * (box[2] - right(plain))
+          and right(filled) <= box[2] + 0.5,
+          f"{right(plain):.0f} / {right(filled):.0f} / {box[2]}")
+    found = {d[0] if isinstance(d, tuple) else d.type: d[1] if isinstance(d, tuple) else d.value
+             for d in pii.detect_all("dont le cabinet est situé i\\venue\nde la Closière 7 à 4000 Liège", None)}
+    check("an 'Avenue' whose A the OCR split ('i\\venue') is a street, on two lines",
+          found.get("STREET_ADDRESS", "").endswith("Closière 7"), str(found))
+    phones = [d[1] if isinstance(d, tuple) else d.value
+              for d in pii.detect_all("Il peut être joint au +32 4\n341 27 90 ou à l'adresse", None)]
+    check("an international phone number going on to the next line is one number", "+32 4\n341 27 90" in phones,
+          str(phones))
+    others = [d for d in pii.detect_all("Total +32\n2024 frais 12 4", None)]
+    check("... a '+' before digits at the end of a line does not join two unrelated numbers", not others, str(others))
+    check("'Nlonsieur' (Monsieur read by the OCR) is a title, not a name; first names are not",
+          engine.is_label_word("Nlonsieur") and engine.is_label_word("rnadame")
+          and not any(engine.is_label_word(n) for n in ("Arnaud", "Daniel", "Nicolas", "Bernard", "Marnie", "Nina")))
+    fake = Faker().street("i\\venue de la Closière 7")
+    check("the fake of a misread 'i\\venue' is an avenue with a real name", fake.startswith("Avenue ") and
+          "\\" not in fake, fake)
+
+
+def contract_tests():
+    """The insurance contract of Dossier Test 17 (tools/make_test_fonts.py, fonts_truth.json): values in sentences,
+    'Prénom NOM' with the surname in bold, names split across two lines, a scan turned by less than a degree. Every
+    word of every value is measured again on the output: the weight it was written in is the weight of the word it
+    replaced, its letters have the size of the line, and its ink is as dark."""
+    print("\n== insurance contract (Dossier Test 17)")
+    from anonymizer import fontmatch
+
+    src = ROOT / "sample_data" / "Dossier Test 17"
+    truth_file = src / "fonts_truth.json"
+    if not truth_file.exists() or "contrat_assurance_scan.pdf" not in json.loads(truth_file.read_text("utf-8")):
+        print("  (no contract in Dossier Test 17: skipped)")
+        return
+    truth = json.loads(truth_file.read_text(encoding="utf-8"))["contrat_assurance_scan.pdf"]
+    tmp = Path(tempfile.mkdtemp(prefix="anon_contract_"))
+    try:
+        shutil.copy(src / "contrat_assurance_scan.pdf", tmp)
+        cfg = engine.scan_folder(tmp, "contract", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "contract", cfg, "fra+eng", False, lambda m: None)
+        entry = rep["files"][0]
+        check("contract: nothing left, nothing readable by the second check",
+              not entry["leftovers"] and not entry.get("suspects"), f"{entry['leftovers']} {entry.get('suspects')}")
+        weight = size = ink = n = 0
+        notes = []
+        with fitz.open(src / "contrat_assurance_scan.pdf") as orig, \
+                fitz.open(tmp / "contrat_assurance_scan_anonymized.pdf") as out:
+            for pno in range(1, len(out) + 1):
+                img, words = _ocr_page(out[pno - 1])
+                g = np.asarray(img.convert("L"))
+                og = np.asarray(ocr.render_page(orig[pno - 1], 300).convert("L"))
+                pf = fontmatch.PageFonts(g, words, engine.native_scale(orig[pno - 1], 300))
+                for value in (v for v in truth["values"] if v["page"] == pno):
+                    for tw in value["words"]:
+                        box = [c * 300 / 72 for c in tw["box"]]
+                        own = [i for i in pf.value_words(box) if fontmatch._letters(pf.clean[i]["text"]) >= 2]
+                        if len(own) != 1:
+                            continue                  # the fake words do not fall one for one on the original ones
+                        n += 1
+                        bold = pf.is_bold(own, tw["family"])
+                        weight += bold == tw["bold"]
+                        if bold != tw["bold"]:
+                            notes.append(f"p{pno} {tw['text']} ({'bold' if tw['bold'] else 'regular'}) "
+                                         f"-> {pf.clean[own[0]]['text']}")
+                        m = pf.metrics(words[own[0]]["box"], fontmatch.face(tw["family"], tw["bold"]))
+                        want = tw["size"] * 300 / 72
+                        size += m is not None and abs(m[0] - want) <= 0.1 * want
+                        x0, y0, x1, y1 = (int(v) for v in box)
+                        ink += abs(float(np.percentile(g[y0:y1, x0:x1], 3)) - float(np.percentile(og[y0:y1, x0:x1], 3))) <= 35
+        check(f"contract: each word written in the weight of the word it replaced ({weight}/{n})", weight >= n - 2,
+              "; ".join(notes))
+        check(f"contract: the letters have the size of the line, also on the tilted page ({size}/{n})", size >= n - 3)
+        check(f"contract: the replacements are as dark as the text they replaced ({ink}/{n})", ink >= n - 2)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def key_and_fake_tests(tmp: Path):
     print("\n== secret key and fake values")
     use_key(tmp / "k" / "secret.key")
@@ -1748,6 +1862,8 @@ def main():
         speedup_tests()
         font_unit_tests()
         font_scan_tests()
+        scan_text_tests()
+        contract_tests()
         key_and_fake_tests(tmp)
         for k in range(1 if args.quick else args.keys):
             print(f"\n######## random key {k + 1}")
