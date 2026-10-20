@@ -1130,6 +1130,52 @@ def incremental_report_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def scan_anonymize_batch_tests():
+    """The batch action 'scan_anonymize' scans a client folder and anonymizes it, then goes on to the next one: the log
+    shows A scan, A anonymize, B scan, B anonymize, never all the scans first. Both folders end with their outputs."""
+    print("\n== scan & anonymize: folder by folder")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("anon_webapp", ROOT / "app.py")
+    webapp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(webapp)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_both_"))
+    saved_root, saved_models = webapp.STATE["root"], webapp.STATE["spacy_models"]
+    try:
+        use_key(tmp / "key" / "secret.key")
+        for folder in ("A", "B"):
+            (tmp / folder).mkdir()
+            for name in ("releve.pdf", "contrat.pdf"):
+                doc = fitz.open()
+                doc.new_page().insert_text((72, 72), f"Jean Dupont {folder} {name}", fontsize=12)
+                doc.save(tmp / folder / name)
+        webapp.STATE["root"] = tmp
+        webapp.STATE["spacy_models"] = []                  # rules only: no names model to load in a test
+        client = webapp.app.test_client()
+        r = client.post("/api/batch", json={"folder": "", "action": "scan_anonymize", "redo": False,
+                                            "ocr_verify": False})
+        check("the batch starts", r.status_code == 200, r.get_data(as_text=True)[:200])
+        job = r.get_json()["job"]
+        status, log = "running", []
+        for _ in range(600):
+            j = client.get(f"/api/job/{job}?since=0").get_json()
+            status, log = j["status"], j["log"]
+            if status != "running":
+                break
+            time.sleep(0.5)
+        text = "\n".join(log)
+        check("the batch finishes", status == "done", f"{status}: {text[-300:]}")
+        order = [text.find(f"{f}: {ph} ") for f in ("A", "B") for ph in ("scan", "anonymize")]
+        check("the log is A scan, A anonymize, B scan, B anonymize (folder by folder)",
+              all(x >= 0 for x in order) and order == sorted(order), f"positions {order}")
+        for folder in ("A", "B"):
+            check(f"folder {folder} is scanned (a config) and anonymized (outputs)",
+                  (tmp / folder / "anon_config.yaml").exists()
+                  and all((tmp / folder / f"{n}_anonymized.pdf").exists() for n in ("releve", "contrat")))
+    finally:
+        webapp.STATE["root"], webapp.STATE["spacy_models"] = saved_root, saved_models
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def first_letter_tests():
     """The first letter of a name is replaced with the rest of it: 'M. Albert Dupont' never keeps its 'A' (a scan was
     left with 'A' before the fake first name, from the colon skip). Diagonal first letters (A, V, W, Y) are the risk.
@@ -1989,6 +2035,7 @@ def main():
         street_name_tests()
         second_pass_tests()
         incremental_report_tests()
+        scan_anonymize_batch_tests()
         first_letter_tests()
         account_and_street_names_tests()
         manual_text_tests()

@@ -135,7 +135,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Trace also lists the glyphs each redaction removed: 'glyphs removed (value)' (the characters of the values) and
   'glyph restored (taken by a neighbouring redaction)' (characters next to a value that the redaction took and that
   were written again). Black boxes and pixel redactions do the same. Invisible characters are never written again.
-- Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Anonymize file** (either file of the pair; the
+- Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Scan & anonymize** (scan, then anonymize, with no
+  review in between: `btnBoth`, `anonymizeFolder()` is the second half; in batch mode the action `scan_anonymize` of
+  `/api/batch` does each folder's scan then its anonymization before the next folder), **Anonymize file** (either file of the pair; the
   report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).
 - Black boxes by hand: **▭ Black box** in the Anonymized pane (drag to draw, drag / handles to move and resize,
