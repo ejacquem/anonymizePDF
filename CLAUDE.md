@@ -84,13 +84,16 @@ sample_data/Dossier Test 12/  one person in every form a folder writes a name (f
                               reversed), a second person as control (digital, 3 files; tools/make_test_names.py)
 sample_data/Dossier Test 11/  the reported cases, each line as written (digital + scan): masked cards with X, REF, BT id,
                               REYES / REYS / REYE spellings, 'MLE' in capitals, 'numero du compte' far right
+sample_data/Dossier Test 18/  handwritten signatures (tools/make_test_signatures.py): a digital letter with 6 labelled
+                              signatures, a form with 8 'Signature' boxes over dotted rules, a typed name with a signature
+                              and no label; the same two pages as scans; signatures_truth.json gives every box
 sample_data/Dossier Test 17/  fonts and scan qualities (tools/make_test_fonts.py): 16 fonts regular / bold on a scan at
                               300 / 200 / 150 dpi, a digital page with a pasted picture of text, a 3-page insurance
                               contract (values in sentences, 'Prénom NOM' with the surname in bold, names and an
                               address split across lines, pages turned < 1 degree, 200 / 150 dpi); fonts_truth.json
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
-                       make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
+                       make_test_faces.py, make_test_signatures.py (generators, Windows fonts); test_faces/ (public-domain portraits from
                        Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 08);
                        make_test_idcard.py also writes the poor copy (Dossier Test 09); make_test_transfers.py (Dossier
                        Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12);
@@ -541,10 +544,16 @@ Order must never change a result (`order_tests`): a value written with several s
   (`_code_structure`: QR finder squares in ≥ 2 corners, or Data Matrix solid left + bottom edges). Digital pages are
   rendered at 150 dpi and searched the same way (image and vector codes).
 - **Signatures**: `is_signature_label` (signature / handtekening / unterschrift among the first two words of the line,
-  or a line of ≤ 4 words — not a sentence; `firma` was dropped: it means "company" in NL/DE). Ink not OCR text of
+  or a line of ≤ 4 words — not a sentence; `firma` was dropped: it means "company" in NL/DE). Also the closing formulas,
+  approvals and places of a signature written without its word (`_SIGNATURE_ANCHOR`: 'Cordialement,', 'Lu et approuvé',
+  'Pour l'entreprise', 'Fait à Paris, le …', 'Le titulaire', 'Signé à …'; a line of ≤ 8 words). A line is cut into labels
+  where the gap between two words is over 2.5 word heights (`_label_segments`: two columns on one row are two labels).
+  Each stroke belongs to ONE label (`_owners`): the nearest label above it in its column (within 8 label heights), else
+  the label below it (within 2 heights). So two signatures stacked between labels are two boxes, not one across the
+  label. The search goes 30 mm below a label and stops at the next signature label of the column. Ink not OCR text of
   normal height, not a ruled line, not in MRZ / photos (the face area widened by 50 %) / codes; seeded next to the
-  label, grown through strokes ≤ 3 mm apart (`_grow`) in a window of 12 mm above / below the label and 5 / 80 mm
-  around it. Components that are solid (fill ≥ 0.4) or lie mostly inside an OCR word box are print, not ink.
+  label, grown through strokes ≤ 3 mm apart (`_grow`) in a window of 12 mm above / 30 mm below the label and 5 / 80 mm
+  around it. A signature with no label (only a typed name under it) is not found: a known limit. Components that are solid (fill ≥ 0.4) or lie mostly inside an OCR word box are print, not ink.
   The label is spared only if the strokes do not touch it. Digital: drawings / images grown the same way.
   A box never covers an OCR word: it is cut on the side that keeps the most dark (signature) pixels and still holds
   the middle of the label (`_clear_of_text`, `ink_mass`). Known limit: a signature on a card whose guilloche is

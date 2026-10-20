@@ -1637,6 +1637,89 @@ def town_size_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def signature_tests():
+    """Signatures next to a label ('Signature', a closing formula, an approval, 'Fait à ...'), on digital pages and on
+    scans of them (sample_data/Dossier Test 18, tools/make_test_signatures.py): every labelled signature is covered by a
+    signature black box, the labels stay readable, and no drawn stroke is left under a box. Two signatures one above
+    the other, each under its own label, are two boxes (see regions._owners)."""
+    print("\n== signatures under a label")
+    from anonymizer import regions
+    check("a closing formula is a signature label", regions.is_signature_label("Cordialement,"))
+    check("an approval is a signature label", regions.is_signature_label("Lu et approuvé"))
+    check("'Fait à Paris, le 12 mars 2024' is a signature label", regions.is_signature_label("Fait à Paris, le 12 mars 2024"))
+    check("a sentence that asks for a signature is no label",
+          not regions.is_signature_label("Merci de retourner ce document après signature"))
+    check("a long sentence beginning with 'Cordialement' is no label",
+          not regions.is_signature_label("Cordialement, nous restons à votre disposition pour toute question"))
+    words = [{"text": "Lu", "line": 1, "box": (10, 100, 20, 110)}, {"text": "et", "line": 1, "box": (22, 100, 30, 110)},
+             {"text": "approuvé", "line": 1, "box": (32, 100, 80, 110)},
+             {"text": "Signature", "line": 1, "box": (300, 100, 380, 110)}, {"text": "titulaire", "line": 1,
+                                                                             "box": (382, 100, 430, 110)}]
+    segs = regions._label_segments(words)
+    check("two labels on one row, in two columns, are two labels", len(segs) == 2
+          and segs[0]["text"] == "Lu et approuvé" and segs[1]["text"] == "Signature titulaire", str([s["text"] for s in segs]))
+    labels = [{"box": (10, 100, 80, 110)}, {"box": (10, 300, 80, 310)}]
+    strokes = [(12, 115, 70, 150), (12, 315, 70, 350)]
+    check("a stroke belongs to the label above it (its signature is written under the label)",
+          regions._owners(strokes, labels, 40) == [0, 1])
+    check("a stroke far from any label belongs to none", regions._owners([(12, 500, 70, 540)], labels, 40) == [None])
+    check("a stroke that runs over the foot of a label is that label's", regions._owners([(12, 106, 70, 130)], labels, 40)
+          == [0])
+
+    folder = ROOT / "sample_data" / "Dossier Test 18"
+    if not (folder / "signatures_truth.json").exists():
+        print("  (no Dossier Test 18: run tools/make_test_signatures.py)")
+        return
+    truth = json.loads((folder / "signatures_truth.json").read_text(encoding="utf-8"))
+    tmp = Path(tempfile.mkdtemp(prefix="anon_sig_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        for p in folder.glob("*.pdf"):
+            shutil.copy(p, tmp / p.name)
+        cfg = engine.scan_folder(tmp, "signatures", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "signatures", cfg, "fra+eng", False, lambda m: None)
+        by_file = {f["file"]: f for f in rep["files"]}
+
+        def covered(t, boxes):
+            x0, y0, x1, y1 = t["box"]
+            area = max((x1 - x0) * (y1 - y0), 1)
+            return any(page == t["page"] and kind == "signature"
+                       and max(0, min(x1, b[2]) - max(x0, b[0])) * max(0, min(y1, b[3]) - max(y0, b[1])) >= 0.6 * area
+                       for page, kind, b in boxes)
+
+        for name in ("signatures_digital.pdf", "signatures_scan.pdf"):
+            f = by_file.get(name)
+            if f is None or f["error"]:
+                check(f"{name}: anonymized", False, str(f and f["error"]))
+                continue
+            boxes = [(b["page"], b["kind"], b["box"]) for b in f.get("blackouts", [])]
+            labelled = [t for t in truth if t["file"] == name and t["labelled"]]
+            missed = [t for t in labelled if not covered(t, boxes)]
+            check(f"{name}: every labelled signature is under a black box ({len(labelled) - len(missed)}/{len(labelled)})",
+                  not missed, "; ".join(f"p{t['page']} {t['label']}" for t in missed))
+            n_sig = sum(1 for _, k, _ in boxes if k == "signature")
+            check(f"{name}: no runaway (at most one box per signature, +2)", n_sig <= len([t for t in truth if t["file"] == name]) + 2,
+                  f"{n_sig} boxes")
+            if name.endswith("_scan.pdf"):
+                continue
+            out = tmp / name.replace(".pdf", "_anonymized.pdf")
+            doc = fitz.open(out)
+            text = " ".join(doc[0].get_text().split())
+            for label in ("Cordialement", "Lu et approuvé", "Pour l'entreprise", "Signature du client"):
+                check(f"{name}: the label '{label}' stays readable", label in text)
+            page = doc[0]
+            for t in labelled:
+                if t["page"] != 1:
+                    continue
+                r = fitz.Rect(t["box"])
+                left = [d for d in page.get_drawings() if fitz.Rect(d["rect"]).intersects(r)
+                        and d.get("fill") != (0.0, 0.0, 0.0) and (fitz.Rect(d["rect"]) & r).get_area()
+                        > 0.5 * max(fitz.Rect(d["rect"]).get_area(), 0.01)]
+                check(f"{name}: no stroke left under the box of '{t['label']}'", not left, str(len(left)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def speedup_tests():
     """The helpers behind the speed-ups give exactly the results of the code they replaced."""
     print("\n== speed-up helpers")
@@ -2235,6 +2318,7 @@ def main():
         street_code_tests()
         order_tests()
         town_size_tests()
+        signature_tests()
         speedup_tests()
         font_unit_tests()
         font_scan_tests()
