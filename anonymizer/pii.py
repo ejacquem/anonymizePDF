@@ -695,10 +695,11 @@ def _advance(text: str):
     return f.getlength(text) if f is not None and text else None
 
 
-def match_boxes(words, spans, ms: int, me: int) -> list[tuple]:
+def match_boxes(words, spans, ms: int, me: int, advance=None) -> list[tuple]:
     """Boxes (one per text line) covering text[ms:me]. A word only partly covered is cut where its characters are:
-    by the widths of the characters in Arial (so a colon before a value is not cut into), or, without Arial,
-    in proportion to the number of characters."""
+    by the widths of the characters in the font of the word (advance(word, text): its width in the font the scan
+    is written in, None when not known), else in Arial (so a colon before a value is not cut into), or, without
+    Arial, in proportion to the number of characters."""
     per_line: dict = {}
     for w, (ws, we) in zip(words, spans):
         if we <= ms or ws >= me:
@@ -711,11 +712,14 @@ def match_boxes(words, spans, ms: int, me: int) -> list[tuple]:
         left, right = x0, x1
         if a or b != n:
             text = w["text"].translate(_DASHES)
-            total = _advance(text)
+            adv = _advance
+            if advance is not None and advance(w, text):
+                adv = lambda t, w=w: advance(w, t) if t else None      # noqa: E731
+            total = adv(text)
             if total:
                 # the widths of the characters before and after the match, in the font's own proportions
-                pre = (_advance(text[:a]) or 0.0) / total
-                post = (_advance(text[b:]) or 0.0) / total
+                pre = (adv(text[:a]) or 0.0) / total
+                post = (adv(text[b:]) or 0.0) / total
                 left = x0 + width * pre if a else x0
                 right = x1 - width * post if b != n else x1
             else:
@@ -731,12 +735,12 @@ def match_boxes(words, spans, ms: int, me: int) -> list[tuple]:
     return list(per_line.values())
 
 
-def plan_page(words, cfg, ner, numberer):
-    """-> list of (Match, [boxes]) for one page."""
+def plan_page(words, cfg, ner, numberer, advance=None):
+    """-> list of (Match, [boxes]) for one page. advance: see match_boxes."""
     text, spans = words_to_text(words)
     plan = []
     for m in apply_config(text, cfg, ner, numberer):
-        boxes = match_boxes(words, spans, m.start, m.end)
+        boxes = match_boxes(words, spans, m.start, m.end, advance)
         if boxes:
             plan.append((m, boxes))
     return plan

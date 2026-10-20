@@ -18,6 +18,7 @@ import yaml
 
 SETTINGS_DEFAULT = {
     "ocr_lang": "fra+eng", "case_sensitive": False, "match_case": True, "mode": "replace", "digital_fill": "none",
+    "font_match": True, "quality_match": True,
     "photos": True, "photos_only_on_id_documents": False, "signatures": True, "qr_codes": True, "mrz": "regenerate",
 }
 TYPE_ORDER = ["PERSON", "IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "CARD_NUMBER", "BE_NATIONAL_NUMBER", "BE_VAT", "VAT_NUMBER",
@@ -42,7 +43,7 @@ def to_model(text: str) -> dict:
     blackout = data.get("blackout") if isinstance(data.get("blackout"), dict) else {}
     s = dict(SETTINGS_DEFAULT)
     s.update({k: data[k] for k in ("ocr_lang", "case_sensitive", "match_case", "mrz") if k in data})
-    s.update({k: style[k] for k in ("mode", "digital_fill") if k in style})
+    s.update({k: style[k] for k in ("mode", "digital_fill", "font_match", "quality_match") if k in style})
     s.update({k: blackout[k] for k in ("photos", "photos_only_on_id_documents", "signatures", "qr_codes") if k in blackout})
     if s["mrz"] == "blackout":
         s["mrz"] = "regenerate"
@@ -191,6 +192,8 @@ def to_yaml(model: dict, folder: str = "") -> str:
         "style:",
         f"  mode: {s['mode']}              # replace = new text in place | blackbox = black box only",
         f"  digital_fill: {s['digital_fill']}         # digital PDFs: none = keep the page background | white = white rectangle",
+        f"  font_match: {_b(s['font_match'])}           # scans and pictures: write in the font of the text around (false = Arial)",
+        f"  quality_match: {_b(s['quality_match'])}        # scans and pictures: same blur, ink, paper grain as the scan (false = sharp)",
         "blackout:                    # black boxes over what cannot be replaced by fake text",
         f"  photos: {_b(s['photos'])}               # faces of people (ID photos, passports, portraits): the head is covered",
         f"  photos_only_on_id_documents: {_b(s['photos_only_on_id_documents'])}  # false: faces on every page | true: only on pages that look like an ID",

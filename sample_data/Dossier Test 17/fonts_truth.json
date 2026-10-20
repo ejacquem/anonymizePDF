@@ -1,0 +1,756 @@
+{
+  "polices_scan.pdf": {
+    "pages": [
+      {
+        "page": 1,
+        "name": "clean",
+        "dpi": 300,
+        "blur": 0.0,
+        "grain": 2.0,
+        "ink": 20,
+        "jpeg": 90,
+        "paper": [
+          252,
+          252,
+          250
+        ]
+      },
+      {
+        "page": 2,
+        "name": "office",
+        "dpi": 200,
+        "blur": 0.7,
+        "grain": 7.0,
+        "ink": 45,
+        "jpeg": 70,
+        "paper": [
+          246,
+          242,
+          228
+        ]
+      },
+      {
+        "page": 3,
+        "name": "poor",
+        "dpi": 150,
+        "blur": 0.8,
+        "grain": 9.0,
+        "ink": 85,
+        "jpeg": 50,
+        "paper": [
+          238,
+          236,
+          230
+        ]
+      }
+    ],
+    "lines": [
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 11,
+        "text": "Titulaire : Madame Héloïse Vandamme",
+        "value": "Madame Héloïse Vandamme",
+        "value_box": [
+          108.3,
+          111.2,
+          250.7,
+          122.8
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Times New Roman",
+        "bold": false,
+        "size": 11.5,
+        "text": "IBAN : BE91 0682 4813 5729",
+        "value": "BE91 0682 4813 5729",
+        "value_box": [
+          97.1,
+          150.8,
+          200.9,
+          162.9
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Calibri",
+        "bold": true,
+        "size": 10.5,
+        "text": "Téléphone : +32 471 58 23 96",
+        "value": "+32 471 58 23 96",
+        "value_box": [
+          113.8,
+          191.6,
+          187.1,
+          202.6
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Georgia",
+        "bold": false,
+        "size": 12,
+        "text": "Courriel : heloise.vandamme@exemple.be",
+        "value": "heloise.vandamme@exemple.be",
+        "value_box": [
+          113.2,
+          230.4,
+          283.8,
+          243.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Verdana",
+        "bold": false,
+        "size": 11,
+        "text": "Adresse : Rue des Tanneurs 47",
+        "value": "Rue des Tanneurs 47",
+        "value_box": [
+          116.4,
+          271.2,
+          233.5,
+          282.8
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": false,
+        "size": 11.5,
+        "text": "Date de naissance : 14/03/1987",
+        "value": "14/03/1987",
+        "value_box": [
+          198.0,
+          310.8,
+          267.0,
+          322.9
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Consolas",
+        "bold": true,
+        "size": 10.5,
+        "text": "Conseiller : Monsieur Bastien Lambotte",
+        "value": "Monsieur Bastien Lambotte",
+        "value_box": [
+          135.0,
+          351.6,
+          279.4,
+          362.6
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Cambria",
+        "bold": false,
+        "size": 12,
+        "text": "Compte épargne : BE96 0015 7392 0468",
+        "value": "BE96 0015 7392 0468",
+        "value_box": [
+          152.6,
+          390.4,
+          267.8,
+          403.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Tahoma",
+        "bold": false,
+        "size": 11,
+        "text": "Bénéficiaire : Madame Ludivine Mertens",
+        "value": "Madame Ludivine Mertens",
+        "value_box": [
+          126.6,
+          431.2,
+          253.5,
+          442.8
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Segoe UI",
+        "bold": false,
+        "size": 11.5,
+        "text": "GSM : +32 486 19 74 30",
+        "value": "+32 486 19 74 30",
+        "value_box": [
+          93.1,
+          470.8,
+          181.8,
+          482.9
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Trebuchet MS",
+        "bold": true,
+        "size": 10.5,
+        "text": "Contact : Monsieur Corentin Dewulf",
+        "value": "Monsieur Corentin Dewulf",
+        "value_box": [
+          108.0,
+          511.6,
+          235.5,
+          522.6
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Garamond",
+        "bold": false,
+        "size": 12,
+        "text": "Domicile : Avenue des Platanes 112",
+        "value": "Avenue des Platanes 112",
+        "value_box": [
+          111.5,
+          550.4,
+          226.7,
+          563.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "DejaVu Sans",
+        "bold": false,
+        "size": 11,
+        "text": "Mandataire : Madame Anaëlle Verstraete",
+        "value": "Madame Anaëlle Verstraete",
+        "value_box": [
+          133.0,
+          591.2,
+          286.3,
+          602.8
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Roboto",
+        "bold": false,
+        "size": 11.5,
+        "text": "E-mail : corentin.dewulf@exemple.be",
+        "value": "corentin.dewulf@exemple.be",
+        "value_box": [
+          100.1,
+          630.8,
+          248.6,
+          642.9
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Lato",
+        "bold": true,
+        "size": 10.5,
+        "text": "Garant : Monsieur Florian Hennebert",
+        "value": "Monsieur Florian Hennebert",
+        "value_box": [
+          99.8,
+          671.6,
+          232.5,
+          682.6
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Open Sans",
+        "bold": false,
+        "size": 12,
+        "text": "Né le : 02/11/1979",
+        "value": "02/11/1979",
+        "value_box": [
+          98.0,
+          710.4,
+          161.7,
+          723.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Georgia",
+        "bold": false,
+        "size": 11,
+        "text": "Titulaire : Madame Héloïse Vandamme",
+        "value": "Madame Héloïse Vandamme",
+        "value_box": [
+          110.6,
+          111.2,
+          251.1,
+          122.8
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Verdana",
+        "bold": false,
+        "size": 11.5,
+        "text": "IBAN : BE91 0682 4813 5729",
+        "value": "BE91 0682 4813 5729",
+        "value_box": [
+          102.5,
+          150.8,
+          232.1,
+          162.9
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Courier New",
+        "bold": true,
+        "size": 10.5,
+        "text": "Téléphone : +32 471 58 23 96",
+        "value": "+32 471 58 23 96",
+        "value_box": [
+          135.6,
+          191.6,
+          236.4,
+          202.6
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Consolas",
+        "bold": false,
+        "size": 12,
+        "text": "Courriel : heloise.vandamme@exemple.be",
+        "value": "heloise.vandamme@exemple.be",
+        "value_box": [
+          132.6,
+          230.4,
+          310.7,
+          243.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Cambria",
+        "bold": false,
+        "size": 11,
+        "text": "Adresse : Rue des Tanneurs 47",
+        "value": "Rue des Tanneurs 47",
+        "value_box": [
+          105.4,
+          271.2,
+          204.2,
+          282.8
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Tahoma",
+        "bold": false,
+        "size": 11.5,
+        "text": "Date de naissance : 14/03/1987",
+        "value": "14/03/1987",
+        "value_box": [
+          163.7,
+          310.8,
+          222.8,
+          322.9
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Segoe UI",
+        "bold": true,
+        "size": 10.5,
+        "text": "Conseiller : Monsieur Bastien Lambotte",
+        "value": "Monsieur Bastien Lambotte",
+        "value_box": [
+          117.1,
+          351.6,
+          253.0,
+          362.6
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Trebuchet MS",
+        "bold": false,
+        "size": 12,
+        "text": "Compte épargne : BE96 0015 7392 0468",
+        "value": "BE96 0015 7392 0468",
+        "value_box": [
+          160.1,
+          390.4,
+          272.3,
+          403.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Garamond",
+        "bold": false,
+        "size": 11,
+        "text": "Bénéficiaire : Madame Ludivine Mertens",
+        "value": "Madame Ludivine Mertens",
+        "value_box": [
+          117.9,
+          431.2,
+          232.4,
+          442.8
+        ]
+      },
+      {
+        "page": 2,
+        "family": "DejaVu Sans",
+        "bold": false,
+        "size": 11.5,
+        "text": "GSM : +32 486 19 74 30",
+        "value": "+32 486 19 74 30",
+        "value_box": [
+          97.3,
+          470.8,
+          202.1,
+          482.9
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Roboto",
+        "bold": true,
+        "size": 10.5,
+        "text": "Contact : Monsieur Corentin Dewulf",
+        "value": "Monsieur Corentin Dewulf",
+        "value_box": [
+          105.1,
+          511.6,
+          227.9,
+          522.6
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Lato",
+        "bold": false,
+        "size": 12,
+        "text": "Domicile : Avenue des Platanes 112",
+        "value": "Avenue des Platanes 112",
+        "value_box": [
+          115.6,
+          550.4,
+          248.8,
+          563.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Open Sans",
+        "bold": false,
+        "size": 11,
+        "text": "Mandataire : Madame Anaëlle Verstraete",
+        "value": "Madame Anaëlle Verstraete",
+        "value_box": [
+          127.7,
+          591.2,
+          269.6,
+          602.8
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Arial",
+        "bold": false,
+        "size": 11.5,
+        "text": "E-mail : corentin.dewulf@exemple.be",
+        "value": "corentin.dewulf@exemple.be",
+        "value_box": [
+          102.2,
+          630.8,
+          250.6,
+          642.9
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Times New Roman",
+        "bold": true,
+        "size": 10.5,
+        "text": "Garant : Monsieur Florian Hennebert",
+        "value": "Monsieur Florian Hennebert",
+        "value_box": [
+          101.4,
+          671.6,
+          230.9,
+          682.6
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 12,
+        "text": "Né le : 02/11/1979",
+        "value": "02/11/1979",
+        "value_box": [
+          93.8,
+          710.4,
+          151.7,
+          723.0
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Consolas",
+        "bold": false,
+        "size": 11,
+        "text": "Titulaire : Madame Héloïse Vandamme",
+        "value": "Madame Héloïse Vandamme",
+        "value_box": [
+          132.6,
+          111.2,
+          271.7,
+          122.8
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Cambria",
+        "bold": false,
+        "size": 11.5,
+        "text": "IBAN : BE91 0682 4813 5729",
+        "value": "BE91 0682 4813 5729",
+        "value_box": [
+          93.8,
+          150.8,
+          204.2,
+          162.9
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Tahoma",
+        "bold": true,
+        "size": 10.5,
+        "text": "Téléphone : +32 471 58 23 96",
+        "value": "+32 471 58 23 96",
+        "value_box": [
+          124.8,
+          191.6,
+          219.2,
+          202.6
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Segoe UI",
+        "bold": false,
+        "size": 12,
+        "text": "Courriel : heloise.vandamme@exemple.be",
+        "value": "heloise.vandamme@exemple.be",
+        "value_box": [
+          110.9,
+          230.4,
+          281.5,
+          243.0
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Trebuchet MS",
+        "bold": false,
+        "size": 11,
+        "text": "Adresse : Rue des Tanneurs 47",
+        "value": "Rue des Tanneurs 47",
+        "value_box": [
+          108.5,
+          271.2,
+          209.9,
+          282.8
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Garamond",
+        "bold": false,
+        "size": 11.5,
+        "text": "Date de naissance : 14/03/1987",
+        "value": "14/03/1987",
+        "value_box": [
+          147.9,
+          310.8,
+          202.5,
+          322.9
+        ]
+      },
+      {
+        "page": 3,
+        "family": "DejaVu Sans",
+        "bold": true,
+        "size": 10.5,
+        "text": "Conseiller : Monsieur Bastien Lambotte",
+        "value": "Monsieur Bastien Lambotte",
+        "value_box": [
+          130.4,
+          351.6,
+          293.6,
+          362.6
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Roboto",
+        "bold": false,
+        "size": 12,
+        "text": "Compte épargne : BE96 0015 7392 0468",
+        "value": "BE96 0015 7392 0468",
+        "value_box": [
+          157.5,
+          390.4,
+          275.1,
+          403.0
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Lato",
+        "bold": false,
+        "size": 11,
+        "text": "Bénéficiaire : Madame Ludivine Mertens",
+        "value": "Madame Ludivine Mertens",
+        "value_box": [
+          125.6,
+          431.2,
+          254.9,
+          442.8
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Open Sans",
+        "bold": false,
+        "size": 11.5,
+        "text": "GSM : +32 486 19 74 30",
+        "value": "+32 486 19 74 30",
+        "value_box": [
+          94.0,
+          470.8,
+          184.9,
+          482.9
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Arial",
+        "bold": true,
+        "size": 10.5,
+        "text": "Contact : Monsieur Corentin Dewulf",
+        "value": "Monsieur Corentin Dewulf",
+        "value_box": [
+          108.4,
+          511.6,
+          238.5,
+          522.6
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Times New Roman",
+        "bold": false,
+        "size": 12,
+        "text": "Domicile : Avenue des Platanes 112",
+        "value": "Avenue des Platanes 112",
+        "value_box": [
+          114.0,
+          550.4,
+          234.3,
+          563.0
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Calibri",
+        "bold": false,
+        "size": 11,
+        "text": "Mandataire : Madame Anaëlle Verstraete",
+        "value": "Madame Anaëlle Verstraete",
+        "value_box": [
+          120.2,
+          591.2,
+          245.8,
+          602.8
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Georgia",
+        "bold": false,
+        "size": 11.5,
+        "text": "E-mail : corentin.dewulf@exemple.be",
+        "value": "corentin.dewulf@exemple.be",
+        "value_box": [
+          103.5,
+          630.8,
+          251.8,
+          642.9
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Verdana",
+        "bold": true,
+        "size": 10.5,
+        "text": "Garant : Monsieur Florian Hennebert",
+        "value": "Monsieur Florian Hennebert",
+        "value_box": [
+          111.4,
+          671.6,
+          275.7,
+          682.6
+        ]
+      },
+      {
+        "page": 3,
+        "family": "Courier New",
+        "bold": false,
+        "size": 12,
+        "text": "Né le : 02/11/1979",
+        "value": "02/11/1979",
+        "value_box": [
+          117.6,
+          710.4,
+          189.6,
+          723.0
+        ]
+      }
+    ]
+  },
+  "polices_image_collee.pdf": {
+    "lines": [
+      {
+        "page": 1,
+        "file": "polices_image_collee.pdf",
+        "family": "Georgia",
+        "bold": false,
+        "size": 11,
+        "text": "Client : Madame Solène Wauters",
+        "value": "Madame Solène Wauters",
+        "baseline": 205.0
+      },
+      {
+        "page": 1,
+        "file": "polices_image_collee.pdf",
+        "family": "Courier New",
+        "bold": false,
+        "size": 11,
+        "text": "IBAN : BE13 0634 5710 2948",
+        "value": "BE13 0634 5710 2948",
+        "baseline": 237.0
+      },
+      {
+        "page": 1,
+        "file": "polices_image_collee.pdf",
+        "family": "Verdana",
+        "bold": true,
+        "size": 11,
+        "text": "Téléphone : +32 478 61 05 23",
+        "value": "+32 478 61 05 23",
+        "baseline": 269.0
+      }
+    ]
+  }
+}

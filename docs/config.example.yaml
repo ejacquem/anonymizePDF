@@ -7,6 +7,8 @@ match_case: true             # keep UPPER/lower case of the original text in the
 style:
   mode: replace              # replace = new text in place | blackbox = black box only
   digital_fill: none         # digital PDFs: none = keep the page background | white = white rectangle
+  font_match: true           # scans and pictures: write in the font of the text around (false = Arial)
+  quality_match: true        # scans and pictures: same blur, ink, paper grain as the scan (false = sharp)
 blackout:                    # black boxes over what cannot be replaced by fake text
   photos: true               # faces of people (ID photos, passports, portraits): the head is covered
   photos_only_on_id_documents: false  # false: faces on every page | true: only on pages that look like an ID

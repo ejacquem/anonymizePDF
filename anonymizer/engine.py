@@ -12,6 +12,7 @@ import datetime as dt
 import functools
 import io
 import json
+import math
 import re
 import random
 import time
@@ -23,7 +24,7 @@ import numpy as np
 import yaml
 from PIL import ImageDraw
 
-from . import configmodel, faces, fields, ocr, regions, render, verify
+from . import configmodel, faces, fields, fontmatch, ocr, quality, regions, render, verify
 from .fake import Faker, _pkey, is_town_name, match_case
 from .ocr import DIGITAL_DPI, ocr_words, render_page
 from .pii import (NAME_TYPES, OPERATION_WORDS, PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all,
@@ -299,7 +300,8 @@ def parse_config(text: str) -> dict:
     style = data.get("style") or {}
     if not isinstance(style, dict):
         raise ValueError("style must be a mapping, e.g. style: {mode: replace, digital_fill: none}")
-    style = {"mode": str(style.get("mode") or "replace"), "digital_fill": str(style.get("digital_fill") or "none")}
+    style = {"mode": str(style.get("mode") or "replace"), "digital_fill": str(style.get("digital_fill") or "none"),
+             "font_match": style.get("font_match") is not False, "quality_match": style.get("quality_match") is not False}
     if style["mode"] not in ("replace", "blackbox"):
         raise ValueError("style.mode must be 'replace' or 'blackbox'")
     if style["digital_fill"] not in ("none", "white"):
@@ -726,6 +728,8 @@ def render_config(rel: str, pdfs: list[Path], active: list[dict], off: list[dict
         "  mode: replace              # replace = new text in place | blackbox = black box only",
         "  digital_fill: none         # digital PDFs: none = keep the page background | white = white rectangle",
         "                             # (scans are always painted over with the sampled paper colour)",
+        "  font_match: true           # scans and pictures: write in the font of the text around (false = Arial)",
+        "  quality_match: true        # scans and pictures: same blur, ink, paper grain as the scan (false = sharp)",
         "blackout:                    # black boxes over what cannot be replaced by fake text",
         "  photos: true               # faces of people (ID photos, passports, portraits): the head is covered",
         "  photos_only_on_id_documents: false  # false: faces on every page | true: only on pages that look like an ID",
@@ -796,10 +800,64 @@ def _new_mrz(words: list[dict], mrz: dict, cfg: dict) -> list[str]:
     return fields.build_mrz(mrz["format"], fake, rng)
 
 
-def _note(extras: dict, page: int, box, kind: str, value: str = "", replacement: str = ""):
-    """Trace of what was redacted or painted, for the debug view (PDF points): where, by which rule, for which value."""
-    extras.setdefault("trace", []).append({"page": page, "kind": kind, "box": [round(float(v), 1) for v in box],
-                                           "value": value, "replacement": replacement or ""})
+def _note(extras: dict, page: int, box, kind: str, value: str = "", replacement: str = "", look: str = ""):
+    """Trace of what was redacted or painted, for the debug view (PDF points): where, by which rule, for which value
+    (and, for a replacement written on pixels, the font and the quality it was written with)."""
+    item = {"page": page, "kind": kind, "box": [round(float(v), 1) for v in box], "value": value,
+            "replacement": replacement or ""}
+    if look:
+        item["look"] = look
+    extras.setdefault("trace", []).append(item)
+
+
+def native_scale(page, dpi: float, at=None) -> float:
+    """Native resolution of the scan / `dpi` (<= 1): the pixel size of an image of the page over the size it is
+    drawn at; the largest image, or the largest one under the point `at` (x, y in PDF points). 1 when the page has
+    no image (or one finer than `dpi`)."""
+    best, area = 1.0, 0.0
+    try:
+        for info in page.get_images(full=True):
+            for r in page.get_image_rects(info[0]):
+                if at is not None and not r.contains(fitz.Point(*at)):
+                    continue
+                if r.width > 1 and r.height > 1 and r.get_area() > area:
+                    area = r.get_area()
+                    best = min(info[2] / (r.width / 72 * dpi), info[3] / (r.height / 72 * dpi))
+    except Exception:                                    # odd image objects: no resolution, keep the page's
+        return 1.0
+    return min(max(best, 0.1), 1.0)
+
+
+def page_fonts(gray, words, cfg: dict, scale: float, angles: dict | None = None):
+    """The font and quality measures of a page (fontmatch.PageFonts), None when the matching is off (or every value
+    becomes a black box). angles (word box -> slant): slanted words are not measured (their OCR box is not their
+    ink); a slanted value is written in Arial with the quality of the page's straight text."""
+    style = cfg["style"]
+    if style["mode"] == "blackbox" or not (style["font_match"] or style["quality_match"]):
+        return None
+    slanted = [i for i, w in enumerate(words) if abs((angles or {}).get(tuple(w["box"]), 0.0)) >= TILT_MIN]
+    return fontmatch.PageFonts(gray, words, scale, skip=slanted)
+
+
+def font_advance(pf, cfg: dict):
+    """The widths a partly covered word is cut by (pii.match_boxes): the measured font's, when fonts are matched."""
+    return pf.advance if pf is not None and cfg["style"]["font_match"] else None
+
+
+def page_looks(img, pf, plan, cfg: dict, bold_of) -> list:
+    """The look of every replacement of a page (font, quality, colours), measured before anything is painted.
+    None per value when the matching is off (pf None: Arial, sharp, as before). bold_of(box, value): the
+    BoldMeter's answer."""
+    style = cfg["style"]
+    if pf is None or not plan:
+        return [None] * len(plan)
+    out = []
+    for m, boxes in plan:
+        look = pf.look(img, boxes[0], bold_hint=bold_of(boxes[0], m.value), match_font=style["font_match"])
+        if not style["quality_match"]:
+            look.quality = None
+        out.append(look)
+    return out
 
 
 def _inside(box, areas) -> bool:
@@ -1019,9 +1077,14 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
     mrz = fields.find_mrz(words, gray) if cfg["mrz"] != "keep" else None
     zone = fields.mrz_zone(mrz) if mrz else None
     black_px = [tuple(v / k for v in r) for r in black]
-    plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer)
-    todo = []
-    for m, boxes in plan:
+    # the picture under the first word read: its resolution is the native one of the text in it
+    at = ((words[0]["box"][0] + words[0]["box"][2]) / 2 * k, (words[0]["box"][1] + words[0]["box"][3]) / 2 * k)
+    pf = page_fonts(gray, words, cfg, native_scale(page, dpi, at))
+    plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
+    todo, erased = [], []                              # erased: every redacted box (all lines of every value)
+    bold = render.BoldMeter(img, words)
+    looks = page_looks(img, pf, plan, cfg, bold.is_bold)
+    for (m, boxes), look in zip(plan, looks):
         m.replacement = _adjust(cfg, m)
         rec = {"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes, k),
                "placed": False}
@@ -1030,14 +1093,18 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
             rec["covered"] = True                      # covered by a black box / rebuilt with the MRZ
             continue
         rec["placed"] = not blackbox and bool(m.replacement)
-        ink = render.ink_color(img, boxes[0])
+        ink = look.ink if look is not None and look.quality is not None and look.ink else render.ink_color(img, boxes[0])
+        first_bg = None
         for b in boxes:
             bg = (0, 0, 0) if blackbox else render.background_color(img, (b[0] - 3, b[1] - 3, b[2] + 3, b[3] + 3))
+            first_bg = first_bg or bg
+            erased.append((b, bg, look))
             page.add_redact_annot(fitz.Rect(b[0] * k - 1, b[1] * k - 1, b[2] * k + 1, b[3] * k + 1),
                                   fill=tuple(c / 255 for c in bg))
             _note(extras, pno, [v * k for v in b], "pixel match (" + ("replaced" if m.replacement and not blackbox
-                                                                    else "removed") + ")", m.value, m.replacement)
-        todo.append((m, boxes[0], ink))
+                                                                    else "removed") + ")", m.value, m.replacement,
+                  look.describe() if look is not None and m.replacement and not blackbox else "")
+        todo.append((m, boxes[0], ink, look, first_bg))
         intended += [tuple(v * k for v in b) for b in boxes]
     if zone:
         page.add_redact_annot(fitz.Rect(*(v * k for v in zone)),
@@ -1050,8 +1117,21 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
         intended.append(tuple(v * k for v in zone))
     for n in render.restore_collateral(page, before, intended, fonts, hidden_chars):
         _note(extras, pno, n["box"], n["kind"].replace("neighbouring redaction", "neighbouring pixel redaction"), n["text"])
-    for m, b, ink in todo:
-        if blackbox or not m.replacement:
+    patched = [(j, t) for j, t in enumerate(todo) if t[3] is not None and not blackbox and t[0].replacement]
+    if patched:
+        # written like on a scan (font and quality of the picture) on a copy of the page image, then each value's
+        # patch is placed over its redacted area as a new picture. Every value (and the MRZ) is erased on the copy
+        # first: a patch may reach past its own box (a descender) but never shows an original value.
+        canvas = img.copy()
+        for j, (b, bg, look) in enumerate(erased):
+            _erase_patch(canvas, b, bg, look, (pno, "pixel", j), k)
+        if zone:
+            ImageDraw.Draw(canvas).rectangle(zone, fill=render.background_color(img, zone))
+        areas = {j: _write_patch(canvas, m, b, ink, look, (pno, "pixel", j)) for j, (m, b, ink, look, bg) in patched}
+        for j, (m, b, ink, look, bg) in patched:
+            _place_patch(page, canvas, b, areas[j], k)
+    for m, b, ink, look, bg in todo:
+        if blackbox or not m.replacement or look is not None:
             continue
         size_px = render._em_size(m.value, b)
         descent = max(render.load_font(max(int(size_px), 6)).getbbox(m.value, anchor="ls")[3], 0)
@@ -1072,6 +1152,49 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
                              fontname="cour", color=(0.08, 0.08, 0.08))
         extras["mrz"].append({"page": pno, "action": "regenerated", "format": mrz["format"], "lines": lines})
     log(f"   page {pno}: {len(todo)} value(s) replaced in images (OCR)" + (", MRZ regenerated" if zone else ""))
+
+
+def _redaction_px(b, k: float) -> tuple:
+    """The redaction rectangle of a pixel match (its box +- 1 point), in pixels of the page image."""
+    return (b[0] - 1 / k, b[1] - 1 / k, b[2] + 1 / k, b[3] + 1 / k)
+
+
+def _erase_patch(canvas, b, bg, look, key, k: float):
+    """Image text of a digital page, on the copy of the page image: the value's redaction rectangle painted with the
+    paper colour (and its grain when the quality is matched)."""
+    r = _redaction_px(b, k)
+    if look is not None and look.quality is not None:
+        quality.erase(canvas, r, bg, look.quality, key)
+    else:
+        ImageDraw.Draw(canvas).rectangle(r, fill=tuple(bg))
+
+
+def _write_patch(canvas, m, b, ink, look, key) -> tuple:
+    """The fake value written on the copy of the page image, in the matched font and quality. Returns the area
+    the text covers (pixels)."""
+    face = look.face
+    font, xy, sx = render.scan_text_layout(m.value, m.replacement, b, face.bold if face is not None else False, face)
+    if look.quality is not None:
+        quality.paint(canvas, m.replacement, font, xy, sx, ink, look.quality, key)
+    else:
+        render.write_text(canvas, xy, m.replacement, font, tuple(ink), sx)
+    l, t, r, bt = font.getbbox(m.replacement, anchor="ls")
+    blur = 3 * look.quality.blur + 2 if look.quality is not None else 1
+    return (xy[0] + l * sx - blur, xy[1] + t - blur, xy[0] + r * sx + blur, xy[1] + bt + blur)
+
+
+def _place_patch(page, canvas, b, text_area, k: float):
+    """The redaction rectangle of a value and the area of its fake text, cut from the painted copy of the page image
+    and placed on the page as a new picture."""
+    r = _redaction_px(b, k)
+    x0, y0 = int(math.floor(min(r[0], text_area[0]))), int(math.floor(min(r[1], text_area[1])))
+    x1, y1 = int(math.ceil(max(r[2], text_area[2]))), int(math.ceil(max(r[3], text_area[3])))
+    x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, canvas.width), min(y1, canvas.height)
+    if x1 <= x0 or y1 <= y0:
+        return
+    buf = io.BytesIO()
+    canvas.crop((x0, y0, x1, y1)).save(buf, format="PNG")
+    page.insert_image(fitz.Rect(x0 * k, y0 * k, x1 * k, y1 * k), stream=buf.getvalue(), overlay=True)
 
 
 def _jpeg(img) -> bytes:
@@ -1236,7 +1359,8 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     angles = regions.line_angles(gray, words, skew)      # slant of each word, before painting
     words = _refine_slanted(img, words, angles, ocr_lang)                  # exact boxes of the slanted lines
     angles = regions.line_angles(gray, words, skew)
-    plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer)
+    pf = page_fonts(gray, words, cfg, native_scale(page, 300), angles)
+    plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
     draw = ImageDraw.Draw(img)
     pad = 3
     # areas handled as a whole (found before anything is painted): MRZ, photos, signatures
@@ -1270,9 +1394,18 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     covered = photos + codes + signs + manual + ([zone] if zone else [])
     # measure everything before painting (ink colour, free space on the right)
     bold = render.BoldMeter(img, words)
-    looks = [(render.ink_color(img, boxes[0]), bold.is_bold(boxes[0], m.value)) for m, boxes in plan]
+    matched = page_looks(img, pf, plan, cfg, bold.is_bold)
+    looks = []
+    for (m, boxes), look in zip(plan, matched):
+        is_bold = look.face.bold if look is not None and look.face is not None else bold.is_bold(boxes[0], m.value)
+        ink = look.ink if look is not None and look.quality is not None and look.ink else render.ink_color(img, boxes[0])
+        looks.append((ink, is_bold, look))
     n_bold = sum(1 for look in looks if look[1])
-    for (m, boxes), (ink, is_bold) in zip(plan, looks):
+    fonts_used: dict = {}
+    for k, ((m, boxes), (ink, is_bold, look)) in enumerate(zip(plan, looks)):
+        face = look.face if look is not None else None
+        q = look.quality if look is not None else None
+        described = look.describe() if look is not None else ""
         m.replacement = _adjust(cfg, m)
         if _inside(boxes[0], covered):             # under a black box or in the MRZ: handled below
             records.append({"page": pno, "original": m.value, "replacement": m.replacement,
@@ -1285,22 +1418,31 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
         for i, b in enumerate(boxes):
             part = "" if blackbox else parts[i] if i < len(parts) else ""
             angle = _angle_at(angles, b)
+            key = (pno, k, i)                       # seeds the grain: the same file on every run
             if abs(angle) >= TILT_MIN:             # a slanted word: written and erased in its own frame
-                changed.append(render.paint_tilted(img, b, angle, m.value, part, ink, is_bold, blackbox))
+                changed.append(render.paint_tilted(img, b, angle, m.value, part, ink, is_bold, blackbox, look, key))
                 continue
             b = (render.ink_start(img, b), b[1], b[2], b[3])        # the value starts at its first glyph, not a colon
             box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
             fill = (0, 0, 0) if blackbox else render.background_color(img, box)
-            draw.rectangle(box, fill=fill)
+            if q is not None:
+                quality.erase(img, box, fill, q, key)          # the paper colour, with the grain of the scan
+            else:
+                draw.rectangle(box, fill=fill)
             _note(extras, pno, [v * 72 / 300 for v in box], "scan match (" + ("replaced" if part else "removed") + ")",
-                  m.value, part)
+                  m.value, part, described if part else "")
             changed.append(box)
             if part:
-                font, xy, sx = render.scan_text_layout(m.value, part, b, is_bold)
+                font, xy, sx = render.scan_text_layout(m.value, part, b, is_bold, face)
                 lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
                 ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
                 color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
-                render.write_text(img, xy, part, font, color, sx)
+                if q is not None:
+                    quality.paint(img, part, font, xy, sx, color, q, key)
+                else:
+                    render.write_text(img, xy, part, font, color, sx)
+                name = face.name if face is not None else "Arial" + (" Bold" if is_bold else "")
+                fonts_used[name] = fonts_used.get(name, 0) + 1
         records.append({"page": pno, "original": m.value, "replacement": m.replacement,
                         "box": _pt_box(changed), "placed": not blackbox and any(parts)})
     if mrz:
@@ -1322,6 +1464,11 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
         render.paint_text_box(img, box, text, ink)
     log(f"   page {pno}/{n_pages} (scan): OCR {len(words)} words, {len(plan)} replacement(s)"
         f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
+    if fonts_used:
+        q = next((lk.quality for lk in matched if lk is not None and lk.quality is not None), None)
+        log(f"   page {pno}: written in " + ", ".join(f"{n} x{c}" for n, c in sorted(fonts_used.items(),
+                                                                                  key=lambda kv: -kv[1]))
+            + (f"; scan quality {q.describe()}" if q is not None else ""))
     return img
 
 
