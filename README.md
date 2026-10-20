@@ -134,6 +134,8 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 6. The **Recap** tab lists, per file, every replaced value (type, original → replacement, count, pages), the black
    boxes (■ photos, QR codes, signatures), the MRZ, the time taken, and any original value still found in the
    output ("leftovers"). The **Log** tab shows the run (OCR engine, fonts used, bold, black boxes...).
+   Values the anonymized file still shows, found by a second reading, are listed as warnings and offered in the
+   **Config** as suggestions (commented out): tick them, then anonymize again.
 7. Once you have checked an anonymized file by eye, press **Mark as reviewed** (top of the *Anonymized* pane). The tree
    shows `✓` on the file and `✓ 2/3` on the folder. If the file is generated again (or changed in any way), the flag
    goes back to *not reviewed* by itself. Flags are stored in `anon_review.json` in the folder.
@@ -240,8 +242,10 @@ regex:                       # optional, your own patterns
 * **A scan is only as good as its OCR.** Handwriting, stamps and blurry text are not read, so they are not replaced
   (signatures are blacked out only when they have a label next to them). **Always look at the anonymized files.**
 * Name detection is a heuristic. That is why uncertain names are commented out for you to decide: check the config.
-* The "leftover" check only searches for the original values of the config. It cannot know about personal data
-  that was never detected.
+* The "leftover" check only searches for the original values of the config. A second check reads the anonymized file
+  again with the detectors: what it still finds (an IBAN, a name...) is a warning in the Recap and is added to the
+  Config as a suggestion that is not active. Tick the ones that are right and anonymize again. Personal data that
+  no detector recognises is still not found.
 * Photo, QR code and MRZ detection are image heuristics, tested on generated documents: check them on your own
   documents. A logo shaped like a portrait could be blacked out (`photos_only_on_id_documents` limits this).
 * Faces: the detector looks at the front of faces; a face seen in profile can be missed. Check the anonymized files.

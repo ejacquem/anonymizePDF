@@ -1103,6 +1103,7 @@ async function applyBoxes() {
     "Apply black boxes · " + cur.name, { quiet: true });
   await loadTree();
   await loadReport();
+  await reloadConfigIfSuggested();
   updateReviewButton();
   if (r && r.status === "done") {
     clearPending(cur.name);
@@ -1733,6 +1734,12 @@ async function runJob(kind, url, body, label, opts = {}) {
   return last;
 }
 
+// a run may add the second check's values to the config as suggestions: show them in the Config tab
+async function reloadConfigIfSuggested() {
+  const offered = state.report && state.report.files.some((f) => (f.suggested || []).length);
+  if (offered && !state.dirty) await loadConfig();
+}
+
 $("#btnScan").onclick = async () => {
   if (state.batchMode) return runBatch("scan");
   const r = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan");
@@ -1752,6 +1759,7 @@ $("#btnRun").onclick = async () => {
       quality_offset: state.app.qualityOffset || 0 }, "Anonymize");
   await loadTree();
   await loadReport();
+  await reloadConfigIfSuggested();
   if (r && r.status === "done") {
     clearFolderPending();
     showTab("recap");
@@ -1768,6 +1776,7 @@ $("#btnRunFile").onclick = async () => {
       quality_offset: state.app.qualityOffset || 0 }, "Anonymize file");
   await loadTree();
   await loadReport();
+  await reloadConfigIfSuggested();
   if (r && r.status === "done") {
     clearPending(cur.name);
     showTab("recap");
@@ -1896,6 +1905,10 @@ function renderRecap() {
       <button class="mini" data-open="${esc(f.file)}">view</button></summary>`;
     if (f.error) h += `<div class="note bad">Error: ${esc(f.error)}</div>`;
     f.warnings.forEach((w) => { h += `<div class="note warn">⚠ ${esc(w)}</div>`; });
+    if ((f.suggested || []).length) {
+      h += `<div class="note warn">${f.suggested.length} value(s) offered as suggestions in the Config (not active):
+        <button class="mini" data-config="1">open the Config</button></div>`;
+    }
     if (f.leftovers.length) {
       h += `<div class="note bad"><b>Original text still found in the output:</b> <span class="muted small">click to find it</span><br>` +
         f.leftovers.map((l, li) => `<button class="lfind" data-lfile="${esc(f.file)}" data-li="${li}" title="Show it in the anonymized file (click again for the next place)">${esc(l.where)}: “${esc(l.find)}” ×${l.count}</button>`).join("<br>") + `</div>`;
@@ -1912,6 +1925,7 @@ function renderRecap() {
   }
   box.innerHTML = ov + h;
   bindOverview(box);
+  box.querySelectorAll("button[data-config]").forEach((b) => { b.onclick = () => showTab("config"); });
   box.querySelectorAll("button.lfind").forEach((b) => {
     b.onclick = () => locateLeftover(b.dataset.lfile, +b.dataset.li);
   });

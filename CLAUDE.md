@@ -155,7 +155,8 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   Automatic boxes are never written to the config: removing one leaves it out of the next run only (the list of
   removed boxes is sent with the run, `removed`; the next run detects them again). Moving one adds a `manual_blackouts`
   entry with `origin` and `replaces` (the detected box): that box is skipped on every run.
-- Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format.
+- Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format;
+  a note with a button to the Config tab when the second check's values were offered there as suggestions.
 - The OCR engine and the names models are chosen in ⚙ Settings (`POST /api/settings`, sent again at each start from
   localStorage). The top bar shows no OCR or model text. `STATE["spacy_models"]`: None = every installed model, [] = rules only.
 - The Text tool is switched off when an anonymization finishes (`runJob`), not when it starts.
@@ -243,6 +244,12 @@ console running `app.py` and the last 12 lines in the job log.
      `LEAK_TYPES`, dates and identity values on ID pages, honorific names. A value close to a replacement (ratio ≥ 0.8
      after OCR digit folding, `_ocr_fold`) is a replacement read back by the OCR, not a leak. Test: `check_all`
      reports the second check of every output (`suspects`).
+     The values it finds are also offered as commented suggestions in the folder's `anon_config.yaml`
+     (`engine.suspect_suggestions`, `_offer_suspects`, at the end of `run_anonymize`): a fake from the key, the info
+     says 'second check: still readable in <file> p.N'. The review step stays: the user ticks them (Config tab,
+     reloaded by the app after the run) and anonymizes again. A value already in the config is not offered twice. The
+     config file is written before the report (the report stays the newer one: the folder is not 'to do'), and only
+     if it is still the text the run started with. Each file entry of the report lists `suggested`; the Recap says so.
    - Report `anon_report.json` per file: mode, pages, replaced, seconds, items, leftovers, warnings,
      `blackouts: [{page, kind, box (PDF points)}]`, `mrz: [{page, action, format, lines}]`. Each item (one per
      original value) has `boxes: [{page, box (PDF points)}]` = where the value was: scan, digital and pixel-pass
@@ -634,7 +641,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 ## 13. Known limits / ideas
 
 - Scans depend on OCR quality; names are heuristic (review step). Leftover check only knows the config's values; the
-  second check (`leak_suspects`) is the net for the rest, and it only reports (warning), it does not replace.
+  second check (`leak_suspects`) is the net for the rest, and it does not replace: it reports (warning) and offers
+  the values as commented suggestions in the config.
 - Poor copies: a very faint colon can touch the first letter of the value; then a faint fragment of the letter may stay
   beside the replacement (privacy first: the letter is covered, the colon is not guaranteed).
 - Poor ID copies: the signature (its label is not read) and a ghost portrait are missed (Dossier Test 09). Masked

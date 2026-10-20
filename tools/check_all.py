@@ -376,6 +376,7 @@ def run_folder(folder: str, work_root: Path, ner, edit=lambda c: c, files_only=N
         if not pdf.stem.endswith("_anonymized") and (files_only is None or pdf.name in files_only):
             shutil.copy(pdf, work)
     cfg = edit(engine.scan_folder(work, folder, ner, "fra+eng", lambda *a: None)["config"])
+    (work / engine.CONFIG_NAME).write_text(cfg, encoding="utf-8")        # as the app does: the run may add suggestions
     rep = engine.run_anonymize(work, folder, cfg, "fra+eng", False, lambda *a: None, removed=removed)
     return cfg, rep
 
@@ -1066,6 +1067,56 @@ def street_name_tests():
         left = [w for w in ["Paris", "publique", "novembre", "Est"] if re.search(rf"\b{w}\b", out)]
         check("the names of the streets are not left in the output", not left, repr(out))
         check("the lines that are not an address stay as they are", "Fin du releve" in out, repr(out))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def suspect_suggestion_tests():
+    """The values the second check still reads in an output are offered as commented suggestions in the config
+    (the review step stays), once, and the active values are not changed."""
+    print("\n== second check: suggestions")
+    base = ["ocr_lang: \"fra+eng\"", "case_sensitive: false", "match_case: true",
+            "style: {mode: replace, digital_fill: none}",
+            "blackout: {photos: false, photos_only_on_id_documents: false, signatures: false, qr_codes: false}",
+            "mrz: regenerate", "replacements:"]
+    cfg = "\n".join(base + ["  - {find: \"Marc Lejeune\", replace: \"Paul Henry\", type: PERSON}", "regex: []"])
+    files = [{"file": "a.pdf", "suspects": [{"page": 2, "type": "IBAN", "value": "BE68 5390 0754 7034"},
+                                            {"page": 1, "type": "PERSON", "value": "Marc Lejeune"}]},
+             {"file": "b.pdf", "suspects": [{"page": 1, "type": "IBAN", "value": "BE68 5390 0754 7034"}]}]
+    text, offered = engine.suspect_suggestions(cfg, files)
+    model = configmodel.to_model(text)
+    new = [e for e in model["entries"] if e["find"] == "BE68 5390 0754 7034"]
+    check("a value of the second check is offered once, commented out", len(offered) == 1 and len(new) == 1
+          and not new[0]["active"] and new[0]["replace"] not in ("", "BE68 5390 0754 7034"), str(offered))
+    check("the suggestion says where it was read", "a.pdf p.2" in new[0]["info"], new[0]["info"])
+    check("a value already in the config is not offered again", not any(o["find"] == "Marc Lejeune" for o in offered))
+    a, b = engine.parse_config(cfg), engine.parse_config(text)
+    check("the active values are unchanged", a["terms"] == b["terms"] and a["types"] == b["types"])
+    check("offering twice adds nothing", engine.suspect_suggestions(text, files)[1] == [])
+    # end to end: a digital file with an IBAN the config does not know
+    tmp = Path(tempfile.mkdtemp(prefix="anon_suspect_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((60, 100), "Titulaire : Marc Lejeune", fontname="helv", fontsize=11)
+        page.insert_text((60, 130), "IBAN : BE68 5390 0754 7034", fontname="helv", fontsize=11)
+        doc.save(tmp / "lettre.pdf", garbage=4)
+        (tmp / engine.CONFIG_NAME).write_text(cfg, encoding="utf-8")
+        logs = []
+        rep = engine.run_anonymize(tmp, "lettre", cfg, "fra+eng", False, logs.append)
+        f = rep["files"][0]
+        check("the run reports the value it did not replace", [s["value"] for s in f.get("suspects", [])] == ["BE68 5390 0754 7034"],
+              str(f.get("suspects")))
+        saved = configmodel.to_model((tmp / engine.CONFIG_NAME).read_text(encoding="utf-8"))
+        check("the config file holds it as a suggestion", any(e["find"] == "BE68 5390 0754 7034" and not e["active"]
+                                                               for e in saved["entries"]))
+        check("the file entry lists what was offered", [s["find"] for s in f.get("suggested", [])] == ["BE68 5390 0754 7034"])
+        check("the report is newer than the config (the folder is not 'to do')",
+              (tmp / engine.REPORT_NAME).stat().st_mtime >= (tmp / engine.CONFIG_NAME).stat().st_mtime)
+        ticked = (tmp / engine.CONFIG_NAME).read_text(encoding="utf-8").replace("# - {find: \"BE68", "- {find: \"BE68")
+        engine.run_anonymize(tmp, "lettre", ticked, "fra+eng", False, lambda m: None)
+        out = fitz.open(tmp / "lettre_anonymized.pdf")[0].get_text()
+        check("ticked and anonymized again, the value is gone", "5390" not in out and "7034" not in out, repr(out))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1945,6 +1996,7 @@ def main():
         colon_tests()
         street_name_tests()
         second_pass_tests()
+        suspect_suggestion_tests()
         first_letter_tests()
         account_and_street_names_tests()
         manual_text_tests()

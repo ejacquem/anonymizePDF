@@ -25,7 +25,7 @@ import yaml
 from PIL import ImageDraw
 
 from . import configmodel, faces, fields, fontmatch, ocr, quality, regions, render, verify
-from .fake import Faker, _pkey, is_town_name, match_case
+from .fake import Faker, _norm as fake_norm, _pkey, is_town_name, match_case
 from .ocr import DIGITAL_DPI, ocr_words, render_page
 from .pii import (NAME_TYPES, OPERATION_WORDS, PERSON_RANKS, Numberer, _HONORIFIC, apply_config, detect_all,
                   detect_structured,
@@ -1649,6 +1649,62 @@ def _is_removed(removed: list, kind: str, box) -> bool:
     return False
 
 
+def suspect_suggestions(config_text: str, files: list[dict], rel: str = "") -> tuple[str, list[dict]]:
+    """The values that the second check (verify.leak_suspects) still reads in the outputs, offered as commented
+    suggestions in the config: the review step stays, the user ticks the ones that are right and anonymizes again.
+    A value already in the config (active or not) is not offered twice. Returns (new config text, [{find, replace,
+    type, file, page}]); the text is unchanged when there is nothing to add."""
+    model = configmodel.to_model(config_text)
+    known = {configmodel._key(e["find"]) for e in model["entries"]}
+    known |= {configmodel._key(m["find"]) for m in model["manual"]["replacements"]}
+    found: dict[str, dict] = {}
+    for f in files:
+        for s in f.get("suspects") or []:
+            key = configmodel._key(s["value"])
+            if key not in known and key not in found:
+                found[key] = {"find": s["value"], "type": s["type"], "file": f["file"], "page": s["page"]}
+    if not found:
+        return config_text, []
+    faker = Faker()
+    faker.reserve([e["find"] for e in model["entries"]] + [s["find"] for s in found.values()])
+    faker.used.update(fake_norm(e["replace"]) for e in model["entries"] if e["replace"])
+    offered = []
+    for s in found.values():
+        s["replace"] = faker.suggest(s["type"], s["find"])
+        offered.append(s)
+        model["entries"].append({"find": s["find"], "replace": s["replace"], "type": s["type"], "active": False,
+                                 "info": f"second check: still readable in {s['file']} p.{s['page']} - check it, "
+                                         f"remove the # to replace it"})
+    return configmodel.to_yaml(model, model.get("folder") or rel), offered
+
+
+def _offer_suspects(folder: Path, rel: str, config_text: str, files: list[dict], log) -> None:
+    """Write the second check's finds into the folder's config as commented suggestions (see suspect_suggestions)
+    and note them in each file's entry (`suggested`). The config is written only if it is still the text this run used
+    (the user may have saved another one meanwhile), and before the report, so the report stays the newer file."""
+    if not any(f.get("suspects") for f in files):
+        return
+    try:
+        text, offered = suspect_suggestions(config_text, files, rel)
+    except Exception as e:  # noqa: BLE001  (the suggestions are an extra: the run must not fail because of them)
+        log(f"   could not offer the second check's values as suggestions: {e}")
+        return
+    for f in files:
+        f["suggested"] = [{k: s[k] for k in ("find", "replace", "type", "page")} for s in offered if s["file"] == f["file"]]
+    if not offered:
+        return
+    cfg_file = folder / CONFIG_NAME
+    try:
+        current = cfg_file.read_text(encoding="utf-8")
+    except OSError:
+        current = None
+    if current != config_text:
+        log("   the config was changed during the run: the second check's values are in the report only")
+        return
+    cfg_file.write_text(text, encoding="utf-8")
+    log(f"   {len(offered)} value(s) of the second check added to the config as suggestions (not active)")
+
+
 def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log,
                   only: list[str] | None = None, removed: list | None = None, progress=None,
                   quality_offset: float = 0.0) -> dict:
@@ -1736,7 +1792,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
             if entry["suspects"]:
                 shown = ", ".join(f"{s['type']} '{s['value']}' p.{s['page']}" for s in entry["suspects"][:8])
                 entry["warnings"].append(f"{len(entry['suspects'])} value(s) still readable in the output, not replaced: "
-                                         f"{shown}")
+                                         f"{shown}. They are suggestions in the Config (not active): tick the ones that "
+                                         f"are right, then anonymize again.")
                 log(f"   WARNING: {len(entry['suspects'])} value(s) still readable in the output: {shown}")
         except Exception as e:  # noqa: BLE001
             entry["error"] = str(e)
@@ -1746,6 +1803,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         files.append(entry)
     _report(progress, len(pdfs), len(pdfs))
     done = files                                        # the files of this run (the report may keep others)
+    _offer_suspects(folder, rel, config_text, done, log)
     if only is not None:                                # one file: keep the report of the other files
         kept = []
         rep_path = folder / REPORT_NAME
