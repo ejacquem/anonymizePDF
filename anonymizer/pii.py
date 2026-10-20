@@ -211,12 +211,23 @@ _TOWN_NOT_FIRST = {"rue", "avenue", "av", "boulevard", "bd", "chemin", "allee", 
                    "adresse", "address", "ville", "commune", "city", "town"}
 
 
+def _v_code_after_street(m):
+    """A postcode in brackets that follows a street name and a house number on the same line."""
+    line = m.string[:m.start()].rsplit("\n", 1)[-1]
+    if not _STREET_BEFORE_CODE.search(line):
+        return None
+    return m.start(1), m.end(1)
+
+
 def _v_town_code(m):
     """A town before its postcode in brackets ('NANTERRE (92000)'): the value starts at the first word that can start a
     town. The words before it (a label, a street type, an operation word) are left out; the town must not be a word
     of the documents' labels."""
     code = re.search(r"\((?:[A-Z]{1,2}-)?(\d+)\)", m.group()).group(1)
     if len(code) == 4 and 1900 <= int(code) <= 2099:          # a year in brackets ('Mutation (2024)'), not a postcode
+        return None
+    # the words of a street before the town ('RUE DES LILAS (75020)': the street is the address, its code is the code)
+    if _STREET_BEFORE_TOWN.search(m.string[:m.start(1)].rsplit("\n", 1)[-1]):
         return None
     words = list(re.finditer(r"[^\s\-]+", m.group(1)))
     for w in words:
@@ -265,6 +276,12 @@ _NOT_UNIT = r"(?!(?i:appartement|appt|apt|bâtiment|batiment|bât|bat|étage|eta
 _SPACE = r"[ \t\n]"
 _STREET_WORD = r"(?!(?i:et|le|la|les|de|du|des|pour|avec|sur|dans|au|en|par|est)\b)" + _NOT_UNIT + r"[A-Za-zÀ-ÿ'’\-]+"
 _STREET_NAME = rf"{_STREET_WORD}(?:{_SPACE}+{_STREET_WORD}){{0,2}}"
+_STREET_KEYWORDS = (rf"(?i:{_FR_STREET}|street|st|road|rd|avenue|ave|drive|dr|lane|ln|boulevard|blvd|way|court|ct|"
+                    r"parkway|place)\b")
+# a street keyword, then the street name written before the code: 'RUE DES LILAS ' (before '(75020)')
+_STREET_BEFORE_CODE = re.compile(_STREET_KEYWORDS + r"[^()]*$")
+# a street keyword right before a word that would be taken for a town: 'RUE DES ' before 'LILAS (75020)'
+_STREET_BEFORE_TOWN = re.compile(_STREET_KEYWORDS + r"(?:[ \t]+(?:de|du|des|la|le|les|d'|l')\b)*[ \t]*$")
 _STREET_NAME_LINE = rf"{_STREET_WORD}(?:[ 	]+{_STREET_WORD}){{0,2}}"
 _NL_STREET = (
     "straat|laan|weg|steenweg|dreef|lei|baan|kaai|gracht|dijk|singel|plein|markt|hof|pad|park"
@@ -348,6 +365,9 @@ DETECTORS = [
     # 'SAINT-CLOUD (92210)', 'BOULOGNE-BILLANCOURT (72000) (FRANCE)' (the country is not part of the value)
     ("POSTAL_CITY", re.compile(r"(?<![\w/.\-])([A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]*(?:[ \-]+[A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]*){0,3})"
                                r"[ \t]*\((?:[A-Z]{1,2}-)?\d{4,5}\)"), _v_town_code),
+    # the postcode in brackets right after a street on the same line: '12 RUE DES LILAS (75020)' -> '75020'
+    # (no town here: the town, when it is written, is the detector above; the code alone is replaced)
+    ("POSTAL_CITY", re.compile(r"(?<![\w/])\((\d{5})\)(?![\w,])"), _v_code_after_street),
     # Belgian-style postcode + city: "9000 Gent", "B-1000 Bruxelles"
     ("POSTAL_CITY", re.compile(rf"(?<![\w/.\-])(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?[1-9]\d{{3,4}}[ ]+"
                                rf"(?:{_CAP}[A-ZÀ-Þ'’\-]{{2,}}|{_CAP}[a-zà-ÿ'’]+)(?:-{_CAP}?[a-zà-ÿ'’]+)*"
@@ -514,22 +534,30 @@ def resolve(matches: list[Match]) -> list[Match]:
     """Keep non-overlapping matches. A longer match that fully contains a shorter one
     wins (e.g. an e-mail containing a name), unless the longer one is a noisy NER guess.
     Otherwise priority is: source (terms > regex > auto), then rank, then length."""
-    def swallowed(m):
-        # a street on two lines ('Rue de Paris' / '3 ...': the number of the next line) does not swallow the street
-        # written on one line: that street is kept
-        return any(o is not m and o.start <= m.start and m.end <= o.end
-                   and (o.end - o.start) > (m.end - m.start)
-                   and not (o.source == 2 and o.rank >= 100)
-                   and not (m.type == "STREET_ADDRESS" and o.type == "STREET_ADDRESS" and "\n" in o.value)
-                   for o in matches)
+    def containers(m):
+        # a longer match that holds m: it swallows m, unless it is a noisy NER guess, or m is a street and the other is a
+        # street on two lines ('Rue de Paris' / '3 ...': the number of the next line does not swallow the street of one line)
+        return [o for o in matches if o is not m and o.start <= m.start and m.end <= o.end
+                and (o.end - o.start) > (m.end - m.start)
+                and not (o.source == 2 and o.rank >= 100)
+                and not (m.type == "STREET_ADDRESS" and o.type == "STREET_ADDRESS" and "\n" in o.value)]
 
-    ordered = sorted((m for m in matches if not swallowed(m)),
-                     key=lambda m: (m.source, m.rank, -(m.end - m.start), m.start))
-    taken: list[Match] = []
-    for m in ordered:
-        if any(m.start < t.end and t.start < m.end for t in taken):
-            continue
-        taken.append(m)
+    def priority(m):
+        # the last key only breaks a tie between two matches of the same text (two terms that write it differently):
+        # the config's order must not decide which replacement is used
+        return (m.source, m.rank, -(m.end - m.start), m.start, m.replacement or "")
+
+    def greedy(candidates, taken):
+        for m in sorted(candidates, key=priority):
+            if not any(m.start < t.end and t.start < m.end for t in taken):
+                taken.append(m)
+        return taken
+
+    # a match held by another one is left out only while that one is kept: a longer match that loses its place to a
+    # street (the town 'LILAS (75020)' of '12 RUE DES LILAS (75020)') must not take the matches in it with it
+    taken = greedy([m for m in matches if not containers(m)], [])
+    dropped_holders = [m for m in matches if containers(m) and not any(c in taken for c in containers(m))]
+    taken = greedy(dropped_holders, taken)
     return sorted(taken, key=lambda m: m.start)
 
 

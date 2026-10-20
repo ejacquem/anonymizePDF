@@ -606,6 +606,12 @@ class Faker:
         return f"{pre}{m.group('kw')}{m.group('sp')}{m.group('art') or ''}{day}{new_month}{post}"
 
     def street(self, value: str) -> str:
+        # a postcode in brackets after the street ('Rue de Paris (75001)', the label 'Adresse : 12 bis avenue Foch (75016)'):
+        # the street is faked as a street, and the code gets another code of the same length
+        bracket = re.fullmatch(r"(?P<street>.+?)\s*\((?P<code>\d{4,5})\)", value)
+        if bracket:
+            code = self.digits(bracket.group("code"), self.rng("street-code", value))
+            return f"{self.street(bracket.group('street'))} ({code})"
         rng = self.rng("street", value)
         # an 'Avenue' whose A the OCR split in two marks ('i\venue', '/\venue', see pii._FR_STREET) is an avenue
         value = re.sub(r"(?<!\w)[/il1|]\\venue", "Avenue", value)
@@ -697,6 +703,9 @@ class Faker:
             rng = self.rng("us-town", _norm(city))
             new_city = self._pick(US_TOWNS, len(city), rng, {_norm(city)} | self.reserved) or rng.choice(US_TOWNS)
             return f"{_style_token(city, new_city)}, {us.group('st')} {self.digits(us.group('zip'), rng)}"
+        # a postcode alone, after a street ('12 RUE DES LILAS (75020)'): another postcode of the same length
+        if re.fullmatch(r"\d{4,5}", value):
+            return self.digits(value, self.rng("postal-alone", value))
         # a town before its postcode in brackets: 'NANTERRE (92000)' -> 'LILLE (59000)' (the same town as the term alone)
         bracket = re.fullmatch(r"(?P<city>.+?)\s*\((?P<pre>(?:[A-Z]{1,2}-)?)(?P<code>\d{4,5})\)", value)
         if bracket:

@@ -281,7 +281,11 @@ manual_blackouts:                   # black boxes drawn in the Anonymized pane: 
 There is no list of removed automatic boxes in the config: they are only sent with an anonymization run.
 Missing keys in older configs get the safe defaults (everything on). `find` matching (`pii.term_regex`): case-
 insensitive, flexible whitespace, word boundaries; on scans `ocr=True` also accepts 0/O/D, 1/l/I, 5/S, 8/B, 2/Z,
-missing accents and a space inside a number. Overlaps: longer match wins, terms beat regex.
+missing accents and a space inside a number. Overlaps (`pii.resolve`): terms beat regex, then the rank, then the longer
+match; a match inside a longer one is left out only while that longer one is kept (a town that loses its place to a
+street keeps the code inside it); ties are broken by the replacement, never by the order of the config.
+Order must never change a result (`order_tests`): a value written with several spellings keeps the most frequent one
+(ties: alphabetical), and a town written with several postcodes is one LOCATION term with all its counts.
 
 ## 7. Detection (`pii.py`, `fields.py`)
 

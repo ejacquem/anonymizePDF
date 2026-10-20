@@ -1399,7 +1399,7 @@ PAREN_TOWNS = [
 PAREN_ABSENT = [
     ("Mutation (2024)", "a year in brackets is no postcode"),
     ("Paris (75)", "a two-digit department is no postcode"),
-    ("Rue de Paris (75001)", "a street is no town (the words before the town are not taken)"),
+    ("Rue de Paris (75001)", "a street is no town (its code alone is the postcode, see street_code_tests)"),
 ]
 
 
@@ -1412,7 +1412,8 @@ def parenthesised_town_tests():
         check(f"{what}: found", value in found, f"{found}")
     for text, what in PAREN_ABSENT:
         found = [m.value for m in pii.detect_all(text) if m.type == "POSTAL_CITY"]
-        check(f"{what}", not found, f"{found}")
+        # the street's code may be found alone (that is a code, not a town): the town 'Paris' must not be
+        check(f"{what}", not any(re.search(r"[^\W\d_]", v) for v in found), f"{found}")
     from anonymizer.fake import BE_TOWNS, FR_TOWNS
     f = Faker(b"p" * 32)
     fake = f.suggest("POSTAL_CITY", "NANTERRE (92000)")
@@ -1443,6 +1444,125 @@ def parenthesised_town_tests():
             check(f"the postcode {code} is not in the output", code not in out, out)
         check("the country stays", "(FRANCE)" in out, out)
         check("the letter has no leftover", not rep["files"][0]["leftovers"], str(rep["files"][0]["leftovers"]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def street_code_tests():
+    """A postcode in brackets after a street ('12 RUE DES LILAS (75020)') is replaced, the street too; a town written
+    before a street's words is not taken, and a code held by a town that loses its place to a street is still found
+    (order of the overlaps: pii.resolve)."""
+    print("\n== postcode in brackets after a street")
+    found = lambda t: [(m.type, m.value) for m in pii.detect_all(t)]          # noqa: E731
+    check("the code after a street is found", ("POSTAL_CITY", "75020") in found("12 RUE DES LILAS (75020)"),
+          str(found("12 RUE DES LILAS (75020)")))
+    check("the street is found without its code", ("STREET_ADDRESS", "12 RUE DES LILAS") in found("12 RUE DES LILAS (75020)"))
+    check("a street without a number keeps its code too", ("POSTAL_CITY", "75001") in found("Rue de Paris (75001)"))
+    check("the code of a street in a sentence is found",
+          ("POSTAL_CITY", "75009") in found("Il habite au 5 rue Lafayette (75009) depuis"))
+    check("a town after a comma is still a town, not a street word",
+          ("POSTAL_CITY", "NANTERRE (92000)") in found("Rue Lafayette, NANTERRE (92000)"))
+    check("a town after a street's words is not taken as a town of its own",
+          not any(t == "POSTAL_CITY" and v.startswith("LILAS") for t, v in found("12 RUE DES LILAS (75020)")))
+    for text, what in [("Mutation (2024)", "a year"), ("Compte (12345)", "a label"), ("placeholder (75020)", "a word that starts with a street keyword")]:
+        check(f"{what} in brackets is no code after a street", not any(t == "POSTAL_CITY" and v.endswith("75020")
+                                                                       or t == "POSTAL_CITY" and v == "12345"
+                                                                       for t, v in found(text)), str(found(text)))
+    f = Faker(b"s" * 32)
+    fake = f.suggest("STREET_ADDRESS", "12 RUE DES LILAS (75020)")
+    m = re.fullmatch(r"(.+) \((\d{5})\)", fake)
+    check("the fake street keeps the code in brackets, with another code of 5 digits",
+          bool(m) and m.group(2) != "75020", fake)
+    check("the fake street is a street: no random letters in its name",
+          bool(m) and bool(re.fullmatch(r"\d+ (RUE|rue) (DES|de|du|la) [A-Za-zÀ-ÿ' ]+", m.group(1))), fake)
+    check("the code alone gets another code of 5 digits", re.fullmatch(r"\d{5}", f.suggest("POSTAL_CITY", "75020"))
+          is not None and f.suggest("POSTAL_CITY", "75020") != "75020")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_street_code_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        doc = fitz.open()
+        page = doc.new_page()
+        for i, line in enumerate(["Jean Dupont", "12 RUE DES LILAS (75020)", "NANTERRE (92000)", "Rue de Paris (75001)"]):
+            page.insert_text((72, 90 + 24 * i), line, fontsize=12)
+        doc.save(tmp / "lettre.pdf")
+        cfg = engine.scan_folder(tmp, "street-code", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "street-code", cfg, "fra+eng", False, lambda m: None)
+        out = " ".join(fitz.open(tmp / "lettre_anonymized.pdf")[0].get_text().split())
+        for text in ("LILAS", "PARIS", "NANTERRE", "75020", "75001", "92000"):
+            check(f"'{text}' is not in the output", text not in out.upper() if not text.isdigit() else text not in out, out)
+        check("the letter has no leftover", not rep["files"][0]["leftovers"], str(rep["files"][0]["leftovers"]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def order_tests():
+    """The result does not depend on the order of the files nor of the config lines: the same two files scanned in both
+    orders give the same config (one spelling of a value, one line for a town written with two postcodes), and a
+    config with its replacements shuffled anonymizes the same text."""
+    print("\n== the order of the files and of the replacements does not matter")
+    import random
+    import yaml
+    tmp = Path(tempfile.mkdtemp(prefix="anon_order_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        texts = {"a": "Code banque 30002 / 05871 - Agence 69002 Lyon", "b": "Code banque 30002/ 05871 - Agence 69003 Lyon"}
+
+        def make(folder, first, second):
+            folder.mkdir()
+            for name, key in (("1.pdf", first), ("2.pdf", second)):
+                doc = fitz.open()
+                doc.new_page().insert_text((72, 72), texts[key], fontsize=12)
+                doc.save(folder / name)
+            return engine.scan_folder(folder, folder.name, None, "fra+eng", lambda m: None)["config"]
+
+        def lines(cfg):
+            return sorted(l.strip() for l in cfg.splitlines() if "- {find" in l)
+
+        forward = make(tmp / "fwd", "a", "b")
+        backward = make(tmp / "bwd", "b", "a")
+        check("the config is the same whichever file is scanned first", lines(forward) == lines(backward),
+              "\n".join(set(lines(forward)) ^ set(lines(backward)))[:400])
+        bank = [l for l in lines(forward) if "BANK_CODE" in l and "part of" not in l]
+        check("one spelling of the bank code, the one written most often (ties: alphabetical)",
+              len(bank) == 1 and bank[0].split('"')[1] in ("30002 / 05871", "30002/ 05871"), str(bank))
+        town = [l for l in lines(forward) if '"Lyon"' in l and "LOCATION" in l]
+        check("a town written with two postcodes is one LOCATION term, counted for both",
+              len(town) == 1 and "2x in 2 file(s)" in town[0], str(town))
+        # the same replacements in another order: the anonymized text is the same
+        cfg = engine.scan_folder(tmp / "fwd", "fwd", None, "fra+eng", lambda m: None)["config"]
+        data = yaml.safe_load(cfg)
+        rng = random.Random(3)
+        shuffled = list(data["replacements"])
+        rng.shuffle(shuffled)
+        results = []
+        for tag, config in (("ord", cfg), ("shf", yaml.safe_dump({**data, "replacements": shuffled}, sort_keys=False,
+                                                              allow_unicode=True))):
+            d = tmp / f"apply_{tag}"
+            d.mkdir()
+            for name in ("1.pdf", "2.pdf"):
+                shutil.copy(tmp / "fwd" / name, d / name)
+            engine.run_anonymize(d, tag, config, "fra+eng", False, lambda m: None)
+            results.append({n: " ".join(fitz.open(d / n.replace(".pdf", "_anonymized.pdf"))[0].get_text().split())
+                            for n in ("1.pdf", "2.pdf")})
+        check("a config with its replacements shuffled anonymizes the same text", results[0] == results[1],
+              f"{results}")
+        # two terms that write the same text differently ('Jean Dupont', 'Jean  Dupont'): whichever comes first in the
+        # config, the same replacement is written
+        tie_doc = fitz.open()
+        tie_doc.new_page().insert_text((72, 72), "Jean Dupont habite ici", fontsize=12)
+        tie_doc.save(tmp / "tie.pdf")
+        ties = []
+        for tag, pair in (("t1", [("Jean  Dupont", "Alpha Zed"), ("Jean Dupont", "Beta Yan")]),
+                          ("t2", [("Jean Dupont", "Beta Yan"), ("Jean  Dupont", "Alpha Zed")])):
+            d = tmp / tag
+            d.mkdir()
+            shutil.copy(tmp / "tie.pdf", d / "tie.pdf")
+            config = "\n".join(["ocr_lang: \"fra+eng\"", "case_sensitive: false", "match_case: true", "replacements:"]
+                               + [f'  - {{find: "{f}", replace: "{r}", type: PERSON}}' for f, r in pair] + ["regex: []"])
+            engine.run_anonymize(d, tag, config, "fra+eng", False, lambda m: None)
+            ties.append(" ".join(fitz.open(d / "tie_anonymized.pdf")[0].get_text().split()))
+        check("two terms for the same text give the same replacement whatever the order of the config",
+              ties[0] == ties[1], str(ties))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -2042,6 +2162,8 @@ def main():
         rotated_tests()
         town_tests()
         parenthesised_town_tests()
+        street_code_tests()
+        order_tests()
         speedup_tests()
         font_unit_tests()
         font_scan_tests()

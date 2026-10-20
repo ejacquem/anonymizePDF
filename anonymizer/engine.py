@@ -233,7 +233,8 @@ def _town_of(typ: str, value: str) -> str | None:
             re.sub(r"^(?:[A-Z]{1,2}-)?\d{4,5}\s+", "", value)
     else:
         town = re.sub(r"\s*\(.*$", "", value)
-    return town.strip() or None
+    town = town.strip()
+    return town if re.search(r"[^\W\d_]", town) else None         # a postcode alone is no town
 
 
 def accept_person(value: str, honorific: bool, from_ner: bool, vocab: frozenset = frozenset()) -> bool:
@@ -402,6 +403,8 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
         e["count"] += 1
         e["files"].add(file)
         e["pages"].add(pno)
+        spellings = e.setdefault("spellings", {})
+        spellings[value] = spellings.get(value, 0) + 1
         e["ner"] = e["ner"] or m.rank >= 100
         e["honorific"] = e["honorific"] or (m.type == "PERSON" and m.rank == PERSON_RANKS[0])
         if m.type == "PERSON" and not e["title"]:
@@ -466,6 +469,11 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                     _detect_words(found, tokens, sequences, pw, True, ner, pdf.name, pno)
 
     _report(progress, len(pdfs), len(pdfs))
+    for e in found.values():
+        # one value, several spellings ('30002 / 05871', '30002/ 05871'): the one written most often is kept, ties by
+        # alphabetical order, so that the order of the files does not change the config
+        if e.get("spellings"):
+            e["value"] = min(e["spellings"].items(), key=lambda kv: (-kv[1], kv[0]))[0]
     faker = Faker(secret_key)        # None: this computer's secret key (anonymizer.secret)
     faker.reserve(e["value"] for e in found.values())
     person_values = [e["value"] for e in found.values() if e["type"] == "PERSON"]
@@ -631,12 +639,22 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     # the town of a postcode ('75017 PARIS') or of a birth place ('RENNES (35)') gets the same fake as the postcode
     # line does, and the same town written alone ('PARIS' in another sentence) is replaced the same way
     known = {norm_value(a["value"]) for a in active}
+    towns: dict[str, dict] = {}                      # 'Lyon' from '69002 Lyon' and '69003 Lyon': one entry, all counted
     for f in [f for f in found.values() if f["type"] in ("POSTAL_CITY", "BIRTH_PLACE")]:
         town = _town_of(f["type"], f["value"])
         if town and norm_value(town) not in known:
-            known.add(norm_value(town))
-            active.append({"type": "LOCATION", "value": town, "count": f["count"], "files": f["files"],
-                           "pages": f["pages"], "replace": faker.city(town), "note": f"town of '{f['value']}'"})
+            t = towns.setdefault(norm_value(town), {"town": town, "count": 0, "files": set(), "pages": set(), "from": []})
+            t["count"] += f["count"]
+            t["files"] |= f["files"]
+            t["pages"] |= f["pages"]
+            t["town"] = min(t["town"], town)              # the spelling does not depend on the file order
+            t["from"].append(f["value"])
+    for key in sorted(towns):                        # the order of the files does not change the list
+        t = towns[key]
+        known.add(key)
+        active.append({"type": "LOCATION", "value": t["town"], "count": t["count"],
+                       "files": t["files"], "pages": t["pages"], "replace": faker.city(t["town"]),
+                       "note": f"town of '{min(t['from'])}'"})
     _align_contained_numbers(active)
     # a value already replaced (e.g. a name under a label) is not suggested again as an uncertain NER guess
     active_values = {norm_value(a["value"]) for a in active}
