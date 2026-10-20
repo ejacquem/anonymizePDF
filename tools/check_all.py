@@ -1724,6 +1724,10 @@ def scan_text_tests():
     check("'Nlonsieur' (Monsieur read by the OCR) is a title, not a name; first names are not",
           engine.is_label_word("Nlonsieur") and engine.is_label_word("rnadame")
           and not any(engine.is_label_word(n) for n in ("Arnaud", "Daniel", "Nicolas", "Bernard", "Marnie", "Nina")))
+    left = [verify.remove_fakes(read, ["BE16 6286 5058 5802"]).strip() for read in
+            ("BE16 6286 5O58 5802 Participation", "BE166286 5058 5802 Participation", "BE16 6286 50585802 Participation")]
+    check("second check: a fake IBAN read back with OCR errors is taken out (no '5802 Participation' postcode)",
+          left == ["Participation"] * 3, str(left))
     fake = Faker().street("i\\venue de la Closière 7")
     check("the fake of a misread 'i\\venue' is an avenue with a real name", fake.startswith("Avenue ") and
           "\\" not in fake, fake)

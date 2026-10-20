@@ -236,7 +236,8 @@ console running `app.py` and the last 12 lines in the job log.
      that pass, so a box the user removed is not blacked out again, and the report keeps the first pass's boxes).
    - Second check (`verify.leak_suspects`): the detectors run again on what the output still says (text layer, or its OCR),
      with the fake values taken out of the text first (a fake street and the fake town on one line are not an
-     address). Every value found that is not a replacement is listed in the report (`suspects`) and as a warning
+     address), found the way OCR reads them back (`verify.remove_fakes`, term_regex in OCR mode: a fake IBAN read
+     with a space less or a 0 read O left '5802 Participation' as a postcode and a town). Every value found that is not a replacement is listed in the report (`suspects`) and as a warning
      in the Recap. It catches what the config never knew (verify_output only searches the detected values). Types:
      `LEAK_TYPES`, dates and identity values on ID pages, honorific names. A value close to a replacement (ratio ≥ 0.8
      after OCR digit folding, `_ocr_fold`) is a replacement read back by the OCR, not a leak. Test: `check_all`

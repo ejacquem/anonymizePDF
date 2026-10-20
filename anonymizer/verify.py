@@ -156,6 +156,15 @@ def verify_output(read: OutputRead, cfg: dict) -> list[dict]:
     return left
 
 
+def remove_fakes(text: str, fakes: list[str]) -> str:
+    """The text without the fake values written in it, found the way OCR reads them back (a space more or less in
+    an IBAN, a 0 read O: term_regex in OCR mode). Left in the text, a fake misread by the OCR gave false finds: the
+    last group of a fake IBAN and the word after it read as a postcode and a town ('5802 Participation')."""
+    for fake in fakes:
+        text = term_regex(fake, ocr=True).sub(" ", text)
+    return text
+
+
 def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
     """Values that the detectors still read in the file and that are not replacements. On identity documents the
     dates, the values found by their shape and the values under their labels are checked too."""
@@ -170,9 +179,7 @@ def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
     out: list[dict] = []
     for pno, page in enumerate(read.pages, start=1):
         words = page.words
-        text, _ = words_to_text(words)
-        for fake in fakes:
-            text = re.sub(re.escape(fake), " ", text, flags=re.IGNORECASE)
+        text = remove_fakes(words_to_text(words)[0], fakes)
         id_page = fields.is_id_document(words)
         found = [(m.type, m.value) for m in detect_structured(text)
                  if not _repeated_digits(m.value) and (m.type in LEAK_TYPES or (m.type == "DATE" and id_page)
