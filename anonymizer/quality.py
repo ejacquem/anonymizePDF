@@ -50,6 +50,30 @@ class Quality:
 SHARP = Quality()
 
 
+# the user's correction of the detected quality (app setting 'Fake text quality', -1 .. +1): per 0.1 below zero,
+# this much more blur (pixels), grain (levels) and this share less resolution; above zero, the blur, the grain and
+# the spread shrink (and the resolution comes back) in proportion, +1 = fully sharp
+OFFSET_BLUR = 2.0
+OFFSET_GRAIN = 10.0
+OFFSET_SCALE = 0.5
+OFFSET_RANGE = 1.0
+
+
+def adjust(q: "Quality", offset: float) -> "Quality":
+    """The detected quality corrected by the user's offset (see OFFSET_*): 0 = as detected; -0.1 a little worse
+    (softer, grainier, coarser pixels), +0.1 a little cleaner. The detection is kept, the offset moves from there."""
+    off = max(-OFFSET_RANGE, min(OFFSET_RANGE, float(offset or 0.0)))
+    if off > 0:
+        keep = 1.0 - off
+        return replace(q, blur=q.blur * keep, grain=q.grain * keep, spread=q.spread * keep,
+                       scale=q.scale + (1.0 - q.scale) * off)
+    if off < 0:
+        d = -off
+        return replace(q, blur=q.blur + OFFSET_BLUR * d, grain=q.grain + OFFSET_GRAIN * d,
+                       scale=max(q.scale * (1.0 - OFFSET_SCALE * d), 0.1))
+    return q
+
+
 # ---------------------------------------------------------------------------
 # degradation
 # ---------------------------------------------------------------------------

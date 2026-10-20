@@ -121,6 +121,9 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
      DejaVu, Roboto, Open Sans, Lato...), regular or bold, and **with the quality of the scan**: same resolution,
      blur, ink colour and paper grain, so it does not stand out as crisp new text. Both can be switched off
      (`font_match`, `quality_match` in the config, or Config › Settings): Arial, sharp, on a flat patch.
+     The ⚙ Settings slider **Fake text quality** corrects the detected quality: below 0 the fakes are a little
+     softer and grainier than the page (-0.1 = slightly worse), above 0 a little cleaner (+1 = sharp); 0 = as
+     detected (double-click the slider to reset). The report keeps the value used.
    * A digital file with a scanned annex is therefore handled page by page (Recap shows *mixed*).
    * Photos, signatures and QR codes are covered with black boxes (see below).
 5. Compare **Original** and **Anonymized** side by side:

@@ -53,6 +53,8 @@ function syncAppMenu() {
   $("#appChangesWidthVal").textContent = state.app.changesWidth.toFixed(1) + " px";
   $("#appOcr").checked = state.ocrVerify;
   $("#appAutoZoom").checked = !!state.app.autoZoom;
+  $("#appQuality").value = state.app.qualityOffset || 0;
+  $("#appQualityVal").textContent = qualityLabel(state.app.qualityOffset || 0);
   renderEngineChoices();
 }
 
@@ -102,6 +104,22 @@ $("#appChangesWidth").oninput = (e) => {
   state.app.changesWidth = Math.round(+e.target.value * 10) / 10;
   $("#appChangesWidthVal").textContent = state.app.changesWidth.toFixed(1) + " px";
   applyAppSettings();
+  saveApp();
+};
+// the fake text of scans: the detected quality, made worse (< 0) or cleaner (> 0) by the user
+function qualityLabel(v) {
+  if (!v) return "0 (as detected)";
+  return (v > 0 ? "+" : "") + v.toFixed(2) + (v > 0 ? " (cleaner)" : " (worse)");
+}
+$("#appQuality").oninput = (e) => {
+  state.app.qualityOffset = Math.round(+e.target.value * 100) / 100;
+  $("#appQualityVal").textContent = qualityLabel(state.app.qualityOffset);
+  saveApp();
+};
+$("#appQuality").ondblclick = (e) => {
+  state.app.qualityOffset = 0;
+  e.target.value = 0;
+  $("#appQualityVal").textContent = qualityLabel(0);
   saveApp();
 };
 $("#appOcrEngine").onchange = async (e) => {
@@ -1080,7 +1098,8 @@ async function applyBoxes() {
   const box = viewers.anon.box;
   const scroll = { x: box.scrollLeft, y: box.scrollTop };
   const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload() },
+    { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
+      quality_offset: state.app.qualityOffset || 0 },
     "Apply black boxes · " + cur.name, { quiet: true });
   await loadTree();
   await loadReport();
@@ -1355,7 +1374,7 @@ state.model = null;
 state.ocrVerify = (() => { try { return localStorage.getItem(OCR_KEY) === "1"; } catch (e) { return false; } })();
 // app settings (the menu ⚙ in the header): kept in this browser
 const APP_KEY = "anonymizePDF.app";
-const APP_DEFAULT = { popup: true, popupSeconds: 3, changesWidth: 2, autoZoom: false };
+const APP_DEFAULT = { popup: true, popupSeconds: 3, changesWidth: 2, autoZoom: false, qualityOffset: 0 };
 state.app = (() => { try { return { ...APP_DEFAULT, ...JSON.parse(localStorage.getItem(APP_KEY) || "{}") }; } catch (e) { return { ...APP_DEFAULT }; } })();
 function saveApp() { try { localStorage.setItem(APP_KEY, JSON.stringify(state.app)); } catch (e) { /* no storage */ } }
 function applyAppSettings() {
@@ -1729,7 +1748,8 @@ $("#btnRun").onclick = async () => {
   if (state.batchMode) return runBatch("anonymize");
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload() }, "Anonymize");
+    { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(),
+      quality_offset: state.app.qualityOffset || 0 }, "Anonymize");
   await loadTree();
   await loadReport();
   if (r && r.status === "done") {
@@ -1744,7 +1764,8 @@ $("#btnRunFile").onclick = async () => {
   if (!cur) return;
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload() }, "Anonymize file");
+    { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
+      quality_offset: state.app.qualityOffset || 0 }, "Anonymize file");
   await loadTree();
   await loadReport();
   if (r && r.status === "done") {
@@ -1812,7 +1833,8 @@ async function runBatch(action) {
   if (action === "all" && !confirm("Scan the folders without config and anonymize them right away, without reviewing the new configs?")) return;
   if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder. Your edits and manual data are kept. Continue?")) return;
   if (state.dirty && !(await saveConfig())) return;
-  const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify },
+  const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify,
+    quality_offset: state.app.qualityOffset || 0 },
     { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize" }[action]);
   if (r && r.status === "done" && action !== "scan") pendingBoxes.clear();      // every file of the batch is regenerated
   await loadTree();

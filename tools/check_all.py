@@ -1789,6 +1789,46 @@ def contract_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def quality_offset_tests():
+    """The 'Fake text quality' app setting: the detected quality corrected by an offset (-1 .. +1). 0 changes nothing,
+    below 0 the fakes get softer / grainier / coarser, above 0 cleaner, +1 fully sharp; a run records it."""
+    print("\n== fake text quality setting")
+    from anonymizer import quality
+
+    q = quality.Quality(scale=200 / 300, blur=1.0, spread=0.25, grain=4.0)
+    worse, better = quality.adjust(q, -0.1), quality.adjust(q, 0.1)
+    check("offset 0 keeps the detected quality", quality.adjust(q, 0) == q)
+    check("offset -0.1: a little softer, grainier and coarser than detected",
+          worse.blur > q.blur and worse.grain > q.grain and worse.scale < q.scale, worse.describe())
+    check("offset +0.1: a little cleaner than detected",
+          better.blur < q.blur and better.grain < q.grain and better.scale > q.scale, better.describe())
+    sharp = quality.adjust(q, 1.0)
+    check("offset +1: fully sharp", sharp.blur == 0 and sharp.grain == 0 and sharp.scale == 1.0, sharp.describe())
+    check("offsets beyond -1 .. +1 are held to the range", quality.adjust(q, -5) == quality.adjust(q, -1))
+
+    src = ROOT / "sample_data" / "Dossier Test 17" / "polices_scan.pdf"
+    if not src.exists():
+        print("  (no Dossier Test 17: skipped)")
+        return
+    tmp = Path(tempfile.mkdtemp(prefix="anon_offset_"))
+    try:
+        shutil.copy(src, tmp)
+        cfg = engine.scan_folder(tmp, "offset", None, "fra+eng", lambda m: None)["config"]
+
+        def blurs(offset):
+            rep = engine.run_anonymize(tmp, "offset", cfg, "fra+eng", False, lambda m: None, quality_offset=offset)
+            looks = [t["look"] for t in rep["files"][0].get("trace", []) if t.get("look") and t["page"] == 2]
+            return rep.get("quality_offset"), [float(re.search(r"blur ([\d.]+)px", lk).group(1)) for lk in looks]
+
+        (o0, b0), (o_low, b_low), (o_high, b_high) = blurs(0), blurs(-0.5), blurs(1.0)
+        check("a run records its quality offset in the report", (o0, o_low, o_high) == (0.0, -0.5, 1.0))
+        check(f"offset -0.5: the fakes are written softer than detected (blur {min(b0):.1f} -> {min(b_low):.1f}px)",
+              b0 and b_low and min(b_low) >= min(b0) + 0.9)
+        check("offset +1: the fakes are written sharp (blur 0)", b_high and max(b_high) == 0.0)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def key_and_fake_tests(tmp: Path):
     print("\n== secret key and fake values")
     use_key(tmp / "k" / "secret.key")
@@ -1868,6 +1908,7 @@ def main():
         font_scan_tests()
         scan_text_tests()
         contract_tests()
+        quality_offset_tests()
         key_and_fake_tests(tmp)
         for k in range(1 if args.quick else args.keys):
             print(f"\n######## random key {k + 1}")

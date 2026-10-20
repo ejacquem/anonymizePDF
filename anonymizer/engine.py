@@ -921,6 +921,8 @@ def page_looks(img, pf, plan, cfg: dict, bold_of) -> list:
         look = pf.look(img, boxes[0], bold_hint=bold_of(boxes[0], m.value), match_font=style["font_match"])
         if not style["quality_match"]:
             look.quality = None
+        elif style.get("quality_offset"):               # the user's correction of the detected quality
+            look.quality = quality.adjust(look.quality, style["quality_offset"])
         out.append(look)
     return out
 
@@ -1648,11 +1650,16 @@ def _is_removed(removed: list, kind: str, box) -> bool:
 
 
 def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log,
-                  only: list[str] | None = None, removed: list | None = None, progress=None) -> dict:
+                  only: list[str] | None = None, removed: list | None = None, progress=None,
+                  quality_offset: float = 0.0) -> dict:
     """Anonymize every source of the folder, or only the files named in `only` (their entries replace the ones of
-    the report; the other entries are kept). `removed`: the automatic black boxes the user removed since the last run."""
+    the report; the other entries are kept). `removed`: the automatic black boxes the user removed since the last run.
+    `quality_offset` (-1 .. +1, app setting): the detected scan quality of the fakes made worse (< 0) or cleaner
+    (> 0), see quality.adjust; kept in the report."""
     t_all = time.time()
     cfg = parse_config(config_text)
+    quality_offset = max(-quality.OFFSET_RANGE, min(quality.OFFSET_RANGE, float(quality_offset or 0.0)))
+    cfg["style"]["quality_offset"] = quality_offset
     session = _session_removed(removed)
     if not cfg["terms"] and not cfg["regex"] and not cfg["manual_blackouts"] and not cfg["manual_texts"]:
         raise ValueError("The config has no active replacement")
@@ -1662,7 +1669,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         pdfs = [p for p in pdfs if p.name in only]
     if not pdfs:
         raise ValueError("No PDF in this folder")
-    log(f"Config: {len(cfg['terms'])} replacement(s), {len(cfg['regex'])} regex rule(s). {len(pdfs)} file(s).")
+    log(f"Config: {len(cfg['terms'])} replacement(s), {len(cfg['regex'])} regex rule(s). {len(pdfs)} file(s)."
+        + (f" Fake text quality {quality_offset:+.2f} from the detected one." if quality_offset else ""))
     files = []
     for i, pdf in enumerate(pdfs, start=1):
         _report(progress, i - 1, len(pdfs), pdf.name)
@@ -1749,7 +1757,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 kept = []
         files = kept + files
     report = {"folder": rel, "generated": dt.datetime.now().isoformat(timespec="seconds"),
-              "total_seconds": round(time.time() - t_all, 1), "ocr_verify": ocr_verify, "files": files}
+              "total_seconds": round(time.time() - t_all, 1), "ocr_verify": ocr_verify,
+              "quality_offset": quality_offset, "files": files}
     (folder / REPORT_NAME).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     total = sum(f["replaced"] for f in done)
     log(f"Finished: {total} replacement(s) in {len(done)} file(s), {report['total_seconds']}s")

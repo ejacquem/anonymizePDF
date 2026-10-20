@@ -161,7 +161,8 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - The Text tool is switched off when an anonymization finishes (`runJob`), not when it starts.
 - App settings (⚙ Settings in the header, kept in localStorage `anonymizePDF.app`): pop-up messages on/off and their
   duration (`notify` / `toast`, top centre, 3 s by default; off = the status line), the border width of the Changes frames
-  (`--chg-w`), and the OCR second pass (same value as the OCR check of Config › Settings).
+  (`--chg-w`), the OCR second pass (same value as the OCR check of Config › Settings), and the fake text quality
+  (`qualityOffset`, -1 .. +1, sent with every anonymization as `quality_offset`, see section 10b).
 - Session (localStorage `anonymizePDF.session`): folder, file, zoom, scroll of both panes, tab and viewer mode are saved
   (`saveSession`, `scheduleSave`) and put back on reload (`restoreSession`, after the tree is loaded).
 - Frames placed in page points (the red leftovers, the blue value frame) are redrawn on every zoom (`sizePages`).
@@ -485,6 +486,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - Painting (`quality.erase`, `quality.paint`): the box is painted with the paper colour plus grain (noise made at the
   native resolution, seeded by page / value / line: a rerun gives the same file); the text is rendered 4x, spread,
   brought to the native resolution and back, blurred, laid in the ink colour, grain on the strokes.
+- Fake text quality (app setting, `run_anonymize(quality_offset=)`, kept in the report): the detected quality is
+  corrected by `quality.adjust` before painting. Below 0, per 0.1: +0.2 px blur, +1 grain level, -5 % resolution;
+  above 0 the blur, grain and spread shrink in proportion and the resolution comes back; +1 = sharp. 0 = as detected.
+  Test: `quality_offset_tests`.
 - Slanted words (|angle| >= TILT_MIN) are not measured (their OCR box is not their ink): a slanted value is Arial with
   the page quality (`page_fonts(skip=)`).
 - A word only partly covered by a value is cut by the widths of its measured font (`PageFonts.advance` ->

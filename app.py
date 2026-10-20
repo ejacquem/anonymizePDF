@@ -88,6 +88,14 @@ def info():
                     "spacy_models": models})
 
 
+def _quality_offset(data: dict) -> float:
+    """The 'Fake text quality' app setting sent with a run (-1 .. +1, 0 = as detected)."""
+    try:
+        return max(-1.0, min(1.0, float(data.get("quality_offset") or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 @app.post("/api/settings")
 def save_settings():
     """The choice of the OCR engine and of the names models (kept by the browser, sent again at each start)."""
@@ -530,6 +538,7 @@ def anonymize():
         return bad(f"Config problem: {e}")
     rel = rel_of(folder)
     ocr_verify = bool(data.get("ocr_verify"))
+    quality_offset = _quality_offset(data)
     only = [Path(str(data["file"])).name] if data.get("file") else None     # one file, or the whole folder
     if only is None:
         only = files_to_anonymize(folder)                 # a folder run leaves the reviewed files alone
@@ -539,7 +548,7 @@ def anonymize():
 
     def work(log, progress):
         rep = eng.run_anonymize(folder, rel, cfg_file.read_text(encoding="utf-8"), STATE["ocr_lang"], ocr_verify, log,
-                                only=only, removed=removed, progress=progress)
+                                only=only, removed=removed, progress=progress, quality_offset=quality_offset)
         return {"files": len(rep["files"]), "seconds": rep["total_seconds"]}
 
     job = start_job("anonymize", work)
@@ -578,6 +587,7 @@ def batch():
     except (PermissionError, FileNotFoundError) as e:
         return bad(str(e), 404)
     action, redo, ocr_verify = data.get("action"), bool(data.get("redo")), bool(data.get("ocr_verify"))
+    quality_offset = _quality_offset(data)
     if action not in ("scan", "anonymize", "all"):
         return bad("action must be 'scan', 'anonymize' or 'all'")
 
@@ -611,7 +621,7 @@ def batch():
                             log("   every file is reviewed: nothing to anonymize")
                         else:
                             eng.run_anonymize(d, rel_of(d), text, STATE["ocr_lang"], ocr_verify, lambda m: log("   " + m),
-                                              only=todo, progress=report)
+                                              only=todo, progress=report, quality_offset=quality_offset)
                     offset += counts[d]
                 done.append(rel)
             except Exception as e:  # noqa: BLE001  (one folder failing must not stop the others)
