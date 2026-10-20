@@ -229,7 +229,7 @@ def find_labeled(words: list[dict]) -> list[dict]:
         for kind, rx in _LABEL_INLINE:                      # 'Nom : DUPONT'
             m = rx.match(ln["text"])
             if m and not _label_kind(m.group("v")):
-                found.append({"kind": kind, "value": m.group("v").strip(), "line": ln})
+                found.append({"kind": kind, "value": m.group("v").strip(), "line": ln, "inline": True})
                 break
         kind = _label_kind(ln["text"])
         if not kind:
@@ -239,7 +239,7 @@ def find_labeled(words: list[dict]) -> list[dict]:
         ref, taken = ln["box"], 0
         inline = inline_value(ln, words, kind)
         if inline and kind not in MULTILINE:                 # 'Nom / Name Jacquemin'
-            found.append({"kind": kind, "value": inline, "line": ln})
+            found.append({"kind": kind, "value": inline, "line": ln, "inline": True})
             continue
         while True:
             nxt = _below([o for o in lines if o is not ln], ref, h, x0)
@@ -264,8 +264,14 @@ def is_id_document(words: list[dict], mrz_found: bool = False) -> bool:
     """Does this page look like an identity document (passport, ID card, residence permit, driving licence)?"""
     if mrz_found:
         return True
-    if _ID_WORDS.search(" ".join(w["text"] for w in words)):
-        return True
+    # the name of the document is a heading: a short line ('PASSEPORT', 'CARTE NATIONALE D'IDENTITE'). The same words
+    # inside a sentence of a legal text ("... carte nationale d'identité, passeport ...") make no identity document.
+    lines: dict = {}
+    for w in words:
+        lines.setdefault(w["line"], []).append(w["text"])
+    for texts in lines.values():
+        if len(texts) <= 5 and _ID_WORDS.search(" ".join(texts)):
+            return True
     kinds = {f["kind"] for f in find_labeled(words)}
     return len(kinds & ID_KINDS) >= 2
 

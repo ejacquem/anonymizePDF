@@ -284,8 +284,13 @@ def check_output(src: Path, out: Path, f: dict, secrets: list[str], cfg_text: st
         check(f"{name}: {b['kind']} p{b['page']} is black", inner.size and inner.mean() < 40, f"mean {inner.mean():.0f}")
         r = fitz.Rect(b["box"])
         if f["mode"] != "scan":
-            def is_box(d):                       # the black box itself (drawn by the redaction and repainted)
-                return d.get("fill") == (0.0, 0.0, 0.0) and all(abs(a - b) <= 1 for a, b in zip(d["rect"], r))
+            # the black boxes of the page: a box is one of them, also when it lies inside another one (the same face
+            # found at two sizes): it is not a line left under the box
+            page_boxes = [fitz.Rect(x["box"]) for x in f.get("blackouts", []) if x["page"] == b["page"]]
+
+            def is_box(d):
+                return d.get("fill") == (0.0, 0.0, 0.0) and any(
+                    all(abs(a - c) <= 1 for a, c in zip(d["rect"], pb)) for pb in page_boxes)
 
             # drawings mostly under the box (a frame crossing it is fine: it was redrawn on purpose)
             left = [d for d in page.get_drawings() if fitz.Rect(d["rect"]).intersects(r) and not is_box(d)
@@ -1032,10 +1037,25 @@ def second_pass_tests():
                 "style: {mode: replace, digital_fill: none}",
                 "blackout: {photos: false, photos_only_on_id_documents: false, signatures: false, qr_codes: false}",
                 "mrz: regenerate", "replacements:"]
-        # the value is replaced by itself: it is still in the output, so the second pass has to search it again
-        left = "\n".join(base + ["  - {find: \"123456789\", replace: \"123456789\", type: ACCOUNT_NUMBER}", "regex: []"])
+        # a value left in the output: the first check reports one leftover (a value the output really holds is not
+        # reported on its own now: a value kept on purpose, replaced by itself, is not a leftover)
+        left = "\n".join(base + ["  - {find: \"123456789\", replace: \"987654321\", type: ACCOUNT_NUMBER}", "regex: []"])
         logs = []
-        rep = engine.run_anonymize(tmp, "pass2", left, "fra+eng", False, logs.append)
+        real_verify = verify.verify_output
+        reported = []
+
+        def leftover_once(read, cfg):
+            found = real_verify(read, cfg)
+            if not reported:
+                reported.append(1)
+                found = found + [{"where": "p.1 OCR", "find": "123456789", "count": 1, "hits": []}]
+            return found
+
+        verify.verify_output = leftover_once
+        try:
+            rep = engine.run_anonymize(tmp, "pass2", left, "fra+eng", False, logs.append)
+        finally:
+            verify.verify_output = real_verify
         text = "\n".join(logs)
         check("a scan with a value left in its output does not fail", rep["files"][0].get("error") is None,
               str(rep["files"][0].get("error")))

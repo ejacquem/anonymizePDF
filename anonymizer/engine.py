@@ -71,10 +71,16 @@ nationalité nationalite nationality naissance birth lieu place document expiry 
 issue adresse address domicile taille height autorité autorite authority passeport passport identité identite
 identity carte card république republique française francaise naam voornamen geslacht nationaliteit
 comptes titres titre successions
+standard time form forms description policy period premium coverage insurance declarations homeowners property
+section total value information informational purposes
+street drive road avenue boulevard court parkway plaza
+directeur directrice responsable gérant gérante président présidente secrétaire chef
 """.split())
 _STOP_KEYS = {_pkey(w) for w in _STOP}
 # words that only join a name to the words before it or after it: 'SUCCESSION DE NOM', 'TITRES DE NOM'
 _CONNECTORS = {"de", "la", "le", "les", "des", "du", "et", "a", "à", "au", "aux", "en", "l", "d"}
+# the lower-case words that may sit between the words of one name ('John Doe and Susy Doe', 'Jean de la Fontaine')
+_NAME_CONNECTORS = {"and", "et", "und", "y", "&", "of", "de", "la", "le", "du", "des", "van", "von", "der", "den"}
 
 
 @functools.lru_cache(maxsize=8192)
@@ -107,6 +113,8 @@ def trim_name_edges(value: str) -> str:
 _BIRTH_RX = re.compile(r"(?i)(\bn[ée]e?\s*(?:le|à|a|en|:)\b|\bn[ée]e?\s*:|naissance|naiss\.|geboren|geboorte|birth|\bborn\b|\bdob\b)")
 _HONORIFIC_START = re.compile(rf"^{_HONORIFIC}\s+")
 _TITLE_BEFORE = re.compile(rf"({_HONORIFIC})\s*$")
+# a photo credit ('Photos : R. Richter - Hero Images') names a photographer, not a person of the documents
+_CREDIT_BEFORE = re.compile(r"(?i)(?:photos?|photo\s*credit|cr[ée]dit\s+photo|©)\s*:?\s*$")
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
@@ -170,8 +178,10 @@ _LABEL_TYPES = {"surname": ("PERSON", "last"), "given": ("PERSON", "first"), "bi
                 "birth_place": ("BIRTH_PLACE", None), "doc_number": ("DOC_NUMBER", None)}
 
 
-def _add_labeled(found: dict, words: list[dict], ocr_page: bool, file: str, pno: int):
-    """Values written under / after a label (identity documents): 'Nom / Surname' -> 'LEFÈVRE'."""
+def _add_labeled(found: dict, words: list[dict], ocr_page: bool, file: str, pno: int, id_page: bool = True):
+    """Values written under / after a label (identity documents): 'Nom / Surname' -> 'LEFÈVRE'. On another page, a
+    surname or a given name is only a hint when the label has no colon before the value: a column header 'NOM' over
+    'Description' in a specification is no name."""
     labeled = fields.find_labeled(words)
     sex = next((f["value"].strip()[:1].upper() for f in labeled if f["kind"] == "sex"
                 and f["value"].strip()[:1].upper() in "MF"), None)
@@ -197,7 +207,10 @@ def _add_labeled(found: dict, words: list[dict], ocr_page: bool, file: str, pno:
         e["count"] += 1
         e["files"].add(file)
         e["pages"].add(pno)
-        e["labeled"] = True
+        if f["kind"] in ("surname", "given") and not (id_page or f.get("inline")):
+            e["label_hint"] = True
+        else:
+            e["labeled"] = True
         if kind:
             e["kind"] = kind
         if sex:
@@ -222,18 +235,21 @@ def accept_person(value: str, honorific: bool, from_ner: bool, vocab: frozenset 
     toks = [t.strip(",.;:") for t in value.split() if t.strip(",.;:")]
     if not toks or any(c.isdigit() for c in value):
         return False
-    if any(is_label_word(t) or is_town_name(t) for t in toks):
+    # a connector between two names ('John Doe and Susy Doe', 'Jean de la Fontaine') is no word of the name: it is
+    # written in lower case ('y' is a connector, but 'Y.' is an initial)
+    names = [t for t in toks if not (t.casefold() in _NAME_CONNECTORS and t[:1].islower()) and t != "&"]
+    if any(is_label_word(t) or is_town_name(t) for t in names):
         return False
     if honorific:
         return len(toks) >= 2 or len(toks[0]) >= 3
-    if len(toks) < 2:
+    if len(names) < 2:
         return False
     firsts = _first_names()
-    if any(t.casefold() in firsts for t in toks):
+    if any(t.casefold() in firsts for t in names):
         return True
-    if not from_ner or not all(t.istitle() for t in toks):
+    if not from_ner or not all(t.istitle() for t in names):
         return False
-    return not any(_pkey(t) in vocab for t in toks)
+    return not any(_pkey(t) in vocab for t in names)
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +374,8 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
     matches += [pc for m in matches if m.type == "STREET_ADDRESS" for pc in detect_structured(m.value, {"POSTAL_CITY"})]
     for m in matches:
         value = " ".join(m.value.split())
+        if m.type == "PERSON" and _CREDIT_BEFORE.search(text[max(0, m.start - 30):m.start]):
+            continue
         if m.type == "PERSON":
             value = _HONORIFIC_START.sub("", value.split(" - ")[0]).strip(" ,.;:")
             value = trim_name_edges(value)            # 'SUCCESSION DE NOM' keeps 'NOM'
@@ -390,7 +408,7 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
             e["files"].add(file)
             e["pages"].add(pno)
             e["labeled"] = True
-    _add_labeled(found, words, ocr_page, file, pno)
+    _add_labeled(found, words, ocr_page, file, pno, id_page)
 
 
 def _report(progress, done: int, total: int, name: str = ""):
@@ -512,7 +530,10 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     # the words of the active names: 'MLE MERVE REYS' is active, so 'REYES MERVE' is the same person
     known_words = {_pkey(t) for a in active if a["type"] == "PERSON" for t in a["value"].split() if len(_pkey(t)) >= 4}
     for e in list(rejected):
-        if len(e["value"].split()) >= 2 and any(_pkey(t) in known_words for t in e["value"].split()):
+        toks = e["value"].split()
+        # a heading or a street name that holds a known name word is no name: 'Sample Drive', 'SAMPLE FORM'
+        if len(toks) >= 2 and any(_pkey(t) in known_words for t in toks) and not any(
+                is_label_word(t) or is_town_name(t) for t in toks):
             rejected.remove(e)
             activate(e, "shares a name word with an active name")
     # misspelt or shortened forms of a known name word, written elsewhere in the documents: 'REYS' and 'REYE' for
@@ -559,12 +580,16 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         # capitals alone are headings and company names ('BANQUE MOSANE'): only suggested with a known name word.
         # A candidate with a stop word or an ordinary word of the documents is no name at all: not suggested either.
         toks = e["value"].split()
-        if e["value"].isupper() or any(is_label_word(t) or is_town_name(t) or _pkey(t) in vocab for t in toks):
+        hint = e.get("label_hint", False)           # a label alone above the value, on a page that is no ID document
+        if any(is_label_word(t) or is_town_name(t) for t in toks):
+            continue
+        if not hint and (e["value"].isupper() or any(_pkey(t) in vocab for t in toks)):
             continue
         # one ordinary word is a heading or a label ('Page', 'Bleue'), not a name, unless it is a known first name
-        if len(toks) < 2 and _pkey(toks[0]) not in firsts:
+        if len(toks) < 2 and _pkey(toks[0]) not in firsts and not hint:
             continue
-        off.append({**e, "replace": faker.person(e["value"], gender(e)), "note": "uncertain name - check it"})
+        note = "under a label - check it" if hint else "uncertain name - check it"
+        off.append({**e, "replace": faker.person(e["value"], gender(e)), "note": note})
 
     numbers_added = {norm_value(e["value"]) for e in found.values() if e["type"] in SPLIT_TYPES}
     for e in found.values():

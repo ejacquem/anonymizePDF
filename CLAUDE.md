@@ -320,7 +320,13 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   nationalité, adresse) are never names. Titles (M, MME, MR, MLE, MLLE, Monsieur, Madame, Maître...) and notarial /
   bank labels (Page, Compte, Alliance, Succession, Mutation, Novembre...) are in `_STOP`: they split a run of capitals,
   so 'MLE Ambre Lefèvre' keeps 'Ambre Lefèvre'. A single ordinary word is only an uncertain suggestion when it is a
-  known first name.
+  known first name. Headings, English street words and job titles are stop words too ('Standard', 'Time', 'Form',
+  'Description', 'Drive', 'Directeur'): a run with one of them is no name, and a name shared with an active name is
+  not activated when it holds one ('Sample Drive', 'SAMPLE FORM'). A label alone above a value on a page that is no
+  identity document ('NOM' over a column of a specification) is only a suggestion ('under a label - check it'); a label
+  with a colon ('Nom : Dupont') stays active. An honorific is not read after a dot ('a.m. Standard Time'), and a photo
+  credit ('Photos : R. Richter') is no name. `_NAME_CONNECTORS` ('and', 'y', 'de'...) only counts in lower case: 'Y.' is
+  an initial.
   A label word is also one or two letters away from a stop word (`is_label_word`: 'SUCCËSSION', 'COMPTÈ', 'COMTPES' from
   the OCR), and the words at both ends of a name that are labels, titles, towns, operations or connectors ('DE', 'LA')
   are trimmed (`trim_name_edges`): 'SUCCESSION DE Lucas Martin' keeps 'Lucas Martin'. A run of one digit of 7 or more
@@ -522,6 +528,10 @@ temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing 
   check is a weakness of the app: the checks are not adjusted to the current output. `SPEC` and `DETECTOR_CASES` say
   what each expectation is about.
 - Not part of `check_all.py` yet: run it on its own (about 8 minutes, `--quick` skips the 64-page document).
+- Last state: 155 checks pass, 1 fails (Bridgford: its text layer holds word fragments that do not match the image,
+  'where,' for 'Anywhere,'; the address stays readable in the output, a known limit). A surname of the folder is
+  replaced wherever it stands, so 'banker's personal checks' and 'SAMPLE FORM' are not in `keep` (over-redaction,
+  accepted by design).
 - The scanned copies are made by the script (pages rendered at 200 dpi) in a temporary folder, never kept.
 
 ## 13. Known limits / ideas

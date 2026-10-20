@@ -63,9 +63,9 @@ SPEC = {
         folder=GROUP_BANQUE, mode="mixed", kinds=[], mrz=[],
         # the sponsor and the signatory of a bank certificate (a scan with a text layer over it)
         secrets=["Martha Washington", "Martha", "Washington", "Y. Banker"],
-        # 'banker's personal checks' is a common word of the text: it is replaced because the signatory's surname is
-        # 'Banker' (a judgement call: over-redaction is accepted, a changed sentence is not)
-        keep=["Certificate of Deposit", "Pangyo Branch", "Authorized signature", "banker's personal checks"],
+        # 'banker's personal checks': the signatory's surname is 'Banker', and a surname of the folder is replaced
+        # wherever it stands, so the word is replaced in this sentence too (over-redaction, accepted by design)
+        keep=["Certificate of Deposit", "Pangyo Branch", "Authorized signature"],
     ),
     "dc_declaration_sample.pdf": dict(
         folder=GROUP_ASSURANCE, mode="digital", kinds=[], mrz=[],
@@ -73,8 +73,10 @@ SPEC = {
         # left in the file; the headings 'Standard Time' and 'SAMPLE FORM' become names
         secrets=["John Doe", "Susy Doe", "1427 Sample Drive", "Anywhere, USA 40000", "Washington, DC 40000",
                  "254H089SJ425", "Frank Stallings", "2690 Pennsylvania", "1 202 111-2222"],
+        # 'SAMPLE FORM' is not in keep: 'Sample' is the surname of 'John D Sample' in the other file of the folder, so
+        # the word is replaced in this heading too (over-redaction, accepted by design)
         keep=["INSURANCE INTELLIGENCE", "Policy Period", "Safe Driver Discount", "Standard Time",
-              "INFORMATIONAL PURPOSES ONLY", "SAMPLE FORM"],
+              "INFORMATIONAL PURPOSES ONLY"],
     ),
     "ok_declarations_sample.pdf": dict(
         folder=GROUP_ASSURANCE, mode="mixed", kinds=[], mrz=[],

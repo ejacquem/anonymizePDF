@@ -121,13 +121,20 @@ def find_hits(path: Path, term: str, case_sensitive: bool, ocr_lang: str) -> lis
 def verify_output(read: OutputRead, cfg: dict) -> list[dict]:
     """The original values (the config's `find` terms) that the file still contains, with where each one is
     (`hits`: {page, box in PDF points} for the text layer and the OCR, so the viewer can show and find it)."""
-    rxs = [(f, term_regex(f, cfg["case_sensitive"])) for f in cfg["terms"] if len(f) >= 3]
-    ocr_rxs = [(f, term_regex(f, cfg["case_sensitive"], ocr=True)) for f in cfg["terms"] if len(f) >= 3]
+    # a value replaced by itself (a kind word kept in a fake: 'Drive' of 'Sample Drive') is no leftover: nothing changed
+    checked = [f for f in cfg["terms"] if len(f) >= 3 and (cfg["terms"][f] or "") != f]
+    rxs = [(f, term_regex(f, cfg["case_sensitive"])) for f in checked]
+    ocr_rxs = [(f, term_regex(f, cfg["case_sensitive"], ocr=True)) for f in checked]
+    # the replacements written in the file: a find term inside one of them is part of the fake ('Drive' in the fake
+    # street 'Masson Drive'), not a leftover of the original
+    fakes = sorted({" ".join(v.split()) for v in cfg["terms"].values() if v and len(v.strip()) >= 3}, key=len, reverse=True)
+    fake_rx = re.compile("|".join(re.escape(v) for v in fakes), re.IGNORECASE) if fakes else None
     left: list[dict] = []
 
     def check(where: str, text: str, hits: list[dict], tolerant: bool = False):
+        spans = [m.span() for m in fake_rx.finditer(text)] if fake_rx else []
         for find, rx in (ocr_rxs if tolerant else rxs):
-            n = len(rx.findall(text))
+            n = sum(1 for m in rx.finditer(text) if not any(a <= m.start() and m.end() <= b for a, b in spans))
             if n:
                 left.append({"where": where, "find": find, "count": n, "hits": [h for h in hits if h["find"] == find]})
 
@@ -152,6 +159,8 @@ def verify_output(read: OutputRead, cfg: dict) -> list[dict]:
 def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
     """Values that the detectors still read in the file and that are not replacements. On identity documents the
     dates, the values found by their shape and the values under their labels are checked too."""
+    from .engine import is_label_word          # engine imports this module: the import is made when it is needed
+    from .fake import is_town_name
     replacements = {norm_value(v) for v in cfg["terms"].values() if v}
     replacements_folded = [(r, _fold(r)) for r in replacements]
     # the fake values as written (longest first): taken out of the text before the detectors run, so that a fake
@@ -178,6 +187,10 @@ def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
             value = " ".join(value.split())
             if typ in NAME_TYPES:
                 value = strip_operations(value)
+            # a heading read as a name is no leak: the same stop words and towns as the scan's rule (engine imports
+            # this module, so the import is made here)
+            if typ == "PERSON" and any(is_label_word(t) or is_town_name(t) for t in value.split()):
+                continue
             key = norm_value(value)
             # a replacement read back by the OCR with a few errors ('Irnier' for a fake name) is a replacement too
             if len(key) < 3 or key in seen or any(

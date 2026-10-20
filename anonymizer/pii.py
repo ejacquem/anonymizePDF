@@ -134,6 +134,10 @@ _CITY_STOPLIST = {"euro", "eur", "euros", "keer", "maal", "fois", "times",
                    "bic", "iban", "swift", "tva", "btw", "vat", "tel", "gsm", "fax", "rib",
                    "mme", "mlle", "mr", "mrs", "dr", "me", "m", "code", "guichet", "banque", "clé", "cle", "compte",
                    "numero", "numéro", "client", "carte", "page", "ref", "réf", "rib"}
+# English words after a number in a US address ('2690 Pennsylvania Ave'): no French postcode and town
+_US_ADDRESS_WORDS = {"pennsylvania", "california", "texas", "florida", "virginia", "ohio", "york", "carolina", "georgia",
+                     "illinois", "michigan", "jersey", "washington", "street", "avenue", "ave", "drive", "road", "lane",
+                     "boulevard", "blvd", "way", "court", "parkway", "plaza", "st", "rd", "dr", "ln", "hwy"}
 
 
 _BIC_LABEL = re.compile(r"(?i:\bbic|swift)\b")
@@ -198,7 +202,7 @@ def _v_vat_group(m):
 
 def _v_postal(m):
     city = re.sub(r"^\S+\s+", "", m.group()).split()[0].casefold()
-    return None if city in _CITY_STOPLIST else (m.start(), m.end())
+    return None if city in _CITY_STOPLIST or city in _US_ADDRESS_WORDS else (m.start(), m.end())
 
 
 # words of the bank operation labels ('VIRT RECU MARION', 'PRLV SEPA REF', 'ACHAT-DEBIT'): they are never part of a
@@ -273,6 +277,8 @@ DETECTORS = [
     ("DATE", re.compile(rf"(?<!\d)\d{{1,2}}(?:er)?\s+(?i:{_MONTHS})\s+(?:19|20)\d{{2}}"), None),
     ("PHONE", re.compile(r"(?<![\w+])(?:\+|00)\d{1,3}[ .\-/]?(?:\(0\)[ .\-/]?)?\d(?:[ .\-/]?\d){6,10}(?!\d)"), _v_phone),
     ("PHONE", re.compile(r"(?<![\w+])0[1-9]\d{0,2}(?:[ .\-/]?\d{2,3}){2,4}(?!\d)"), _v_phone),
+    # a North American number: '1 202 111-2222', '(202) 111-2222', '202.111.2222'
+    ("PHONE", re.compile(r"(?<![\w+])(?:1[ .\-])?\(?\d{3}\)?[ .\-]\d{3}[ .\-]\d{4}(?!\d)"), None),
     # Street addresses (heuristic): "Kerkstraat 12", "Grote Markt 5", "Rue de la Loi 16"
     ("STREET_ADDRESS", re.compile(rf"(?<!\w){_CAP}{_WORD}*?(?i:{_NL_STREET})[ ]+{_NR}"), None),
     ("STREET_ADDRESS", re.compile(rf"(?<!\w)(?:{_CAP}{_WORD}+[ ]){{1,2}}(?:Markt|Plein|Kaai|Dreef|Laan)[ ]+{_NR}"), None),
@@ -287,7 +293,9 @@ DETECTORS = [
                                   rf"(?:\d{{1,2}}(?:er|e)?[ \t]+)?(?i:{_MONTHS})(?![\w])[ \t,]+{_NR}(?!\d)"), None),
     # a street without its number: 'Rue de Paris', 'rue de la république', 'avenue du 11 novembre', 'Rue Victor Hugo'
     # (the keyword, an article and the name, or a name written in capitals; the name stays on the same line)
-    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])(?i:{_FR_STREET})[ \t]+(?i:de la|du|des|de l'|de|d')[ \t]*"
+    # 'place' and 'cours' are common nouns ('mise en place du service', 'cours d'eau'): their name is a proper noun
+    ("STREET_ADDRESS", re.compile(rf"(?<![\w/])(?!(?i:place|cours)[ \t]+(?i:de la|du|des|de l'|de|d')[ \t]*[a-zà-ÿ])"
+                                  rf"(?i:{_FR_STREET})[ \t]+(?i:de la|du|des|de l'|de|d')[ \t]*"
                                   rf"{_NAME_WORD}(?:[ \t]+{_NAME_WORD}){{0,2}}(?![\w'’\-])"), None),
     # a street named after a date, without its number: 'avenue du 11 novembre', 'rue du 8 mai'
     ("STREET_ADDRESS", re.compile(rf"(?<![\w/])(?i:{_FR_STREET})[ \t]+(?i:de la|du|des|de l'|de|d')[ \t]*"
@@ -302,7 +310,11 @@ DETECTORS = [
                                   r"(\d{1,4}[^\n:]*?|[A-ZÀ-Þ][^\n:]*?)(?=\s{3,}|\s*\n|\Z)"), _v_street_label),
     # an English address written number first: '04 Library place', '12 Main Street'
     ("STREET_ADDRESS", re.compile(r"(?<![\w/])\d{1,4}[ ]+[A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]+(?:[ ][A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]+){0,2}"
-                                  r"[ ]+(?i:street|road|lane|place|avenue|drive|way|close)\b"), None),
+                                  r"[ ]+(?i:street|st|road|rd|lane|ln|place|avenue|ave|drive|dr|way|close|court|ct|"
+                                  r"boulevard|blvd|parkway|pkwy|plaza|highway|hwy)\b"), None),
+    # a US city line: 'Anywhere, USA 40000', 'Washington, DC 20011' (town, comma, state or USA, ZIP code)
+    ("POSTAL_CITY", re.compile(rf"(?<![\w/])(?:{_CAP}{_WORD}*)(?:[ \t]+{_CAP}{_WORD}*){{0,2}},[ \t]*"
+                               r"(?:USA|US|[A-Z]{2})[ \t]+\d{5}(?:-\d{4})?(?!\d)"), None),
     # Belgian-style postcode + city: "9000 Gent", "B-1000 Bruxelles"
     ("POSTAL_CITY", re.compile(rf"(?<![\w/.\-])(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?[1-9]\d{{3,4}}[ ]+"
                                rf"(?:{_CAP}[A-ZÀ-Þ'’\-]{{2,}}|{_CAP}[a-zà-ÿ'’]+)(?:-{_CAP}?[a-zà-ÿ'’]+)*"
@@ -323,6 +335,12 @@ DETECTORS = [
      _v_account_labeled),
     # an account number with a check letter, without label: '0012345Y', '12345 Y' (five digits or more, one capital)
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{5,}[ ]?[A-Z](?![\w'’\-])(?![ ]+[a-zà-ÿ])"), _v_account),
+    # a CSV record: the account is the field between two commas, followed by its currency ('03,0006123450999940,CAD,')
+    # (on a scan the OCR often stops the record at the number: the end of the line counts as the next field)
+    ("ACCOUNT_NUMBER", re.compile(r"(?<=,)\d{9,20}(?=,[A-Z]{3}\b|[ \t]*(?:\n|\Z))"), _v_account),
+    # a US policy number, letters and digits, after its label ('Policy Number: 254H089SJ425')
+    ("CONTRACT_REF", re.compile(r"(?i:policy\s+(?:number|no\.?|#))[ \t]*:?[ \t]*"
+                                r"((?=[0-9A-Z]*\d)[0-9A-Z]{5,}(?:[ .\-/][0-9A-Z]+){0,3})(?![\w,])"), _v_labeled),
     # insurance policy / contract / file number after its label: 'police 45.118.902', 'contrat n° 2024-118'
     ("CONTRACT_REF", re.compile(r"(?i:police|polis|n[°o]\s+de\s+police|contrat|n[°o]\s+de\s+contrat|dossier|"
                                 r"contract|policy)(?:\s+n[°o]\.?)?\s*[:\-]?\s*(\d+(?:[ .\-/]\d+){0,5})(?![\w,])"),
@@ -334,7 +352,8 @@ DETECTORS = [
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w'’.,])\d{2}(?:['’](?:\d{3}|\*{3})){3,}(?![\w'’]|[.,]\d)"), None),
     # Person names (heuristics; the config review step is where you confirm them)
     # after a title, up to five capitalised words ('Monsieur Théo Aurélien Gaspard Morin' keeps its surname)
-    ("PERSON", re.compile(rf"(?<!\w){_HONORIFIC}[ ]+({_CAP}{_WORD}+(?:[ ]{_CAP}{_WORD}+){{0,4}})"), _v_group1),
+    # (not after a dot: 'a.m. Standard Time' is an hour, not 'M. Standard Time')
+    ("PERSON", re.compile(rf"(?<![\w.]){_HONORIFIC}[ ]+({_CAP}{_WORD}+(?:[ ]{_CAP}{_WORD}+){{0,4}})"), _v_group1),
     # 'Pr\u00e9nom NOM': up to two middle names ('Merve Chantal Ga\u00eblle REYES'), a surname that may be cut ('REY', 'RE')
     ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_CAP}[a-z\u00e0-\u00ff'\u2019\-]+(?:[ ]{_CAP}[a-z\u00e0-\u00ff'\u2019\-]+){{0,2}}"
                           rf"[ ]+{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]*)(?!\w)"), _v_group1),  # Prenom NOM
@@ -343,7 +362,8 @@ DETECTORS = [
     ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+(?:[ ]{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+){{1,2}})(?!\w)"),
      _v_group1),
     # an identifier written alone, letters and digits: 'BT187536HE8O43' (lowest priority: other detectors win)
-    ("CONTRACT_REF", re.compile(r"(?<![\w/])[A-Z][A-Z0-9]{9,23}(?![\w])"), _v_mixed_id),
+    # (a number may start it: '254H089SJ425', a policy number that the OCR reads on a line of its own)
+    ("CONTRACT_REF", re.compile(r"(?<![\w/])[A-Z0-9][A-Z0-9]{9,23}(?![\w])"), _v_mixed_id),
 ]
 # capitalised words in a row, an initial counting as a word: 'Théo A. Morin', 'Lucas Martin Lu', 'MORIN Théo'. Kept
 # only with a word the documents already know as a name (see engine.scan_folder): no title and no capitals rule

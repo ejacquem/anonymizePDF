@@ -69,6 +69,10 @@ Marronniers Vignes Prairies Écoles Jardins Remparts Lavandes Bruyères Pins Orm
 Genêts Mimosas Églantiers Charmes Noyers Orchidées Bleuets Pâquerettes Champs Vergers Bouleaux Saules
 """.split()
 
+# the towns of the fakes for a US city line ('Anywhere, USA 40000'): real US town names, never letters at random
+US_TOWNS = ["Springfield", "Riverton", "Fairview", "Lakeside", "Brookhaven", "Maplewood", "Oakdale", "Clearwater",
+            "Greenville", "Ashford", "Milford", "Westbrook", "Brighton", "Hillcrest", "Eastwood", "Cedarville"]
+
 # the articles of a street name ('de la', 'du'): words of every document, not a reason to refuse a name
 _STREET_ARTICLES = {"de", "la", "le", "l", "du", "des", "d", "les", "au", "aux"}
 
@@ -679,6 +683,13 @@ class Faker:
         return new, towns[new]
 
     def postal_city(self, value: str) -> str:
+        # a US city line: 'Anywhere, USA 40000' -> 'Riverton, USA 61230' (a town of the list, the state and the ZIP digits)
+        us = re.fullmatch(r"(?P<city>.+?),\s*(?P<st>USA|US|[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)", value)
+        if us:
+            city = us.group("city")
+            rng = self.rng("us-town", _norm(city))
+            new_city = self._pick(US_TOWNS, len(city), rng, {_norm(city)} | self.reserved) or rng.choice(US_TOWNS)
+            return f"{_style_token(city, new_city)}, {us.group('st')} {self.digits(us.group('zip'), rng)}"
         m = re.fullmatch(r"(?P<pre>(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?)(?P<code>\d{4,5})(?P<sp>\s+)(?P<city>.+)", value)
         if not m:
             return self.scramble(value, self.rng("postal", value))
