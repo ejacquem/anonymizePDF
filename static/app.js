@@ -227,6 +227,9 @@ const BOXES_OPEN_KEY = "anonymizePDF.boxesOpen";
 // black boxes changed and not applied yet (Apply button), per folder and file: { removed: [{page, kind, box}] } = the
 // automatic boxes the user removed, sent with the next run and never written to the config
 const pendingBoxes = new Map();
+// the history of the black boxes and typed texts (Undo / Redo): one snapshot of a file's boxes before each change.
+// `epoch` counts the Apply runs: an undo back to a state that was not pending is only clean if no Apply came since.
+const undo = { stack: [], redo: [], epoch: 0 };
 const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 // Scroll positions the program set itself, per pane. The scroll event they trigger is ignored, so syncing
 // one pane does not bounce back to the other. (No timer / animation frame: works even in a hidden tab.)
@@ -985,11 +988,62 @@ function removedPayload() {
   }
   return out;
 }
-function clearPending(name) { pendingBoxes.delete(pendKey(name)); updateToolbar(); }
+function clearPending(name) { pendingBoxes.delete(pendKey(name)); undo.epoch++; updateToolbar(); }
 function clearFolderPending() {
   for (const k of [...pendingBoxes.keys()]) if (k.startsWith(state.folder + "\u0001")) pendingBoxes.delete(k);
+  undo.epoch++;
   updateToolbar();
 }
+
+// ---------- undo / redo of the black boxes and typed texts ----------
+const clone = (v) => JSON.parse(JSON.stringify(v));
+
+// the boxes and texts of the current file as they are now (the other files are not part of it), and whether the
+// file has changes not applied, with the automatic boxes removed for the next run
+function boxSnapshot() {
+  const name = currentFileName(), man = state.model.manual;
+  return { folder: state.folder, file: name, epoch: undo.epoch,
+    blackouts: clone(man.blackouts.filter((b) => b.file === name)),
+    texts: clone((man.texts || []).filter((t) => t.file === name)),
+    wasPending: isPending(name), removed: clone(pendingRemoved(name)) };
+}
+
+// to call BEFORE a change of the boxes: the state to come back to
+function rememberBoxes() {
+  if (!state.model || !state.model.manual || !currentFileName()) return;
+  undo.stack.push(boxSnapshot());
+  if (undo.stack.length > 200) undo.stack.shift();
+  undo.redo = [];
+  updateToolbar();
+}
+
+function historyFor(list) {
+  const name = currentFileName();
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].folder === state.folder && list[i].file === name) return i;
+  }
+  return -1;
+}
+
+async function stepBoxes(from, to, message) {
+  if (!state.model || !state.model.manual || state.running || boxes.drag) return;
+  const i = historyFor(from);
+  if (i < 0) return;
+  const snap = from.splice(i, 1)[0];
+  to.push(boxSnapshot());                                     // where Redo (or Undo again) comes back to
+  const man = state.model.manual;
+  man.blackouts = man.blackouts.filter((b) => b.file !== snap.file).concat(clone(snap.blackouts));
+  man.texts = (man.texts || []).filter((t) => t.file !== snap.file).concat(clone(snap.texts));
+  if (snap.wasPending || snap.epoch !== undo.epoch) pendingBoxes.set(pendKey(snap.file), { removed: clone(snap.removed) });
+  else pendingBoxes.delete(pendKey(snap.file));              // back to what the anonymized file shows
+  boxes.selKey = null;
+  boxes.preview = null;
+  await saveBoxes(message);
+  if (!snap.wasPending && snap.epoch === undo.epoch) { pendingBoxes.delete(pendKey(snap.file)); updateToolbar(); }
+}
+
+function undoBoxes() { return stepBoxes(undo.stack, undo.redo, "Undone"); }
+function redoBoxes() { return stepBoxes(undo.redo, undo.stack, "Redone"); }
 
 async function saveBoxes(message) {
   if (state.cfgView !== "table") await switchView("table");   // the boxes live in the model: work from the table view
@@ -1012,6 +1066,7 @@ function deleteBox(key) {
   const e = boxEntries().find((x) => x.key === key);
   if (!e) return;
   boxes.selKey = null;
+  rememberBoxes();
   if (e.type === "text") {
     state.model.manual.texts.splice(e.idx, 1);
     return saveBoxes("Typed text removed");
@@ -1078,6 +1133,7 @@ viewers.anon.list.addEventListener("dblclick", (e) => {
   boxes.selKey = ent.key;
   drawBoxes();
   openTextEditor(pageEl, ent.box, (text) => {
+    rememberBoxes();
     state.model.manual.texts[ent.idx].text = text;
     return saveBoxes("Text edited");
   }, ent.text);
@@ -1119,6 +1175,8 @@ async function applyBoxes() {
   updateToolbar();
 }
 $("#btnApply").onclick = applyBoxes;
+$("#btnUndo").onclick = undoBoxes;
+$("#btnRedo").onclick = redoBoxes;
 
 viewers.anon.list.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || !viewers.anon.pages.length) return;
@@ -1199,11 +1257,13 @@ document.addEventListener("pointerup", async () => {
     const b = { file: currentFileName(), page: d.page, box: r.map((v) => Math.round(v * 10) / 10) };
     if (d.text) {
       return openTextEditor(d.pageEl, r, (text) => {
+        rememberBoxes();
         state.model.manual.texts.push({ file: b.file, page: b.page, box: b.box, text });
         boxes.selKey = "t|" + (state.model.manual.texts.length - 1);
         return saveBoxes("Text saved");
       });
     }
+    rememberBoxes();
     state.model.manual.blackouts.push(b);
     boxes.selKey = "m|" + (state.model.manual.blackouts.length - 1);
     return saveBoxes("Black box saved");
@@ -1212,6 +1272,7 @@ document.addEventListener("pointerup", async () => {
   boxes.preview = null;
   if (!pv || sameBox(pv.box, d.orig)) return drawBoxes();          // a click: only the selection
   const nb = pv.box.map((v) => Math.round(v * 10) / 10);
+  rememberBoxes();
   if (d.ent.type === "text") {
     state.model.manual.texts[d.ent.idx].box = nb;
     boxes.selKey = d.ent.key;
@@ -1232,6 +1293,10 @@ document.addEventListener("pointerup", async () => {
 document.addEventListener("keydown", (e) => {
   const t = e.target;
   if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && /^[zy]$/i.test(e.key) && state.model && !$("#btnBox").disabled) {
+    e.preventDefault();                                          // Ctrl+Z undoes, Ctrl+Y and Ctrl+Shift+Z redo
+    return (e.key.toLowerCase() === "y" || e.shiftKey) ? redoBoxes() : undoBoxes();
+  }
   if ((e.key === "Delete" || e.key === "Backspace") && boxes.selKey && state.model) {
     e.preventDefault();
     return deleteBox(boxes.selKey);
@@ -1673,6 +1738,8 @@ function updateToolbar() {
     : "No replaced field recorded for this file: anonymize it to see them";
   $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig) || nativeMode();
   $("#btnText").disabled = $("#btnBox").disabled;
+  $("#btnUndo").disabled = state.running || $("#btnBox").disabled || historyFor(undo.stack) < 0;
+  $("#btnRedo").disabled = state.running || $("#btnBox").disabled || historyFor(undo.redo) < 0;
 }
 
 // ---------- jobs ----------

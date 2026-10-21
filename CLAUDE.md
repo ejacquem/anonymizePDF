@@ -158,6 +158,12 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   YAML, `engine.parse_config`, `_manual_texts`); Apply regenerates the anonymized file. A typed text is shown stretched in the
   viewer and while it is typed (`textFit`, same metrics as the PDF); double-click a typed text to edit it; the ✕ of a box
   removes it. The text takes the colour of the text under its box.
+- Undo / Redo (Anonymized pane head, `#btnUndo` / `#btnRedo`, Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z): every change of the black
+  boxes and typed texts of the selected file (draw, move, resize, delete, edit a text, remove an automatic box) is one
+  step. `rememberBoxes()` takes a snapshot BEFORE the change (the file's `manual.blackouts` and `manual.texts`, and its
+  pending removed automatic boxes); `stepBoxes` puts a snapshot back, saves the config and keeps the opposite stack.
+  One history per folder and file, in memory (a reload forgets it). `undo.epoch` counts the Apply runs: going back to a
+  state that was not pending is clean (Apply off) only if no Apply came since, else Apply is lit.
 - Black boxes list: Config tab, under Manual data, for the selected file. One row per box with its origin tag
   (Hand-drawn / Photo / face / QR code / Signature; "· edited" when an automatic box was moved). Click a row = select
   its box in the viewer (dashed overlay for automatic boxes), click a box = select its row; ✕ or Delete removes it.
@@ -586,9 +592,16 @@ Order must never change a result (`order_tests`): a value written with several s
   approvals and places of a signature written without its word (`_SIGNATURE_ANCHOR`: 'Cordialement,', 'Lu et approuvé',
   'Pour l'entreprise', 'Fait à Paris, le …', 'Le titulaire', 'Signé à …'; a line of ≤ 8 words). A line is cut into labels
   where the gap between two words is over 2.5 word heights (`_label_segments`: two columns on one row are two labels).
+  A line that says who signed is a label too (`_SIGNED`: 'Le notaire Maître X a signé', 'Signé par M. Martin', 'Signed by',
+  'heeft getekend'; a line of ≤ 14 words: 'a été signé le … par' and 'Documents signés' are no label).
   Each stroke belongs to ONE label (`_owners`): the nearest label above it in its column (within 8 label heights), else
-  the label below it (within 2 heights). So two signatures stacked between labels are two boxes, not one across the
-  label. The search goes 30 mm below a label and stops at the next signature label of the column. Ink not OCR text of
+  the label below it (within 2 heights), else, on the label's row, to its right up to `ROW_REACH_MM` (130 mm, the next
+  cell of a grid: strokes whose box overlaps the row from one label height above to 4 below; a second seed of `_grow`
+  starts there, the window reaches 130 mm right of the label's end). So two signatures stacked between labels are two
+  boxes, not one across the label. A signature in another cell is cut around words with no anchor on the label
+  (`_clear_of_text(anchor_x=None)`). Frames are not handwriting: digital drawings made of horizontal / vertical lines and
+  rectangles only (`_only_straight`), and on scans runs of ink longer than 15 mm (`_long_runs`). Dossier Test 18 page 4 (3
+  in the scan): a one-row grid with the label in the left cell and the signature far right, and the same without frames. The search goes 30 mm below a label and stops at the next signature label of the column. Ink not OCR text of
   normal height, not a ruled line, not in MRZ / photos (the face area widened by 50 %) / codes; seeded next to the
   label, grown through strokes ≤ 3 mm apart (`_grow`) in a window of 12 mm above / 30 mm below the label and 5 / 80 mm
   around it. A signature with no label (only a typed name under it) is not found: a known limit. Components that are solid (fill ≥ 0.4) or lie mostly inside an OCR word box are print, not ink.
