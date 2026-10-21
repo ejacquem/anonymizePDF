@@ -613,7 +613,7 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 
 ## 12. Test suite: `python tools/check_all.py`
 
-Run it after every change (exit code 0 = all passed; about 7.5 min with 2 keys on 4 cores / 8 threads, it was 17 min
+Run it after every change (exit code 0 = all passed; about 8 min with 2 keys on 4 cores / 8 threads (1417 checks), it was 17 min
 one job after the other; `--quick` = 1 key and no option tests, `--fast` = also leaves out the long font / contract runs
 (`SLOW_GROUPS`), `--folder "Dossier Test 04"` to target, `--keep` to keep outputs, `--jobs N` processes at once, default 6,
 1 = one after the other with live output). It copies `sample_data/*` to a temp dir and uses
