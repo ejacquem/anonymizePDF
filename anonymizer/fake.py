@@ -493,9 +493,16 @@ class Faker:
 
     def digit_groups(self, value: str) -> str:
         """Change every digit, group by group: the same group gets the same new digits everywhere,
-        so '05871' is replaced the same way in '05871 00001234567 02' and in '30002 / 05871'."""
-        return re.sub(r"\d+", lambda m: self.digits(m.group(), self.rng("grp", m.group()), keep_leading_zeros=True),
-                      value)
+        so '05871' is replaced the same way in '05871 00001234567 02' and in '30002 / 05871'. The leading zeros stay
+        and do not count: '000012345Y' and '12345 Y' (the same account, written with and without its zeros and its
+        space) get the same new digits, '0000' + '44598' and '44598'."""
+        def group(m):
+            g = m.group()
+            core = g.lstrip("0")
+            if not core:
+                return g
+            return g[:len(g) - len(core)] + self.digits(core, self.rng("grp", core), keep_leading_zeros=True)
+        return re.sub(r"\d+", group, value)
 
     def reference(self, value: str) -> str:
         """A reference with letters and digits ('BT187536HE8O43', '5483651240000XA3'): digit groups and letter groups

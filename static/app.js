@@ -227,6 +227,9 @@ const BOXES_OPEN_KEY = "anonymizePDF.boxesOpen";
 // black boxes changed and not applied yet (Apply button), per folder and file: { removed: [{page, kind, box}] } = the
 // automatic boxes the user removed, sent with the next run and never written to the config
 const pendingBoxes = new Map();
+// the history of the black boxes and typed texts (Undo / Redo): one snapshot of a file's boxes before each change.
+// `epoch` counts the Apply runs: an undo back to a state that was not pending is only clean if no Apply came since.
+const undo = { stack: [], redo: [], epoch: 0 };
 const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 // Scroll positions the program set itself, per pane. The scroll event they trigger is ignored, so syncing
 // one pane does not bounce back to the other. (No timer / animation frame: works even in a hidden tab.)
@@ -539,9 +542,13 @@ for (const which of VIEWERS) {
     stepZoom(e.deltaY < 0 ? 1 : -1, { which, x: e.clientX - r.left, y: e.clientY - r.top });
   }, { passive: false });
 
+  // the right button of a drag moves the view too, while a box tool is on (the left one draws the boxes)
+  box.addEventListener("contextmenu", (e) => {
+    if (boxes.tool || boxes.textTool) e.preventDefault();
+  });
   // click + drag moves the view (image mode); the other pane follows through the scroll sync above
   box.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || nativeMode() || !viewers[which].pages.length) return;
+    if ((e.button !== 0 && e.button !== 2) || nativeMode() || !viewers[which].pages.length) return;
     const r = box.getBoundingClientRect();
     if (e.clientX - r.left >= box.clientWidth || e.clientY - r.top >= box.clientHeight) return;  // on a scrollbar
     e.preventDefault();
@@ -649,13 +656,50 @@ function originalFiles() {
   return node ? (node.children || []).filter((c) => c.type === "file" && !c.anonymized).map((c) => c.path) : [];
 }
 
+// a field the arrows belong to (typing, a list): not a checkbox, a radio or a button, which keep the focus after a click
+function usesArrows(t) {
+  const el = t && t.closest ? t.closest("input, textarea, select, [contenteditable]") : null;
+  if (!el) return false;
+  return !(el.tagName === "INPUT" && ["checkbox", "radio", "button", "submit", "reset", "range", "color", "file"].includes(el.type));
+}
+
+// the folders that hold PDFs, in the order of the tree: Ctrl + up / down goes to the previous / next one (wraps around)
+function pdfFolders() {
+  const out = [];
+  const walk = (n) => {
+    if (n.type !== "dir") return;
+    if (n.pdf_count) out.push(n.path);
+    (n.children || []).forEach(walk);
+  };
+  if (state.tree) walk(state.tree);
+  return out;
+}
+
+async function stepFolder(dir) {
+  const list = pdfFolders();
+  if (!list.length) return;
+  const i = list.indexOf(state.folder);
+  const next = dir > 0 ? (i + 1) % list.length : (i <= 0 ? list.length - 1 : i - 1);
+  if (list[next] === state.folder) return;
+  if ((await selectFolder(list[next])) === false) return;
+  unfoldAbove(list[next]);
+  const first = originalFiles()[0];
+  if (first) await openFile(first);
+  else renderTree();
+  const row = document.querySelector("#tree .row.selected");
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+}
+
 document.addEventListener("keydown", (e) => {
   if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-  const t = e.target;
-  if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;   // typing keeps its arrows
-  const files = originalFiles();
-  if (!files.length || state.running) return;
+  if (e.altKey || e.shiftKey) return;
+  if (usesArrows(e.target)) return;                          // typing keeps its arrows
+  if (e.ctrlKey || e.metaKey) {                              // Ctrl + arrows: the previous / next folder
+    e.preventDefault();
+    return stepFolder(e.key === "ArrowDown" ? 1 : -1);
+  }
+  const files = originalFiles();                             // (also while a job runs: viewing a file changes nothing for it)
+  if (!files.length) return;
   e.preventDefault();
   const cur = currentOriginalNode();
   const i = cur ? files.indexOf(cur.path) : -1;
@@ -838,9 +882,11 @@ function drawBoxes() {
       const bx = boxes.preview && boxes.preview.key === e.key ? boxes.preview.box : e.box;
       const d = document.createElement("div");
       const resizing = boxes.drag && boxes.drag.ent && boxes.drag.ent.key === e.key && boxes.drag.mode !== "move";
+      const dragged = boxes.drag && boxes.drag.ent && boxes.drag.ent.key === e.key && boxes.drag.mode !== "create";
       d.className = "bbox" + (e.type === "auto" ? " auto" : "") + (e.type === "text" ? " text" : "")
         + (boxes.selKey === e.key ? " sel" : "")
-        + (resizing ? " resizing" : "");                       // see-through while a side or corner is dragged
+        + (resizing ? " resizing" : "")                        // see-through while a side or corner is dragged
+        + (dragged && e.type === "text" ? " moving" : "");     // a text box is transparent while it is moved or resized
       d.dataset.bkey = e.key;
       if (e.type === "text") {
         const f = textFit(e.text, bx, k);
@@ -985,11 +1031,62 @@ function removedPayload() {
   }
   return out;
 }
-function clearPending(name) { pendingBoxes.delete(pendKey(name)); updateToolbar(); }
+function clearPending(name) { pendingBoxes.delete(pendKey(name)); undo.epoch++; updateToolbar(); }
 function clearFolderPending() {
   for (const k of [...pendingBoxes.keys()]) if (k.startsWith(state.folder + "\u0001")) pendingBoxes.delete(k);
+  undo.epoch++;
   updateToolbar();
 }
+
+// ---------- undo / redo of the black boxes and typed texts ----------
+const clone = (v) => JSON.parse(JSON.stringify(v));
+
+// the boxes and texts of the current file as they are now (the other files are not part of it), and whether the
+// file has changes not applied, with the automatic boxes removed for the next run
+function boxSnapshot() {
+  const name = currentFileName(), man = state.model.manual;
+  return { folder: state.folder, file: name, epoch: undo.epoch,
+    blackouts: clone(man.blackouts.filter((b) => b.file === name)),
+    texts: clone((man.texts || []).filter((t) => t.file === name)),
+    wasPending: isPending(name), removed: clone(pendingRemoved(name)) };
+}
+
+// to call BEFORE a change of the boxes: the state to come back to
+function rememberBoxes() {
+  if (!state.model || !state.model.manual || !currentFileName()) return;
+  undo.stack.push(boxSnapshot());
+  if (undo.stack.length > 200) undo.stack.shift();
+  undo.redo = [];
+  updateToolbar();
+}
+
+function historyFor(list) {
+  const name = currentFileName();
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].folder === state.folder && list[i].file === name) return i;
+  }
+  return -1;
+}
+
+async function stepBoxes(from, to, message) {
+  if (!state.model || !state.model.manual || state.running || boxes.drag) return;
+  const i = historyFor(from);
+  if (i < 0) return;
+  const snap = from.splice(i, 1)[0];
+  to.push(boxSnapshot());                                     // where Redo (or Undo again) comes back to
+  const man = state.model.manual;
+  man.blackouts = man.blackouts.filter((b) => b.file !== snap.file).concat(clone(snap.blackouts));
+  man.texts = (man.texts || []).filter((t) => t.file !== snap.file).concat(clone(snap.texts));
+  if (snap.wasPending || snap.epoch !== undo.epoch) pendingBoxes.set(pendKey(snap.file), { removed: clone(snap.removed) });
+  else pendingBoxes.delete(pendKey(snap.file));              // back to what the anonymized file shows
+  boxes.selKey = null;
+  boxes.preview = null;
+  await saveBoxes(message);
+  if (!snap.wasPending && snap.epoch === undo.epoch) { pendingBoxes.delete(pendKey(snap.file)); updateToolbar(); }
+}
+
+function undoBoxes() { return stepBoxes(undo.stack, undo.redo, "Undone"); }
+function redoBoxes() { return stepBoxes(undo.redo, undo.stack, "Redone"); }
 
 async function saveBoxes(message) {
   if (state.cfgView !== "table") await switchView("table");   // the boxes live in the model: work from the table view
@@ -1012,6 +1109,7 @@ function deleteBox(key) {
   const e = boxEntries().find((x) => x.key === key);
   if (!e) return;
   boxes.selKey = null;
+  rememberBoxes();
   if (e.type === "text") {
     state.model.manual.texts.splice(e.idx, 1);
     return saveBoxes("Typed text removed");
@@ -1040,6 +1138,8 @@ function fitEditor(input, r, k) {
     width: f.wPx / f.sx + "px", paddingLeft: f.pad / f.sx + "px" });
 }
 
+// the text being typed (one at a time): a click elsewhere places it and closes its box (see the capture listener below)
+let activeEditor = null;
 function openTextEditor(pageEl, r, onDone, initial = "") {
   const k = pageScale();
   const input = document.createElement("input");
@@ -1051,14 +1151,17 @@ function openTextEditor(pageEl, r, onDone, initial = "") {
   fitEditor(input, r, k);
   input.addEventListener("input", () => fitEditor(input, r, k));
   let done = false;
+  const api = { place: () => finish(true) };
   const finish = (ok) => {
     if (done) return;
     done = true;
+    if (activeEditor === api) activeEditor = null;
     const value = input.value.trim();
     input.remove();
     if (ok && value) onDone(value);
     else setStatus("Text cancelled", "");
   };
+  activeEditor = api;
   input.addEventListener("keydown", (e) => {
     e.stopPropagation();
     if (e.key === "Enter") finish(true);
@@ -1069,15 +1172,32 @@ function openTextEditor(pageEl, r, onDone, initial = "") {
   input.focus();
 }
 
-viewers.anon.list.addEventListener("dblclick", (e) => {
-  const box = e.target.closest(".bbox.text");
-  const pageEl = e.target.closest(".page");
-  if (!box || !pageEl || !state.model) return;
-  const ent = boxEntries().find((x) => x.key === box.dataset.bkey);
+// a click elsewhere while a text is typed places it and closes its box: that click does nothing else (no new box)
+document.addEventListener("pointerdown", (e) => {
+  if (!activeEditor || e.target.closest(".btextinput")) return;
+  e.stopPropagation();
+  activeEditor.place();
+}, true);
+
+// double-click on a typed text edits it. The texts are drawn only while the Text tool is on, so the place is found from
+// the pointer (the text whose box holds it), whatever the tool
+viewers.anon.box.addEventListener("dblclick", (e) => {
+  // the page under the pointer: the pan holds the pointer (capture), so the target can be the pane, not the page
+  const pageEl = [...viewers.anon.list.children].find((p) => {
+    const r = p.getBoundingClientRect();
+    return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  });
+  if (!pageEl || !state.model || e.target.closest(".btextinput")) return;
+  const page = +pageEl.dataset.page;
+  const [x, y] = pagePoint(pageEl, e);
+  const hits = boxEntries().filter((t) => t.type === "text" && t.page === page
+    && x >= t.box[0] && x <= t.box[2] && y >= t.box[1] && y <= t.box[3]);
+  const ent = hits[hits.length - 1];                          // the last one drawn: the one on top
   if (!ent) return;
   boxes.selKey = ent.key;
   drawBoxes();
   openTextEditor(pageEl, ent.box, (text) => {
+    rememberBoxes();
     state.model.manual.texts[ent.idx].text = text;
     return saveBoxes("Text edited");
   }, ent.text);
@@ -1119,6 +1239,8 @@ async function applyBoxes() {
   updateToolbar();
 }
 $("#btnApply").onclick = applyBoxes;
+$("#btnUndo").onclick = undoBoxes;
+$("#btnRedo").onclick = redoBoxes;
 
 viewers.anon.list.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || !viewers.anon.pages.length) return;
@@ -1199,11 +1321,13 @@ document.addEventListener("pointerup", async () => {
     const b = { file: currentFileName(), page: d.page, box: r.map((v) => Math.round(v * 10) / 10) };
     if (d.text) {
       return openTextEditor(d.pageEl, r, (text) => {
+        rememberBoxes();
         state.model.manual.texts.push({ file: b.file, page: b.page, box: b.box, text });
         boxes.selKey = "t|" + (state.model.manual.texts.length - 1);
         return saveBoxes("Text saved");
       });
     }
+    rememberBoxes();
     state.model.manual.blackouts.push(b);
     boxes.selKey = "m|" + (state.model.manual.blackouts.length - 1);
     return saveBoxes("Black box saved");
@@ -1212,6 +1336,7 @@ document.addEventListener("pointerup", async () => {
   boxes.preview = null;
   if (!pv || sameBox(pv.box, d.orig)) return drawBoxes();          // a click: only the selection
   const nb = pv.box.map((v) => Math.round(v * 10) / 10);
+  rememberBoxes();
   if (d.ent.type === "text") {
     state.model.manual.texts[d.ent.idx].box = nb;
     boxes.selKey = d.ent.key;
@@ -1232,6 +1357,10 @@ document.addEventListener("pointerup", async () => {
 document.addEventListener("keydown", (e) => {
   const t = e.target;
   if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && /^[zy]$/i.test(e.key) && state.model && !$("#btnBox").disabled) {
+    e.preventDefault();                                          // Ctrl+Z undoes, Ctrl+Y and Ctrl+Shift+Z redo
+    return (e.key.toLowerCase() === "y" || e.shiftKey) ? redoBoxes() : undoBoxes();
+  }
   if ((e.key === "Delete" || e.key === "Backspace") && boxes.selKey && state.model) {
     e.preventDefault();
     return deleteBox(boxes.selKey);
@@ -1241,6 +1370,29 @@ document.addEventListener("keydown", (e) => {
     else if (boxes.tool) setBoxTool(false);
     else if (boxes.selKey) { boxes.selKey = null; drawBoxes(); }
   }
+});
+
+// T / B / F with the mouse over a viewer: the Text tool, the Black box tool, the search of the configuration
+let overViewer = false;
+VIEWERS.forEach((w) => {
+  viewers[w].box.addEventListener("mouseenter", () => { overViewer = true; });
+  viewers[w].box.addEventListener("mouseleave", () => { overViewer = false; });
+});
+async function focusConfigSearch() {
+  showTab("config");
+  if (state.cfgView !== "table") await switchView("table");
+  const search = $("#cfgSearch");
+  if (search.hidden) return;
+  search.focus();
+  search.select();
+}
+document.addEventListener("keydown", (e) => {
+  if (!overViewer || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target && e.target.closest && e.target.closest("input, textarea, select, [contenteditable]")) return;
+  const key = (e.key || "").toLowerCase();
+  if (key === "t" && !$("#btnText").disabled) { e.preventDefault(); return $("#btnText").click(); }
+  if (key === "b" && !$("#btnBox").disabled) { e.preventDefault(); return $("#btnBox").click(); }
+  if (key === "f") { e.preventDefault(); return focusConfigSearch(); }
 });
 
 // ---------- manual review flag ----------
@@ -1638,8 +1790,9 @@ document.querySelectorAll(".cfgbar .seg button").forEach((b) => { b.onclick = ()
 function updateToolbar() {
   const node = state.folder !== null ? state.nodes[state.folder] : null;
   const n = node ? node.pdf_count : 0;
+  const here = originalFiles().indexOf(currentOriginalNode() ? currentOriginalNode().path : null) + 1;   // 0: no file open
   $("#folderInfo").innerHTML = node
-    ? `Working folder: <b>${esc(node.name)}</b> · ${n} PDF${n === 1 ? "" : "s"}${n ? "" : " (no PDF directly in this folder)"}`
+    ? `Working folder: <b>${esc(node.name)}</b> · ${here ? `<b>${here}</b>/` : ""}${n} PDF${n === 1 ? "" : "s"}${n ? "" : " (no PDF directly in this folder)"}`
     : "Select a folder in the tree (click a folder or a file).";
   const batch = !n && hasSubfolders(node);               // a folder of client folders: the buttons act on all of them
   state.batchMode = batch;
@@ -1673,6 +1826,8 @@ function updateToolbar() {
     : "No replaced field recorded for this file: anonymize it to see them";
   $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig) || nativeMode();
   $("#btnText").disabled = $("#btnBox").disabled;
+  $("#btnUndo").disabled = state.running || $("#btnBox").disabled || historyFor(undo.stack) < 0;
+  $("#btnRedo").disabled = state.running || $("#btnBox").disabled || historyFor(undo.redo) < 0;
 }
 
 // ---------- jobs ----------

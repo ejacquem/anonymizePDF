@@ -74,6 +74,7 @@ standard time form forms description policy period premium coverage insurance de
 section total value information informational purposes
 street drive road avenue boulevard court parkway plaza
 directeur directrice responsable gérant gérante président présidente secrétaire chef
+bénéficiaire beneficiaire créancier creancier débiteur debiteur donneur ordre
 """.split())
 _STOP_KEYS = {_pkey(w) for w in _STOP}
 # words that only join a name to the words before it or after it: 'SUCCESSION DE NOM', 'TITRES DE NOM'
@@ -233,6 +234,17 @@ def _town_of(typ: str, value: str) -> str | None:
         town = re.sub(r"\s*\(.*$", "", value)
     town = town.strip()
     return town if re.search(r"[^\W\d_]", town) else None         # a postcode alone is no town
+
+
+def _word_keys(text: str) -> list[str]:
+    """The words of a text as keys (no accents, no case, no digits or punctuation): 'HUGO BP (09062)' -> ['hugo', 'bp']."""
+    return [_pkey(w) for w in re.findall(r"[^\W\d_]+", text)]
+
+
+def _contains(words: list[str], seq: list[str]) -> bool:
+    """Are the words of `seq` one after the other in `words`?"""
+    n = len(seq)
+    return n > 0 and any(words[i:i + n] == seq for i in range(len(words) - n + 1))
 
 
 def accept_person(value: str, honorific: bool, from_ner: bool, vocab: frozenset = frozenset()) -> bool:
@@ -612,10 +624,13 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         off.append({**e, "replace": faker.person(e["value"], gender(e)), "note": note})
 
     numbers_added = {norm_value(e["value"]) for e in found.values() if e["type"] in SPLIT_TYPES}
+    postal_keys = {norm_value(e["value"]) for e in found.values() if e["type"] == "POSTAL_CITY"}
     for e in found.values():
         t = e["type"]
         if t == "PERSON":
             continue
+        if t == "STREET_ADDRESS" and norm_value(e["value"]) in postal_keys:
+            continue                       # 'HUGO BP (09062)' after 'rue :' is a town and its code: one value, the town
         if t in ACTIVE_TYPES:
             active.append({**e, "replace": faker.suggest(t, e["value"]), "note": ""})
             groups = re.findall(r"\d+", e["value"]) if t in SPLIT_TYPES else []
@@ -636,6 +651,28 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         else:  # ORG, LOCATION: noisy NER output, off by default
             off.append({**e, "replace": faker.suggest(t, e["value"]), "note": "NER guess"})
 
+    # a name inside a town ('HUGO BP' in 'HUGO BP (09062)', a town written with its name) is no name: the town has
+    # priority, and the name is unchecked (it stays a suggestion, and so do its parts)
+    towns_found = []
+    for f in found.values():
+        if f["type"] in ("POSTAL_CITY", "BIRTH_PLACE") and _town_of(f["type"], f["value"]):
+            town = _town_of(f["type"], f["value"])
+            towns_found.append((town, _word_keys(town)))
+    moved = []
+    for a in active:
+        if a["type"] != "PERSON":
+            continue
+        seq = _word_keys(a["value"])
+        holder = next((town for town, words in towns_found if seq and _contains(words, seq)), None)
+        if holder is not None:
+            moved.append((a, holder))
+    if moved:
+        dropped = {id(a) for a, _ in moved}
+        parts_of = {f"part of '{a['value']}'" for a, _ in moved}
+        for a, holder in moved:
+            off.append({**a, "note": f"inside the town of '{holder}': the town has priority - check it"})
+        active[:] = [p for p in active if id(p) not in dropped and p.get("note") not in parts_of]
+
     # the town of a postcode ('75017 PARIS') or of a birth place ('RENNES (35)') gets the same fake as the postcode
     # line does, and the same town written alone ('PARIS' in another sentence) is replaced the same way
     known = {norm_value(a["value"]) for a in active}
@@ -655,6 +692,18 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         active.append({"type": "LOCATION", "value": t["town"], "count": t["count"],
                        "files": t["files"], "pages": t["pages"], "replace": faker.city(t["town"]),
                        "note": f"town of '{min(t['from'])}'"})
+    # the postcode of a town and its code ('09062' of 'HUGO BP (09062)') on its own, in addition to the whole value: the
+    # digits are those of the whole value's fake, so the parts of an address agree with the whole
+    whole = {norm_value(a["value"]): a["replace"] for a in active if a["type"] == "POSTAL_CITY"}
+    for key, f in sorted(((norm_value(f["value"]), f) for f in found.values() if f["type"] == "POSTAL_CITY"),
+                         key=lambda kv: kv[0]):
+        code = re.search(r"\d{4,5}", f["value"])
+        fake = re.search(r"\d{4,5}", whole.get(key, ""))
+        if not code or not fake or norm_value(code.group()) in known:
+            continue
+        known.add(norm_value(code.group()))
+        active.append({"type": "POSTAL_CITY", "value": code.group(), "count": f["count"], "files": f["files"],
+                       "pages": f["pages"], "replace": fake.group(), "note": f"postcode of '{f['value']}'"})
     _align_contained_numbers(active)
     # a value already replaced (e.g. a name under a label) is not suggested again as an uncertain NER guess
     active_values = {norm_value(a["value"]) for a in active}

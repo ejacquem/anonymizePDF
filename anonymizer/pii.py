@@ -169,6 +169,20 @@ def _v_bic(m):
 _DATE_LIKE = re.compile(r"\d{1,2}[./]\d{1,2}[./]\d{2,4}")
 
 
+_ID_LABEL = (r"(?<![\w])(?i:(?:r[ée]f(?:[ée]rence)?|identifiant|id|num[ée]ro|n[°o])\.?[ \t]*(?:de[ \t]+|du[ \t]+|unique[ \t]+(?:de[ \t]+)?)?"
+             r"(?:client|abonn[ée]|contrat|police|dossier|mandat|rum|facture|paiement|op[ée]ration|commande|transaction|"
+             r"adh[ée]rent|membre|compte[ \t]+client|b[ée]n[ée]ficiaire|d[ée]biteur)|libell[ée]|communication|cr[ée]ancier)")
+
+
+def _v_id_labeled(m):
+    """The value of an identifier after its label (group 1): at least 6 digits (the letters are free), not a date, not a
+    placeholder."""
+    d = re.sub(r"\D", "", m.group(1))
+    if len(d) < 6 or d.count("0") >= len(d) - 1 or _DATE_LIKE.fullmatch(m.group(1)):
+        return None
+    return m.start(1), m.end(1)
+
+
 def _v_account_labeled(m):
     """An account number after its label, but not a date written after it ('Numéro de compte 07/09/2024')."""
     if _DATE_LIKE.fullmatch(m.group(1)):
@@ -177,14 +191,39 @@ def _v_account_labeled(m):
 
 
 def _v_reference(m):
-    """A reference written after its label ('REF : 5483651240000XA3'): at least 4 digits."""
-    return (m.start(1), m.end(1)) if sum(c.isdigit() for c in m.group(1)) >= 4 else None
+    """A reference written after its label ('REF : 5483651240000XA3'): at least 4 digits. A label glued to the number
+    ('REF.CLIENT12345678') is no part of the reference."""
+    value, start = m.group(1), m.start(1)
+    glued = _GLUED_LABEL.match(value)
+    if glued:
+        value, start = value[glued.end():], start + glued.end()
+    return (start, m.end(1)) if sum(c.isdigit() for c in value) >= 4 else None
+
+
+# a label written against its number, with no colon ('CREANCIER12345678912465789' after an OCR that lost the colon):
+# the label stays readable, only the number is replaced
+_GLUED_LABEL = re.compile(r"(?i)(?:cr[ée]ancier|libell[ée]|client|mandat|rum|facture|paiement|op[ée]ration|commande|"
+                          r"transaction|adh[ée]rent|membre|abonn[ée]|contrat|police|dossier|r[ée]f[ée]rence|ref|"
+                          r"identifiant|id|num[ée]ro|n[°o]|communication|b[ée]n[ée]ficiaire|d[ée]biteur|compte|montant|"
+                          r"motif|objet)(?=\d)")
 
 
 def _v_mixed_id(m):
-    """An identifier written alone ('BT187536HE8O43'): letters and digits, at least 2 letters and 4 digits."""
+    """An identifier written alone ('BT187536HE8O43'): letters and digits, at least 2 letters and 4 digits. A long one
+    ('123456789CFEECFTE123456789', '123456789123456E123456789123456789': 16 characters or more) only needs a letter and
+    8 digits: nothing else looks like that. A label glued to its number ('LIBELLE123456789', 'REF.CLIENT12345678') is no
+    part of the identifier: the number alone is the value (6 digits or more)."""
     value = m.group()
-    return (m.start(), m.end()) if sum(c.isalpha() for c in value) >= 2 and sum(c.isdigit() for c in value) >= 4 else None
+    glued = _GLUED_LABEL.match(value)
+    if glued:
+        rest = value[glued.end():]
+        if sum(c.isdigit() for c in rest) >= 6 and len(rest) <= 60:
+            return m.start() + glued.end(), m.end()
+        return None
+    letters, digits = sum(c.isalpha() for c in value), sum(c.isdigit() for c in value)
+    if letters >= 2 and digits >= 4 and len(value) <= 24:
+        return m.start(), m.end()
+    return (m.start(), m.end()) if len(value) >= 16 and letters >= 1 and digits >= 8 else None
 
 
 def _v_street_label(m):
@@ -208,7 +247,9 @@ def _v_postal(m):
 # words that are never the start of a town written before its postcode: a street type, a connector, a label
 _TOWN_NOT_FIRST = {"rue", "avenue", "av", "boulevard", "bd", "chemin", "allee", "allée", "route", "impasse", "quai",
                    "place", "cours", "square", "passage", "de", "du", "des", "la", "le", "les", "et", "sur", "en",
-                   "adresse", "address", "ville", "commune", "city", "town"}
+                   "adresse", "address", "ville", "commune", "city", "town",
+                   "bénéficiaire", "beneficiaire", "créancier", "creancier", "débiteur", "debiteur", "libellé",
+                   "libelle", "nom", "name", "montant", "motif", "objet", "identifiant", "référence", "reference"}
 
 
 def _v_code_after_street(m):
@@ -302,7 +343,7 @@ DETECTORS = [
     # SEPA creditor identifier (direct debit): 'BE79ZZZ0404484654', 'FR12ZZZ123456'
     ("SEPA_CREDITOR_ID", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28}(?![A-Za-z0-9])"),
      _v_sepa_creditor),
-    ("SEPA_CREDITOR_ID", re.compile(r"(?i:identifiant(?:\s+(?:du\s+)?cr[ée]ancier)?|identifiant\s+sepa|\bics\b|"
+    ("SEPA_CREDITOR_ID", re.compile(r"(?i:identifiant(?:\s+(?:du\s+)?cr[ée]ancier)?|identifiant\s+sepa|\bics\b|\bid\.?\s*cr[ée]ancier|"
                                     r"creditor\s+id(?:entifier)?|schuldeiser(?:s)?-?id(?:entificatie)?)\s*[:\-]?\s*"
                                     r"([A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28})(?![A-Za-z0-9])"), _v_group1),
     ("BE_NATIONAL_NUMBER", re.compile(r"(?<!\d)\d{2}\.\d{2}\.\d{2}[-.]\d{3}\.\d{2}(?!\d)"), None),
@@ -386,8 +427,15 @@ DETECTORS = [
     ("ACCOUNT_NUMBER", re.compile(r"(?i:compte(?:[ \t]+(?:courant|épargne|epargne|titres|bancaire|client))?|\bRIB\b)"
                                   r"[ \t]*[:\-]?[ \t]*((?=[0-9A-Z]*\d)[0-9A-Z]+(?:[ ./\-][0-9A-Z]+){0,5})(?![\w,])"),
      _v_account_labeled),
+    # the identifier of a client, a mandate, a contract, a payment... after its label, letters and digits, in one block or
+    # in groups ('REF.MANDAT: 123456789CFEECFTE123456789', 'identifiant client 12 1234 5678', 'LIBELLE: 1234567890123')
+    ("CONTRACT_REF", re.compile(_ID_LABEL + r"[ \t]*[:\-]?[ \t]*((?=[0-9A-Z]*\d)[0-9A-Z]+(?:[ ./\-][0-9A-Z]+){0,5})(?![\w,])"),
+     _v_id_labeled),
     # an account number with a check letter, without label: '0012345Y', '12345 Y' (five digits or more, one capital)
-    ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{5,}[ ]?[A-Z](?![\w'’\-])(?![ ]+[a-zà-ÿ])"), _v_account),
+    # glued to its letter ('000012345Y'): a word of the sentence may follow ('N° 000012345Y du client'); with a space
+    # ('12345 Y') the capital must not start a word of the sentence ('12345 Y compris')
+    ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{5,}[A-Z](?![\w'’\-])"), _v_account),
+    ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{5,}[ ][A-Z](?![\w'’\-])(?![ ]+[a-zà-ÿ])"), _v_account),
     # a CSV record: the account is the field between two commas, followed by its currency ('03,0006123450999940,CAD,')
     # (on a scan the OCR often stops the record at the number: the end of the line counts as the next field)
     ("ACCOUNT_NUMBER", re.compile(r"(?<=,)\d{9,20}(?=,[A-Z]{3}\b|[ \t]*(?:\n|\Z))"), _v_account),
@@ -401,7 +449,7 @@ DETECTORS = [
     # French RIB: [banque 5] guichet 5 / compte 11 / clé 2 (without label)
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])(?:\d{5}[ ]?)?\d{5}[ ]?[0-9A-Z]{11}[ ]?\d{2}(?![\w,])"), _v_account),
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,/\-])\d{3}-\d{7}-\d{2}(?!\w)"), _v_account),
-    ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,])\d{9,16}(?!\w)"), _v_account),  # generic guess: long digit runs
+    ("ACCOUNT_NUMBER", re.compile(r"(?<![\w.,])\d{9,40}(?!\w)"), _v_account),  # generic guess: long digit runs
     ("ACCOUNT_NUMBER", re.compile(r"(?<![\w'’.,])\d{2}(?:['’](?:\d{3}|\*{3})){3,}(?![\w'’]|[.,]\d)"), None),
     # Person names (heuristics; the config review step is where you confirm them)
     # after a title, up to five capitalised words ('Monsieur Théo Aurélien Gaspard Morin' keeps its surname)
@@ -416,7 +464,7 @@ DETECTORS = [
      _v_group1),
     # an identifier written alone, letters and digits: 'BT187536HE8O43' (lowest priority: other detectors win)
     # (a number may start it: '254H089SJ425', a policy number that the OCR reads on a line of its own)
-    ("CONTRACT_REF", re.compile(r"(?<![\w/])[A-Z0-9][A-Z0-9]{9,23}(?![\w])"), _v_mixed_id),
+    ("CONTRACT_REF", re.compile(r"(?<![\w/])[A-Z0-9][A-Z0-9]{9,79}(?![\w])"), _v_mixed_id),
 ]
 # capitalised words in a row, an initial counting as a word: 'Théo A. Morin', 'Lucas Martin Lu', 'MORIN Théo'. Kept
 # only with a word the documents already know as a name (see engine.scan_folder): no title and no capitals rule
@@ -605,8 +653,11 @@ def term_regex(term: str, case_sensitive: bool = False, ocr: bool = False) -> re
     term = str(term).strip()
     piece = _ocr_piece if ocr and len(term) >= 4 else re.escape
     body = r"\s*".join(piece(p) for p in term.split())
-    pre = r"(?<!\w)" if re.match(r"\w", term) else ""
-    post = r"(?!\w)" if re.search(r"\w$", term) else ""
+    # a long number is the same number glued to a label letter ('CLIENT12345678', 'CREANCIER12345678912465789'): only
+    # the digits on each side count as a boundary
+    long_number = re.fullmatch(r"\d{6,}", term) is not None
+    pre = r"(?<!\d)" if long_number else (r"(?<!\w)" if re.match(r"\w", term) else "")
+    post = r"(?!\d)" if long_number else (r"(?!\w)" if re.search(r"\w$", term) else "")
     return re.compile(pre + body + post, 0 if case_sensitive else re.I)
 
 

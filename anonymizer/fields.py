@@ -66,6 +66,8 @@ _ID_BOILERPLATE = {
     "valable", "until", "born", "geboren", "nummer", "nationaliteit", "geslacht", "lengte", "plaats", "afgifte",
     "vervaldatum", "land", "uitgegeven", "prefecture", "given", "titulaire", "wijze", "nom", "prenom", "sexe",
     "mention", "mentions", "observation", "photo", "personne", "person", "eyes", "yeux", "yeux", "hair", "cheveux",
+    # the title of a driving licence ('PERMIS DE CONDUIRE', 'RIJBEWIJS', 'DRIVING LICENCE'): not a name
+    "permis", "conduire", "rijbewijs", "driving", "licence", "license", "permit", "driver", "categorie", "catégorie",
 }
 
 

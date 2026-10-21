@@ -180,6 +180,30 @@
   ]
  },
  {
+  "file": "signatures_digital.pdf",
+  "page": 4,
+  "label": "Le notaire Maître Dupont a signé",
+  "labelled": true,
+  "box": [
+   381.9,
+   172.7,
+   522.5,
+   223.4
+  ]
+ },
+ {
+  "file": "signatures_digital.pdf",
+  "page": 4,
+  "label": "Signé par M. Martin",
+  "labelled": true,
+  "box": [
+   374.9,
+   383.0,
+   524.5,
+   423.5
+  ]
+ },
+ {
   "file": "signatures_scan.pdf",
   "page": 1,
   "label": "Fait à Paris, le 12 mars 2024",
@@ -345,6 +369,30 @@
    592.4,
    435.3,
    622.3
+  ]
+ },
+ {
+  "file": "signatures_scan.pdf",
+  "page": 3,
+  "label": "Le notaire Maître Dupont a signé",
+  "labelled": true,
+  "box": [
+   381.9,
+   172.7,
+   522.5,
+   223.4
+  ]
+ },
+ {
+  "file": "signatures_scan.pdf",
+  "page": 3,
+  "label": "Signé par M. Martin",
+  "labelled": true,
+  "box": [
+   374.9,
+   383.0,
+   524.5,
+   423.5
   ]
  }
 ]

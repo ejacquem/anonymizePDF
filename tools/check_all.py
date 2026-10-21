@@ -1317,6 +1317,16 @@ def account_and_street_names_tests():
                         ("Compte : 0012345Y", "0012345Y"), ("Compte n° 12345 Y", "12345 Y"), ("RIB 0012345Y", "0012345Y"),
                         ("0012345Y", "0012345Y"), ("12345 Y", "12345 Y"), ("Compte courant 0012345Y", "0012345Y")]:
         check(f"an account number is found: {text!r}", value in found(text), repr(found(text)))
+    # the letter glued to the digits is an account number also in the middle of a sentence ('N° 000012345Y du client')
+    for text, value in [("Contrat n° 000012345Y du client", "000012345Y"), ("x 000012345Y x", "000012345Y"),
+                        ("au 12345Y, merci", "12345Y"), ("Compte 12345 Y et", "12345 Y")]:
+        check(f"an account number is found in a sentence: {text!r}", value in found(text), repr(found(text)))
+    check("a spaced letter that starts a word is still no account number", not found("Le dossier 12345 Y compris sera clos"))
+    # the same account written '000012345Y' and '12345 Y': the same new digits (the zeros stay, they do not count)
+    fk0 = Faker(b"n" * 32)
+    long_fake, short_fake = fk0.suggest("ACCOUNT_NUMBER", "000012345Y"), fk0.suggest("ACCOUNT_NUMBER", "12345 Y")
+    check(f"'000012345Y' and '12345 Y' are replaced by the same digits ({long_fake!r}, {short_fake!r})",
+          long_fake.startswith("0000") and long_fake[4:9] == short_fake[:5] and long_fake[4:9] != "12345", f"{long_fake} {short_fake}")
     for text in ["Le 12345 E est dû", "Compte rendu 2024", "75001 Paris", "Montant 12345 EUR"]:
         check(f"running text gives no account number: {text!r}", not found(text), repr(found(text)))
     for value in ["0012345Y", "12345 Y", "000012345Y"]:
@@ -1332,6 +1342,54 @@ def account_and_street_names_tests():
         out = f.street(value)
         check(f"the street {value!r} gets a real street name (no random letters): {out!r}",
               any(k in out for k in known), repr(out))
+
+
+def client_identifier_tests():
+    """Identifiers of letters and digits that no detector knew: a client / mandate / contract reference after its label
+    (also in groups of digits), a long mix of letters and digits of any length, a long run of digits, the creditor
+    identifier after 'ID.CREANCIER'. Reported on real statements."""
+    print("\n== client identifiers (letters and digits)")
+    cases = [("REF.MANDAT: ++123456789CFEECFTE123456789", "CONTRACT_REF", "123456789CFEECFTE123456789"),
+             ("ID.CREANCIER:FR76ZZZ185574", "SEPA_CREDITOR_ID", "FR76ZZZ185574"),
+             ("REF.CLIENT: 123456789123456E123456789123456789", "CONTRACT_REF", "123456789123456E123456789123456789"),
+             ("Avec votre identifiant client 12 1234 5678 et votre", "CONTRACT_REF", "12 1234 5678"),
+             ("LIBELLE: 123456789123456789123456789", "CONTRACT_REF", "123456789123456789123456789"),
+             ("Référence client : AB1234567", "CONTRACT_REF", "AB1234567"),
+             ("Id client 987 654 321 X", "CONTRACT_REF", "987 654 321 X"),
+             ("Numéro de contrat : 7654321-AB", "CONTRACT_REF", "7654321-AB"),
+             ("Communication : 202400123456 merci", "CONTRACT_REF", "202400123456"),
+             ("123456789123456789123456789", "ACCOUNT_NUMBER", "123456789123456789123456789"),
+             ("ref 123456789CFEECFTE123456789 fin", "CONTRACT_REF", "123456789CFEECFTE123456789")]
+    for text, typ, value in cases:
+        got = [(m.type, m.value) for m in pii.detect_all(text)]
+        check(f"found {value!r} as {typ} in {text!r}", (typ, value) in got, repr(got))
+    for text in ["Libellé : 12/03/2024", "Numéro de mandat 000000", "LIBELLE: VIR SEPA", "Référence client : 12", "Page 12 sur 45",
+                 "Total ACHATS DU MOIS 2024"]:
+        got = [(m.type, m.value) for m in pii.detect_all(text) if m.type in ("CONTRACT_REF", "ACCOUNT_NUMBER")]
+        check(f"no identifier in {text!r}", not got, repr(got))
+    # a whole page: each identifier is replaced, none stays readable, the words around stay
+    tmp = Path(tempfile.mkdtemp(prefix="anon_ids_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        lines = ["REF.MANDAT: ++123456789CFEECFTE123456789", "ID.CREANCIER:FR76ZZZ185574",
+                 "REF.CLIENT: 123456789123456E123456789123456789", "Avec votre identifiant client 12 1234 5678 et votre contrat",
+                 "LIBELLE: 123456789123456789123456789", "Solde en fin de mois"]
+        for i, t in enumerate(lines):
+            page.insert_text((50, 100 + 22 * i), t, fontsize=9, fontname="helv")
+        doc.save(tmp / "releve.pdf")
+        cfg = engine.scan_folder(tmp, "ids", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "ids", cfg, "fra+eng", False, lambda m: None)
+        out = " ".join(fitz.open(tmp / "releve_anonymized.pdf")[0].get_text().split())
+        flat = re.sub(r"\s+", "", out)
+        for secret_value in ["123456789CFEECFTE123456789", "FR76ZZZ185574", "123456789123456E123456789123456789",
+                             "121234" + "5678", "123456789123456789123456789"]:
+            check(f"{secret_value!r} is not left in the output", secret_value not in flat, out[:200])
+        check("the words around the identifiers stay", "Solde en fin de mois" in out and "identifiant client" in out, out[:200])
+        check("the second check finds nothing readable", not rep["files"][0].get("suspects") and not rep["files"][0]["leftovers"],
+              str(rep["files"][0].get("suspects")))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def bank_identifier_tests():
@@ -1746,6 +1804,24 @@ def signature_tests():
     check("a stroke far from any label belongs to none", regions._owners([(12, 500, 70, 540)], labels, 40) == [None])
     check("a stroke that runs over the foot of a label is that label's", regions._owners([(12, 106, 70, 130)], labels, 40)
           == [0])
+    # a signature in the next cell of a grid: on the label's row, far to its right
+    check("'Le notaire Maître Dupont a signé' is a signature label", regions.is_signature_label("Le notaire Maître Dupont a signé"))
+    check("'Signé par M. Martin' and 'Signed by the client' are signature labels",
+          regions.is_signature_label("Signé par M. Martin") and regions.is_signature_label("Signed by the client"))
+    check("'Les parties ont signé' and 'heeft getekend' are signature labels",
+          regions.is_signature_label("Les parties ont signé") and regions.is_signature_label("De notaris heeft getekend"))
+    check("a sentence about a contract signed is no label",
+          not regions.is_signature_label("Le contrat a été signé le 12 mars par les deux parties")
+          and not regions.is_signature_label("Documents signés et enregistrés"))
+    check("a long sentence with 'a signé' is no label", not regions.is_signature_label(
+        "Après lecture de ce document le client confirme qu'il a signé la proposition en présence de son conseiller"))
+    far = (400, 98, 520, 140)
+    check("a stroke far to the right on the label's row is the label's (row_reach)",
+          regions._owners([far], labels, 40, 400) == [0] and regions._owners([far], labels, 40) == [None])
+    check("a stroke far to the right, a line below, is not on the row", regions._owners([(400, 180, 520, 220)], labels, 40, 400) == [None])
+    check("a stroke further right than the reach is nobody's", regions._owners([(700, 98, 800, 140)], labels, 40, 400) == [None])
+    check("a stroke in a label's own column wins over the row rule",
+          regions._owners([(12, 115, 70, 150)], [{"box": (10, 100, 80, 110)}, {"box": (200, 100, 260, 110)}], 40, 300) == [0])
 
     folder = ROOT / "sample_data" / "Dossier Test 18"
     if not (folder / "signatures_truth.json").exists():
@@ -1799,6 +1875,76 @@ def signature_tests():
                 check(f"{name}: no stroke left under the box of '{t['label']}'", not left, str(len(left)))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def label_and_town_tests():
+    """Two kinds of values that the detectors mixed up, now kept apart. A label glued to its number after an OCR that lost
+    the colon ('CREANCIER12345678912465789', 'REF.CLIENT12345678'): the number is replaced, the label stays. A town written
+    with its postcode ('HUGO BP (09062)', a postal box): the town and the postcode are entries of their own, consistent with
+    the whole value; a name inside a town is no name (the town has priority and the name is unchecked); the same text as
+    a street and as a town is one entry; a label before a town ('Bénéficiaire') is no part of it."""
+    print("\n== labels glued to numbers, towns and postcodes")
+    found = lambda t: [(m.type, m.value) for m in pii.detect_all(t)]          # noqa: E731
+    check("a label glued to its number: only the number is found",
+          ("CONTRACT_REF", "12345678912465789") in found("CREANCIER12345678912465789"), str(found("CREANCIER12345678912465789")))
+    check("'LIBELLE123456789': the number alone", ("CONTRACT_REF", "123456789") in found("LIBELLE123456789"))
+    check("'REF.CLIENT12345678': the number alone", ("CONTRACT_REF", "12345678") in found("REF.CLIENT12345678"))
+    check("a label with its colon is kept as before", ("ACCOUNT_NUMBER", "12345678912465789") in found("CREANCIER:12345678912465789")
+          or ("CONTRACT_REF", "12345678912465789") in found("CREANCIER:12345678912465789"))
+    check("a label before a town is no part of it: 'Bénéficiaire HUGO BP (09062)' gives the town",
+          ("POSTAL_CITY", "HUGO BP (09062)") in found("Bénéficiaire HUGO BP (09062)"), str(found("Bénéficiaire HUGO BP (09062)")))
+    check("'Beneficiaire' without accent too", ("POSTAL_CITY", "HUGO BP (09062)") in found("Beneficiaire HUGO BP (09062)"))
+    check("a name inside a town: the town's words contain the name",
+          engine._contains(engine._word_keys("HUGO BP (09062)"), engine._word_keys("Hugo BP")))
+    check("a name that is not a town word is not inside it", not engine._contains(engine._word_keys("HUGO BP"),
+                                                                                  engine._word_keys("Jean Dupont")))
+    tmp = Path(tempfile.mkdtemp(prefix="anon_town_name_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        doc = fitz.open()
+        page = doc.new_page()
+        lines = ["Jean Dupont habite HUGO BP (09062).", "Bénéficiaire HUGO BP (09062)", "Nom de la rue: HUGO BP (09062)",
+                 "CREANCIER:12345678912465789", "REF.CLIENT12345678"]
+        for i, line in enumerate(lines):
+            page.insert_text((72, 90 + 22 * i), line, fontsize=11, fontname="helv")
+        doc.save(tmp / "lettre.pdf")
+        cfg = engine.scan_folder(tmp, "lettre", None, "fra+eng", lambda m: None)["config"]
+        active = [l for l in cfg.splitlines() if l.lstrip().startswith("- {find")]
+        commented = [l for l in cfg.splitlines() if l.lstrip().startswith("# - {find")]
+        check("the town of the postal box is a town term", any('find: "HUGO BP"' in l and "LOCATION" in l for l in active),
+              "\n".join(active)[:300])
+        check("the name inside the town is unchecked (a suggestion)",
+              not any("PERSON" in l and "HUGO" in l for l in active)
+              and any("PERSON" in l and "HUGO" in l and "inside the town" in l for l in commented), "\n".join(commented)[:300])
+        check("the street and the town of the same text are one entry", not any(
+            'find: "HUGO BP (09062)"' in l and "STREET_ADDRESS" in l for l in active + commented))
+        whole = re.search(r'find: "HUGO BP \(09062\)", replace: "([^"]+)"', cfg)
+        code = re.search(r'find: "09062", replace: "(\d{5})"', cfg)
+        check("the postcode on its own is the code of the whole value's fake",
+              whole is not None and code is not None and whole.group(1).endswith(f"({code.group(1)})"),
+              f"{whole and whole.group(1)} / {code and code.group(1)}")
+        rep = engine.run_anonymize(tmp, "lettre", cfg, "fra+eng", False, lambda m: None)
+        out = " ".join(fitz.open(tmp / "lettre_anonymized.pdf")[0].get_text().split())
+        check("the letter has no leftover", not rep["files"][0]["leftovers"], str(rep["files"][0]["leftovers"]))
+        check("'HUGO' is not left in the output", "HUGO" not in out.upper(), out)
+        check("'09062' is not left in the output", "09062" not in out, out)
+        check("'Jean Dupont' is replaced", "Jean Dupont" not in out, out)
+        check("the label 'Bénéficiaire' stays readable", "Bénéficiaire" in out, out)
+        check("the label 'Nom de la rue:' stays readable", "Nom de la rue:" in out, out)
+        check("the label 'CREANCIER:' stays readable", "CREANCIER:" in out, out)
+        check("the label 'REF.CLIENT' stays readable", "REF.CLIENT" in out, out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def licence_title_tests():
+    """The title of a driving licence is no name on an identity page: the second check read 'PERMIS DE CONDUIRE' as names
+    on the output of Dossier Test 07 (the labels are not read there, so the words are taken by their shape)."""
+    print("\n== the title of a driving licence is no name")
+    from anonymizer import fields
+    for word in ("PERMIS", "CONDUIRE", "RIJBEWIJS"):
+        check(f"'{word}' is a word of the document, not a name", fields.is_boilerplate(word))
+    check("a surname is still no boilerplate", not fields.is_boilerplate("DUPONT"))
 
 
 def speedup_tests():
@@ -2752,7 +2898,7 @@ GROUPS = [
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
     "split_word_tests", "colon_tests", "street_name_tests", "second_pass_tests", "suspect_suggestion_tests",
     "incremental_report_tests", "scan_anonymize_batch_tests",
-    "first_letter_tests", "account_and_street_names_tests", "manual_text_tests", "rotated_tests", "town_tests",
+    "first_letter_tests", "account_and_street_names_tests", "client_identifier_tests", "manual_text_tests", "rotated_tests", "town_tests",
     "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
     "speedup_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",

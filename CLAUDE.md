@@ -145,7 +145,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Scan & anonymize** (scan, then anonymize, with no
   review in between: `btnBoth`, `anonymizeFolder()` is the second half; in batch mode the action `scan_anonymize` of
   `/api/batch` does each folder's scan then its anonymization before the next folder), **Anonymize file** (either file of the pair; the
-  report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
+  report keeps the other entries). ↑ / ↓ switch file (wraps, also while a job runs; not while typing in a text field, a checkbox
+  does not keep the arrows), Ctrl+↑ / Ctrl+↓ the previous / next folder that holds PDFs (`pdfFolders`, wraps, opens its first
+  file). The header counts the file: 'Working folder: x · 2/3 PDFs'. **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).
 - Black boxes by hand: **▭ Black box** in the Anonymized pane (drag to draw, drag / handles to move and resize,
   Delete to remove; the box is see-through while a handle is dragged, class `resizing`). Each change is saved at once
@@ -157,7 +159,19 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   (the lines it crosses are covered). Listed in the Config tab under Typed texts (`manual.texts`, `manual_texts:` in the
   YAML, `engine.parse_config`, `_manual_texts`); Apply regenerates the anonymized file. A typed text is shown stretched in the
   viewer and while it is typed (`textFit`, same metrics as the PDF); double-click a typed text to edit it; the ✕ of a box
-  removes it. The text takes the colour of the text under its box.
+  removes it. The text takes the colour of the text under its box. A typed text is edited by a double-click on it, with or
+  without the Text tool (the place is found from the pointer: `viewers.anon.box` dblclick, the texts are drawn only while
+  the tool is on); a click elsewhere while it is typed places it and closes its box (`activeEditor`, a capture listener:
+  that click starts nothing else). While a typed text is moved or resized its background is transparent (`.bbox.text.moving`).
+  With a box tool on, the right button drags the view (the left one draws), and the context menu is off there.
+  Shortcuts with the mouse over a viewer: T toggles the Text tool, B the Black box tool, F shows the Config tab and
+  focuses its search (`focusConfigSearch`).
+- Undo / Redo (Anonymized pane head, `#btnUndo` / `#btnRedo`, Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z): every change of the black
+  boxes and typed texts of the selected file (draw, move, resize, delete, edit a text, remove an automatic box) is one
+  step. `rememberBoxes()` takes a snapshot BEFORE the change (the file's `manual.blackouts` and `manual.texts`, and its
+  pending removed automatic boxes); `stepBoxes` puts a snapshot back, saves the config and keeps the opposite stack.
+  One history per folder and file, in memory (a reload forgets it). `undo.epoch` counts the Apply runs: going back to a
+  state that was not pending is clean (Apply off) only if no Apply came since, else Apply is lit.
 - Black boxes list: Config tab, under Manual data, for the selected file. One row per box with its origin tag
   (Hand-drawn / Photo / face / QR code / Signature; "· edited" when an automatic box was moved). Click a row = select
   its box in the viewer (dashed overlay for automatic boxes), click a box = select its row; ✕ or Delete removes it.
@@ -325,12 +339,24 @@ Order must never change a result (`order_tests`): a value written with several s
   D-, I-, A-; not 'Code' / 'Banque' / 'Guichet'...), a town followed by its postcode in brackets ('NANTERRE (92000)',
   'BOULOGNE-BILLANCOURT (72000) (FRANCE)': the value is the town and its code, `_v_town_code`; a year in brackets is no
   postcode; the fake keeps the brackets and the town of the term alone, `fake.postal_city`, `engine._town_of`), the town
-  at the end of an address is a POSTAL_CITY too,
+  at the end of an address is a POSTAL_CITY too. A town and its postcode are also entries of their own: the town is a
+  LOCATION term, the postcode alone a POSTAL_CITY term whose replacement is the postcode of the whole value's fake, so the
+  parts agree with the whole. A PERSON whose words are one after the other inside a town ('HUGO BP' in 'HUGO BP (09062)')
+  is no name: the town has priority, the name and its parts are unchecked (`engine._contains`, `_word_keys`; the note
+  says so). A text found both as a street and as a town is one entry, the town. A label before a town ('Bénéficiaire
+  HUGO BP') is trimmed (`_TOWN_NOT_FIRST`);
   ACCOUNT_NUMBER (after "N° de compte" / "Numéro client" / "Compte" / "Compte courant" / "RIB" on the same line, or without
   label when it is five or more digits and one capital letter ('0012345Y', '12345 Y', not running text), with spaces, '-', '.' or '/' as separators, French RIB, long digit runs, apostrophe-grouped digits
   `86'123'456'789'012` with masks, at least 3 groups so amounts `1'240.00` are not caught),
   BANK_CODE ("Code banque / guichet", "Clé RIB"), CONTRACT_REF ("police", "contrat", "dossier", "REF" with letters and
-  digits, and an identifier written alone 'BT187536HE8O43': lowest priority), DOC_NUMBER,
+  digits, and an identifier written alone 'BT187536HE8O43': lowest priority; from 10 to 79 characters of capitals and
+  digits, a long one (16+) needs only a letter and 8 digits: '123456789CFEECFTE123456789'; an identifier after its label
+  `_ID_LABEL`: 'REF.MANDAT', 'REF.CLIENT', 'identifiant client 12 1234 5678', 'Id client', 'N° de contrat', 'LIBELLE:',
+  'Communication:', 'CREANCIER:', one block or groups, at least 6 digits, `_v_id_labeled`; test `client_identifier_tests`).
+  A label glued to its number, with no colon (an OCR that lost it: 'CREANCIER12345678912465789', 'REF.CLIENT12345678',
+  'LIBELLE123456789'), is no part of the identifier: only the number is replaced (`_GLUED_LABEL`, `_v_mixed_id`,
+  `_v_reference`), and a long number (6 digits or more) is matched inside the glued word (`term_regex`: only the digits
+  count as boundary). `label_and_town_tests`. DOC_NUMBER,
   BIRTH_PLACE, DATE (`/ . -` or spaces `14 05 1992`), PERSON, NER ORG / LOCATION (always commented out).
 - Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid.
 - A word cut across two lines ('JACQUEM' / 'IN LUCAS') is joined in the page text (`pii._cut_words`, used by
@@ -338,7 +364,7 @@ Order must never change a result (`order_tests`): a value written with several s
   ('JACQUEMIN LUCAS'). Without that evidence the lines stay apart. Tests: `split_word_tests`. A real
   PDF used U+2010 inside a national number and hid it from every detector.
 - Split types: groups of ≥ 5 digits of ACCOUNT_NUMBER / BANK_CODE and ≥ 4 digits of masked CARD_NUMBER are also
-  separate entries (OCR may drop the stars); digit groups get the same fake everywhere (`Faker.digit_groups`).
+  separate entries (OCR may drop the stars); digit groups get the same fake everywhere (`Faker.digit_groups`; leading zeros stay and do not count: `000012345Y` and `12345 Y` get the same digits, an account glued to its letter is found also in a sentence).
 - Dates are active only for birth dates (`_BIRTH_RX` within 35 chars before / 8 after, or a birth-date label).
 - Bank operation labels (`pii.OPERATION_WORDS`: VIRT, RECU, PRLV, SEPA, REF, RET, DAB, FR, ACHAT-DEBIT, ...) are taken
   out of PERSON / ORG / LOCATION candidates (`strip_operations`, in `_detect_words` and the second check): 'VIRT RECU
@@ -586,9 +612,16 @@ Order must never change a result (`order_tests`): a value written with several s
   approvals and places of a signature written without its word (`_SIGNATURE_ANCHOR`: 'Cordialement,', 'Lu et approuvé',
   'Pour l'entreprise', 'Fait à Paris, le …', 'Le titulaire', 'Signé à …'; a line of ≤ 8 words). A line is cut into labels
   where the gap between two words is over 2.5 word heights (`_label_segments`: two columns on one row are two labels).
+  A line that says who signed is a label too (`_SIGNED`: 'Le notaire Maître X a signé', 'Signé par M. Martin', 'Signed by',
+  'heeft getekend'; a line of ≤ 14 words: 'a été signé le … par' and 'Documents signés' are no label).
   Each stroke belongs to ONE label (`_owners`): the nearest label above it in its column (within 8 label heights), else
-  the label below it (within 2 heights). So two signatures stacked between labels are two boxes, not one across the
-  label. The search goes 30 mm below a label and stops at the next signature label of the column. Ink not OCR text of
+  the label below it (within 2 heights), else, on the label's row, to its right up to `ROW_REACH_MM` (130 mm, the next
+  cell of a grid: strokes whose box overlaps the row from one label height above to 4 below; a second seed of `_grow`
+  starts there, the window reaches 130 mm right of the label's end). So two signatures stacked between labels are two
+  boxes, not one across the label. A signature in another cell is cut around words with no anchor on the label
+  (`_clear_of_text(anchor_x=None)`). Frames are not handwriting: digital drawings made of horizontal / vertical lines and
+  rectangles only (`_only_straight`), and on scans runs of ink longer than 15 mm (`_long_runs`). Dossier Test 18 page 4 (3
+  in the scan): a one-row grid with the label in the left cell and the signature far right, and the same without frames. The search goes 30 mm below a label and stops at the next signature label of the column. Ink not OCR text of
   normal height, not a ruled line, not in MRZ / photos (the face area widened by 50 %) / codes; seeded next to the
   label, grown through strokes ≤ 3 mm apart (`_grow`) in a window of 12 mm above / 30 mm below the label and 5 / 80 mm
   around it. A signature with no label (only a typed name under it) is not found: a known limit. Components that are solid (fill ≥ 0.4) or lie mostly inside an OCR word box are print, not ink.
