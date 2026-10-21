@@ -23,6 +23,8 @@ from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
 
+from . import timing
+
 ENGINES = ("auto", "tesseract", "windows")
 _choice = os.environ.get("ANON_OCR_ENGINE", "auto").lower()
 
@@ -114,13 +116,14 @@ def ocr_words(img, lang: str = "fra+eng") -> list[dict]:
     e = engine()
     if e not in ("tesseract", "windows"):
         raise RuntimeError("no OCR engine: install Tesseract, or the Windows OCR packages (pip install -r requirements.txt)")
-    key = _cache_key(img, e, lang)
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
-    words = tesseract_words(img, lang) if e == "tesseract" else windows_words(img, lang)
-    _cache_put(key, words)
-    return [dict(w) for w in words]
+    with timing.stage("ocr", keep=True):
+        key = _cache_key(img, e, lang)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        words = tesseract_words(img, lang) if e == "tesseract" else windows_words(img, lang)
+        _cache_put(key, words)
+        return [dict(w) for w in words]
 
 
 # ---------------------------------------------------------------------------

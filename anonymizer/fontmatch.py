@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from functools import lru_cache
+from functools import lru_cache, wraps
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from . import quality
+from . import quality, timing
 
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
 
@@ -383,6 +383,15 @@ class Look:
         return name + (f", {self.quality.describe()}" if self.quality is not None else ", sharp")
 
 
+def _fonts(fn):
+    """The time of a PageFonts measure goes to the 'fonts' stage (timing)."""
+    @wraps(fn)
+    def run(*args, **kw):
+        with timing.stage("fonts"):
+            return fn(*args, **kw)
+    return run
+
+
 class PageFonts:
     """The faces and the quality of a scanned page, measured before anything is painted (words = OCR words of the
     page, gray = the grey page image, scale = native resolution of the scan / resolution of the page image)."""
@@ -399,6 +408,7 @@ class PageFonts:
         self._bold: dict[tuple, float | None] = {}
         self._quality = None
 
+    @_fonts
     def raw_scores(self, i: int):
         """Face scores of word i against sharp candidates (to choose the words the page quality is fitted on)."""
         if i not in self._raw:
@@ -406,6 +416,7 @@ class PageFonts:
         got = self._raw[i]
         return got[0] if got else None
 
+    @_fonts
     def scores(self, i: int):
         """Face scores of word i against candidates softened like the page (dict), None when it says nothing."""
         got = self._measure(i)
@@ -433,6 +444,7 @@ class PageFonts:
         tpl = template(f, text) if got else None
         return quality.sample(self.gray, got[1], tpl) if tpl is not None else None
 
+    @_fonts
     def page_quality(self):
         """Blur and spread of the page's text, fitted on a sample of its longest words in the face that fits each
         best (at the page's native scale)."""
@@ -468,6 +480,7 @@ class PageFonts:
         k = (y1 - y0) / tpl.shape[0]
         return float(dark.sum() / (tpl.sum() * k * k))
 
+    @_fonts
     def mass_reference(self) -> float | None:
         """The ink mass ratio of the page's regular text: the MASS_QUANTILE percentile over the sample words, each
         in the regular weight of the family that fits it best. None with fewer than 5 words."""
@@ -491,6 +504,7 @@ class PageFonts:
         score = self.bold_score(own, family)
         return None if score is None else score > 0.5
 
+    @_fonts
     def bold_score(self, own: list[int], family: str) -> float | None:
         """How bold the value's words look in `family`, 0 = regular, 1 = bold, from two clues (see RESIDUAL_BOLD):
         which rendering, regular or bold, degraded with the page's quality, explains their pixels best, and how much
@@ -533,6 +547,7 @@ class PageFonts:
         return [i for i, w in enumerate(self.words)
                 if _overlap(w["box"], box) > 0.3 * min((w["box"][2] - w["box"][0]) * (w["box"][3] - w["box"][1]), area)]
 
+    @_fonts
     def metrics(self, box, face: Face | None, bold: bool = False) -> tuple[float, float] | None:
         """(size, baseline) in pixels of the text of a value, from its own words: each word rendered in `face`
         (None: Arial) is fitted on the scan row by row (fit_rows), which gives its size and where its baseline is;
@@ -573,6 +588,7 @@ class PageFonts:
                 bases.append(top + rendered[1] * k)
         return (sizes, bases) if sizes else None
 
+    @_fonts
     def word_faces(self, box, main: Face | None, count: int) -> list[Face] | None:
         """The face of each word of a value in `box`: the family of the value, the weight of each word ('Lucas' in
         regular, 'JACQUEMIN' in bold). None when the words cannot be told apart (not `count` OCR words in the box)."""
@@ -602,6 +618,7 @@ class PageFonts:
                 return True
         return False
 
+    @_fonts
     def advance(self, word: dict, text: str) -> float | None:
         """Width of `text` in the face measured for `word` (an OCR word of this page) and its line, in the face's own
         units: to cut a word only partly covered by a value where its characters really are (a monospaced word is
@@ -627,6 +644,7 @@ class PageFonts:
         near.sort(key=lambda i: -_letters(self.words[i]["text"]))
         return near[:limit]
 
+    @_fonts
     def face_for(self, box, bold_hint: bool | None = None) -> tuple[Face | None, float]:
         """The face of the value written in `box` and how sure (margin between the best family and the next one,
         per word). Family: the value's words and its line; weight: the value's words (bold_hint when they cannot
@@ -657,6 +675,7 @@ class PageFonts:
             bold = bool(bold_hint)
         return face(family, bold), margin
 
+    @_fonts
     def quick_face(self, box, near_words: int = 3) -> Face | None:
         """A rough face for the value written in `box`: the face with the best summed score over its own words and a few
         words of its line, against sharp candidates (no page quality, no weight analysis). For the scan, which only
@@ -683,6 +702,7 @@ class PageFonts:
         smp = self._sample(i, max(s, key=s.get))
         return quality.colours(img, smp, q, (255, 255, 255)) if smp else None
 
+    @_fonts
     def look(self, img, box, bold_hint: bool | None = None, match_font: bool = True) -> Look:
         """Everything a replacement in `box` needs: face (None when not measured, or match_font is off: Arial), the
         page quality with the grain around the box, the paper and ink colours of the value: measured on its own
@@ -704,6 +724,7 @@ class PageFonts:
         paper, ink = colours or (None, None)
         return Look(f, margin, q, paper, ink)
 
+    @_fonts
     def page_colours(self, img):
         """(paper, ink) of the page's text: the medians over its 8 longest measurable words. None without them."""
         if not hasattr(self, "_page_colours"):

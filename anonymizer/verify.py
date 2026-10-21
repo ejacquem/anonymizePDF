@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import fields, ocr
+from . import fields, ocr, timing
 from .ocr import ocr_words, render_page
 from .pii import (NAME_TYPES, PERSON_RANKS, _repeated_digits, detect_structured, digital_words, fitz, norm_value, strip_operations,
                   term_regex, words_to_text)
@@ -53,10 +53,16 @@ def read_output(path: Path, ocr_lang: str, use_ocr: bool) -> OutputRead:
         read.metadata = [(k, str(v)) for k, v in (doc.metadata or {}).items()
                          if v and k not in ("format", "encryption")]
         for page in doc:
-            layer_words = digital_words(page)
-            words = ocr_words(render_page(page, 300), ocr_lang) if ocr_on else layer_words
-            read.pages.append(PageRead(layer=words_to_text(layer_words)[0], words=words, ocr=ocr_on,
-                                       layer_words=layer_words))
+            with timing.stage("check"):
+                layer_words = digital_words(page)
+            if ocr_on:
+                with timing.stage("ocr_check"):
+                    words = ocr_words(render_page(page, 300), ocr_lang)
+            else:
+                words = layer_words
+            with timing.stage("check"):
+                read.pages.append(PageRead(layer=words_to_text(layer_words)[0], words=words, ocr=ocr_on,
+                                           layer_words=layer_words))
     finally:
         doc.close()
     return read

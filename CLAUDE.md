@@ -62,6 +62,7 @@ anonymizer/
   fields.py            identity documents: lines_of, find_labeled, is_id_document; MRZ: find_mrz, build_mrz, mrz_zone
   regions.py           find_codes, find_signatures (+ *_digital variants), is_signature_label, line_angles (skew)
   morph.py             square max / min / closing on arrays, two 1-D passes (same result as PIL's rank filters)
+  timing.py            stage timers (ocr, fonts, paint, ocr_check...): exclusive time per stage, one collector per file
   faces.py             faces of people (YuNet, ONNX Runtime, offline): detect, find_faces, find_faces_digital
   models/              face_detection_yunet_2023mar.onnx (OpenCV zoo, MIT; sha256 checked at load)
   configmodel.py       anon_config.yaml <-> review-table model (settings, entries incl. the commented suggestions)
@@ -102,6 +103,7 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        make_test_idcard.py also writes the poor copy (Dossier Test 09); make_test_transfers.py (Dossier
                        Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12); key_hunt.py (many random keys on one file);
                        snapshot_results.py (before / after comparison of the results, section 11b);
+                       bench.py (time by document and by stage, before / after, section 11b);
                        check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
                        section 12b: the PDFs are downloaded, never committed)
 ```
@@ -667,6 +669,21 @@ Order must never change a result (`order_tests`): a value written with several s
   also bit for bit). 33 s -> 23.5 s. A value that ends under a black box or in the MRZ gets no look measured
   (`page_looks(covered=)`, scan pages and pictures). Left: the face detector windows (~1.6 s a page at 300 dpi, the
   model's cost), the probe renderings (`_rendered`, PIL text drawing of every word in ~46 faces), page quality fit.
+- Stage timers (`anonymizer/timing.py`): `with timing.stage("fonts"):` adds the time of a block to a stage, EXCLUSIVE
+  (a stage opened inside another pauses the outer one, so the stages add up to the wall time; 'other' is what no stage
+  covers). One collector per file in `run_anonymize` (`entry['stages']` in the report, and the job log line 'done in
+  ...s (fonts 32.1s, faces 10.4s, ...)') and one per `scan_folder` (`stats['stages']`, a 'time by stage' log line).
+  Stages: render, ocr (the engine, cache hits included), ocr_check (OCR of the output pages), angles, mrz, faces,
+  codes, signatures, text (detection and matching, spaCy included), fonts (every `PageFonts` measure), paint, digital
+  (the edits of a digital page), save, check (verify), config (the aggregation at the end of a scan). A stage outside a
+  collector costs nothing. `tools/snapshot_results.py` leaves `stages` out of the compared reports.
+- Benchmark (`tools/bench.py run <out.json> [--repeat 2] [--doc NAME] [--code <root>]`, then `compare a.json b.json`):
+  Test 17 `contrat_assurance_scan` and `paragraphes_scan`, Test 01 `releve_banque_mosane` (digital and scan), Test 03
+  `passeport_scan`, Test 05 mixed files; each one alone in a temporary folder, a fixed scratch key (not the user's),
+  scan then anonymize in one process like the app, caches emptied before every run, the best of `--repeat` runs kept.
+  Per document and phase: wall time, CPU time, time by stage, the share of the machine other programs used, the peak
+  memory of the process. A number taken on a busy machine is good for proportions only: run it when nothing else heavy
+  runs. `--code` benchmarks an exported commit.
 - Every speed-up keeps the results identical. Check it with `tools/snapshot_results.py`: `save` before and after a
   change (`--code <root>` runs an exported older commit), then `compare` prints IDENTICAL (configs, reports, output
   hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs. The random ID is

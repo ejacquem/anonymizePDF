@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from . import configmodel, faces, fields, ocr, quality, regions, render, verify
+from . import configmodel, faces, fields, ocr, quality, regions, render, timing, verify
 from .fake import Faker, _norm as fake_norm, _pkey, is_town_name
 from .ocr import DIGITAL_DPI, ocr_words, render_page
 from .pii import (NAME_TYPES, OPERATION_WORDS, PERSON_RANKS, Numberer, _HONORIFIC, detect_all,
@@ -370,6 +370,7 @@ def parse_config(text: str) -> dict:
 # 1. scan a folder -> draft config
 # ---------------------------------------------------------------------------
 
+@timing.timed("text")
 def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict], ocr_page: bool, ner, file: str,
                   pno: int):
     """Detections of one set of words (a page's text layer, its OCR, or the OCR of its images) into `found`.
@@ -438,6 +439,17 @@ def _report(progress, done: int, total: int, name: str = ""):
 
 def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None,
                 progress=None) -> dict:
+    """Detect the personal data of every file of ONE folder -> {'config': YAML text, 'stats': {...}}; stats['stages']
+    is the time by stage (timing)."""
+    with timing.collecting() as tm:
+        res = _scan_folder(folder, rel, ner, default_ocr_lang, log, secret_key, progress)
+    res["stats"]["stages"] = tm.report()
+    log("   time by stage: " + timing.format_stages(res["stats"]["stages"]))
+    return res
+
+
+def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None,
+                 progress=None) -> dict:
     t0 = time.time()
     pdfs = list_sources(folder)
     if not pdfs:
@@ -460,10 +472,13 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                 if not can_ocr:
                     log(f"   page {pno}: no visible text and no OCR engine available -> skipped")
                     continue
-                img = render_page(page, 300)
+                with timing.stage("render"):
+                    img = render_page(page, 300)
                 words = ocr_words(img, default_ocr_lang)
                 log(f"   page {pno}: OCR ({len(words)} words)")
-                seen_pages.append({"gray": np.asarray(img.convert("L")), "words": words, "scale": native_scale(page, 300)})
+                with timing.stage("render"):
+                    seen_pages.append({"gray": np.asarray(img.convert("L")), "words": words,
+                                       "scale": native_scale(page, 300)})
                 _detect_words(found, tokens, sequences, words, True, ner, pdf.name, pno)
                 if lay["words"]:                       # a scanner's invisible OCR layer: read it too
                     _detect_words(found, tokens, sequences, lay["words"], False, ner, pdf.name, pno)
@@ -473,10 +488,13 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                 pimg, pw = _pixel_words(page, lay["visible"], default_ocr_lang)
                 if pw:
                     log(f"   page {pno}: OCR of the images ({len(pw)} words)")
-                    seen_pages.append({"gray": np.asarray(pimg.convert("L")), "words": pw, "scale": native_scale(page, 300)})
+                    with timing.stage("render"):
+                        seen_pages.append({"gray": np.asarray(pimg.convert("L")), "words": pw,
+                                           "scale": native_scale(page, 300)})
                     _detect_words(found, tokens, sequences, pw, True, ner, pdf.name, pno)
 
     _report(progress, len(pdfs), len(pdfs))
+    aggregate = timing.stage("config")
     for e in found.values():
         # one value, several spellings ('30002 / 05871', '30002/ 05871'): the one written most often is kept, ties by
         # alphabetical order, so that the order of the files does not change the config
@@ -712,6 +730,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     old = folder / CONFIG_NAME                              # a new scan keeps the changes made by hand
     if old.exists():
         text = configmodel.keep_edits(text, old.read_text(encoding="utf-8"))
+    aggregate.done()
     stats = {"files": len(pdfs), "active": len(active), "inactive": len(off), "seconds": round(time.time() - t0, 1)}
     if faker.width_error:                  # the gain of the pick by width, on the name words written on scans
         before = sum(b for b, _ in faker.width_error) / len(faker.width_error)
@@ -951,8 +970,9 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
             img = _scan_page(page, pno, len(doc), cfg, pc, ocr_lang, numberer, records, extras, log)
             rect = page.rect
             doc.delete_page(i)
-            newp = doc.new_page(pno=i, width=rect.width, height=rect.height)
-            newp.insert_image(newp.rect, stream=_jpeg(img))
+            with timing.stage("save"):
+                newp = doc.new_page(pno=i, width=rect.width, height=rect.height)
+                newp.insert_image(newp.rect, stream=_jpeg(img))
             continue
         words = lay["words"]
         typed = cfg.get("manual_texts", {}).get(pno, [])
@@ -961,21 +981,28 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         bo = cfg["blackout"]
         want_photos = bo["photos"] and (not bo["photos_only_on_id_documents"] or fields.is_id_document(words))
         # faces and codes are both looked for on one render of the page, taken before it is redacted
-        page_rgb = render_page(page, DIGITAL_DPI) if (want_photos or bo["qr_codes"]) else None
-        black = [("photo", r) for r in (faces.find_faces_digital(page_rgb) if want_photos else [])]
-        black += [("qr code", r) for r in (regions.find_codes_digital(page_rgb) if bo["qr_codes"] else [])]
-        black += [("signature", r) for r in
-                  (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
+        with timing.stage("render"):
+            page_rgb = render_page(page, DIGITAL_DPI) if (want_photos or bo["qr_codes"]) else None
+        with timing.stage("faces"):
+            black = [("photo", r) for r in (faces.find_faces_digital(page_rgb) if want_photos else [])]
+        with timing.stage("codes"):
+            black += [("qr code", r) for r in (regions.find_codes_digital(page_rgb) if bo["qr_codes"] else [])]
+        with timing.stage("signatures"):
+            black += [("signature", r) for r in
+                      (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
         removed = cfg.get("removed_boxes", {}).get(pno, [])
         black = [(k, r) for k, r in black if not _is_removed(removed, k, r)]     # removed by the user
         manual = cfg.get("manual_boxes", {}).get(pno, [])
         black += [("manual", r) for r in manual]
-        plan = [(m, bx) for m, bx in plan_page(words, pc, [], numberer) if not _inside(bx[0], manual)]
-        _mark_invisible(plan, words)
+        with timing.stage("text"):
+            plan = [(m, bx) for m, bx in plan_page(words, pc, [], numberer) if not _inside(bx[0], manual)]
+            _mark_invisible(plan, words)
         if plan:
-            _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, extras)
+            with timing.stage("digital"):
+                _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, extras)
         if lay["pixels"]:
             _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, [r for _, r in black], log, fonts)
+        black_stage = timing.stage("digital")
         if black:
             before_black = render.glyphs(page)
             hidden_black = invisible_chars(page)
@@ -988,6 +1015,7 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         for (box, text), color in zip(typed, typed_colors):              # typed by hand, after the boxes
             render.paint_text_box_pdf(page, box, text, color)
             _note(extras, pno, box, "typed text (manual)", "", text)
+        black_stage.done()
     if fonts.used:
         log("   fonts: " + ", ".join(f"{n} {k}" for k, n in sorted(fonts.used.items()))
             + "  (embedded = same font as the PDF, system = same font from this PC, standard = closest PDF font)")
@@ -1070,6 +1098,7 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
                     render.insert_replacement(page, b, part, line_style, fonts)
 
 
+@timing.timed("save")
 def _finish_digital(doc, out: Path):
     for page in doc:
         for annot in list(page.annots() or []):
@@ -1119,10 +1148,12 @@ def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list
     extras: dict = {"blackouts": [], "mrz": [], "trace": []}
     for pno, page in enumerate(src, start=1):
         img = _scan_page(page, pno, len(src), cfg, pc, ocr_lang, numberer, records, extras, log)
-        newp = dst.new_page(width=page.rect.width, height=page.rect.height)
-        newp.insert_image(newp.rect, stream=_jpeg(img))
-    dst.set_metadata({})
-    dst.save(out, garbage=4, deflate=True)
+        with timing.stage("save"):
+            newp = dst.new_page(width=page.rect.width, height=page.rect.height)
+            newp.insert_image(newp.rect, stream=_jpeg(img))
+    with timing.stage("save"):
+        dst.set_metadata({})
+        dst.save(out, garbage=4, deflate=True)
     return records, extras
 
 
@@ -1316,6 +1347,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         t0 = time.time()
         entry = {"file": pdf.name, "output": out.name, "mode": "?", "pages": 0, "replaced": 0, "items": [],
                  "leftovers": [], "warnings": [], "error": None, "seconds": 0}
+        timers = timing.collecting()                   # the time of this file by stage (kept in the report)
+        tm = timers.__enter__()
         try:
             doc = open_source(pdf)
             layouts = [page_layout(p) for p in doc]
@@ -1347,7 +1380,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
             use_ocr = mode != "digital" or ocr_verify            # a digital file is checked on its text, unless asked
             log("   checking the output " + ("(OCR)" if use_ocr else "(text layer; OCR check off for digital PDFs)") + "...")
             read = verify.read_output(out, ocr_lang, use_ocr)    # read once: both checks work on this reading
-            entry["leftovers"] = verify.verify_output(read, cfg)
+            with timing.stage("check"):
+                entry["leftovers"] = verify.verify_output(read, cfg)
             if mode == "scan" and not entry["leftovers"]:
                 log("   second pass: not needed, no original value left in the output")
             if entry["leftovers"] and mode == "scan":
@@ -1366,10 +1400,12 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 entry["replaced"] = len(records)
                 entry["items"] = summarize(records, cfg)
                 read = verify.read_output(out, ocr_lang, use_ocr=True)
-                entry["leftovers"] = verify.verify_output(read, cfg)
+                with timing.stage("check"):
+                    entry["leftovers"] = verify.verify_output(read, cfg)
             if entry["leftovers"]:
                 log(f"   WARNING: {len(entry['leftovers'])} original value(s) still found in the output")
-            entry["suspects"] = verify.leak_suspects(read, cfg)
+            with timing.stage("check"):
+                entry["suspects"] = verify.leak_suspects(read, cfg)
             if entry["suspects"]:
                 shown = ", ".join(f"{s['type']} '{s['value']}' p.{s['page']}" for s in entry["suspects"][:8])
                 entry["warnings"].append(f"{len(entry['suspects'])} value(s) still readable in the output, not replaced: "
@@ -1379,8 +1415,10 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         except Exception as e:  # noqa: BLE001
             entry["error"] = str(e)
             log(f"   ERROR: {e}")
+        timers.__exit__(None, None, None)
         entry["seconds"] = round(time.time() - t0, 1)
-        log(f"   done in {entry['seconds']}s")
+        entry["stages"] = tm.report(time.time() - t0)
+        log(f"   done in {entry['seconds']}s (" + timing.format_stages(entry["stages"]) + ")")
         files.append(entry)
         # saved after every file: a batch that stops keeps the analysis of the files it has done
         report = _save_report(folder, rel, kept + files, t_all, ocr_verify, quality_offset)
