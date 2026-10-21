@@ -46,7 +46,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from anonymizer import configmodel, engine, fields, ocr, pii, secret, verify  # noqa: E402
+from anonymizer import configmodel, engine, fields, ocr, pii, scanpaint, secret, verify  # noqa: E402
 from anonymizer.fake import Faker  # noqa: E402
 from anonymizer.fake import FEMALE_NAMES, LAST_NAMES, MALE_NAMES, Faker, _pkey  # noqa: E402
 from anonymizer.pii import digital_words, fitz, load_ner, words_to_text  # noqa: E402
@@ -607,7 +607,7 @@ def reported_cases_tests():
     check("spellings of one name share a replacement",
           engine.name_aliases({"REYES": 2, "REYE": 1, "REYS": 1}, []) == {"reye": "reyes", "reys": "reyes"})
     check("a two-line replacement is cut across the lines",
-          engine._cut_lines("SQUARE Jolien Lemaire 2", [40.0, 110.0]) == ["SQUARE", "Jolien Lemaire 2"])
+          scanpaint._cut_lines("SQUARE Jolien Lemaire 2", [40.0, 110.0]) == ["SQUARE", "Jolien Lemaire 2"])
     check("'Dutch' and English street keep their number first", fake_module.Faker(b"s" * 32).street("04 Library place")
           .endswith(" place"))
 
@@ -1565,6 +1565,14 @@ def speedup_tests():
         agree += fontmatch.fit_rows(g, got[1], tpl, soft) == fit_rows_loops(g, got[1], tpl, soft)
     check(f"fit_rows: all tops at once = the loops ({agree}/{pairs} words, same scale and top)", pairs >= 2 and agree == pairs)
 
+    # snapshot_results compares output files: the random document ID of PyMuPDF is written as hex or, when its bytes
+    # allow it, as a literal string; only the hex form was stripped, so one file in twenty differed from its twin
+    import snapshot_results
+    as_hex = b"x/ID[<C2A27B05775E183B0752C3BF2DC294C2><B4C4A01451C749CBB24CB3A96708BD01>]>>"
+    as_literal = b"x/ID[<C2A27B05775E183B0752C3BF2DC294C2>(<\\254h<Y/\\221s:4{\\321op\\005\\251)]>>"
+    check("snapshot: the random document ID is stripped in its hex and literal forms",
+          snapshot_results.ID_RX.sub(b"", as_hex) == snapshot_results.ID_RX.sub(b"", as_literal) == b"x>>")
+
     # the faces of a word compared as a stack = one by one, to the last bit
     crop = rng.random((31, 77)) ** 3
     ref = fontmatch.shape_of(crop)
@@ -1753,7 +1761,7 @@ def font_scan_tests():
     # the original: native resolution, font and weight of every line, quality of every page
     measured = {}
     for pno, page in enumerate(doc, 1):
-        scale = engine.native_scale(page, 300)
+        scale = scanpaint.native_scale(page, 300)
         check(f"page {pno}: native resolution {pages[pno]['dpi']} dpi is read from the image",
               abs(scale * 300 - pages[pno]["dpi"]) <= 2, f"{scale * 300:.0f}")
         img, words = _ocr_page(page)
@@ -1894,10 +1902,10 @@ def scan_text_tests():
     check("a misread OCR word ('i\\venue') is not measured",
           fontmatch.clean_word({"text": "i\\venue", "box": (0, 0, 9, 9)})["text"] == "")
     check("a replacement on two lines takes the words of the same rank ('i\\venue' / 'de la Closière 7')",
-          engine._cut_lines("Avenue de la Chapelle 2", [60, 300], "i\\venue\nde la Closière 7")
+          scanpaint._cut_lines("Avenue de la Chapelle 2", [60, 300], "i\\venue\nde la Closière 7")
           == ["Avenue", "de la Chapelle 2"])
     check("... and is cut by the widths of the lines when the word counts differ",
-          engine._cut_lines("Avenue Louise 54", [60, 300], "Rue\nde la Closière 7") == ["Avenue", "Louise 54"])
+          scanpaint._cut_lines("Avenue Louise 54", [60, 300], "Rue\nde la Closière 7") == ["Avenue", "Louise 54"])
     face = fontmatch.face("Times New Roman")
     box = (100, 60, 520, 100)
     runs = [("Rachid", face, False), ("DELACROIX", fontmatch.face("Times New Roman", True) or face, True)]
@@ -1966,7 +1974,7 @@ def contract_tests():
                 img, words = _ocr_page(out[pno - 1])
                 g = np.asarray(img.convert("L"))
                 og = np.asarray(ocr.render_page(orig[pno - 1], 300).convert("L"))
-                pf = fontmatch.PageFonts(g, words, engine.native_scale(orig[pno - 1], 300))
+                pf = fontmatch.PageFonts(g, words, scanpaint.native_scale(orig[pno - 1], 300))
                 for value in (v for v in truth["values"] if v["page"] == pno):
                     for tw in value["words"]:
                         box = [c * 300 / 72 for c in tw["box"]]
@@ -2176,7 +2184,7 @@ def ink_tail_tests():
     box2 = (bb2[0] - 3, base - 30 + f.getbbox("J", anchor="ls")[1] - 3, bb2[2] + 3, base - 30 + 3)
     g2 = np.asarray(page2.convert("L"))
     word = (bb2[0], box2[1], bb2[0] + int(f.getlength("Jules-Dupont")), base - 30 + 25)
-    rest = [r for r in engine._beside(word, (bb2[0], box2[1], bb2[2], base - 30 + 5))]
+    rest = [r for r in scanpaint._beside(word, (bb2[0], box2[1], bb2[2], base - 30 + 5))]
     t2 = render.ink_tail(g2, box2, rest)
     check("tail: the rest of the word ('-Dupont') is not taken for a tail",
           t2 is None or not t2[2][:, int(bb2[2]) + 12 - t2[0]:].any())

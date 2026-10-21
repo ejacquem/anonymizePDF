@@ -39,7 +39,11 @@ Repo: `C:\Users\Lucas\Project\anonymizePDF` (Windows 10, Git Bash + PowerShell).
 app.py                 Flask server: tree, pdf serving / page rendering, config get/put, scan/anonymize jobs (thread + polling)
 anonymizer/
   engine.py            scan_folder(), parse_config(), render_config(), run_anonymize(), _digital(), _scan_pdf(),
-                       summarize(); labeled fields (_add_labeled), MRZ rebuild (_new_mrz)
+                       summarize(); labeled fields (_add_labeled); the digital pages (_digital_replace)
+  scanpaint.py         painting of scanned pages and of the pictures of digital pages (split from engine.py, no change
+                       of behaviour): _scan_page, _pixel_pass, page_fonts / page_looks / page_quality, layout_value,
+                       _cut_lines, _refine_slanted, MRZ rebuild (_new_mrz), native_scale, pii_cfg. Imports nothing
+                       from engine.py (engine imports it)
   verify.py            checks of an anonymized file, read once: read_output (text layer, OCR), verify_output
                        (original values still in the file), leak_suspects (the second check)
   pii.py               DETECTORS (regex + validators), spaCy NER (load_ner, detect_ner), detect_all, resolve,
@@ -93,7 +97,7 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
                        Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 08);
                        make_test_idcard.py also writes the poor copy (Dossier Test 09); make_test_transfers.py (Dossier
-                       Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12);
+                       Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12); key_hunt.py (many random keys on one file);
                        snapshot_results.py (before / after comparison of the results, section 11b);
                        check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
                        section 12b: the PDFs are downloaded, never committed)
@@ -422,7 +426,7 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   90 % of its width at most (`morph`), then made smaller (height 70 % at least, width 60 % at worst;
   `render.SQUEEZE_FLOOR` / `SIZE_FLOOR` / `SQUEEZE_MIN`). A value on several lines has one box per line. `digital_fill: none` keeps
   the page background (redaction with `fill=False`). A value on several lines gets its replacement cut across the same
-  lines (`engine._cut_lines`, digital and scan), each line with its own baseline.
+  lines (`scanpaint._cut_lines`, digital and scan), each line with its own baseline.
   A value on one horizontal line is redacted and placed at its own glyphs (`render.exact_box`: the union of the glyph
   boxes of the value, narrowed by 0.3 pt so that the neighbours which only touch are not taken), not at the word box
   cut in proportion to the characters (wrong for proportional fonts and spaced text). Whatever a redaction still takes
@@ -456,7 +460,7 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   line (`find_mrz`, not from the ink of the page: a card edge next to the MRZ made the text too wide). The old text is
   erased pixel by pixel (`_erase_ink`: dark pixels take the local paper colour), never with a flat rectangle, then the
   new lines are written with the same ink colour, and with the page's quality (blur, spread, grain of the area around
-  the zone: `engine.page_quality`, `render.draw_mrz(q=)`) when the quality is matched, so they are not sharper than the
+  the zone: `scanpaint.page_quality`, `render.draw_mrz(q=)`) when the quality is matched, so they are not sharper than the
   card. `mrz_typed_quality_tests`.
 
 ## 10b. Font and quality of scanned text (`fontmatch.py`, `quality.py`; plan and results: docs/font_matching.md)
@@ -480,7 +484,7 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   can be half bold). 233/234 words of Dossier Test 17 (228 and 231 with each clue alone). BoldMeter is the fallback.
 - Words of one value in two weights ('Lucas' regular, 'JACQUEMIN' bold): when the fake has as many words as OCR read
   in the box (`word_faces`), and the words' bold scores spread by >= 0.3, each word is written in its own weight;
-  else all in the pooled weight (4-digit groups of an IBAN alone are weak evidence). `engine.layout_value`,
+  else all in the pooled weight (4-digit groups of an IBAN alone are weak evidence). `scanpaint.layout_value`,
   `render.scan_runs_layout` (runs of text in different fonts on one line). A line of a value on two lines takes the
   weight of its own words.
 - Size and baseline (`PageFonts.metrics`): every word of the value rendered in its face and fitted row by row on the
@@ -489,10 +493,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   measured takes the size of its line's other words.
 - Filling (`layout_value`, `scan_runs_layout(fill=)`): when something follows the value on its line (a comma, the next
   word: `PageFonts.followed`), a shorter fake spreads to its box: spaces up to +60 %, letters up to 8 %.
-- A value on two lines is cut by the words of the same rank when the fake has as many words (`engine._cut_lines`:
+- A value on two lines is cut by the words of the same rank when the fake has as many words (`scanpaint._cut_lines`:
   'i\venue' / 'de la Closière 7' -> 'Avenue' / 'de la Chapelle 2'), else by the widths of the lines.
 - Quality (`PageFonts.page_quality`, `quality.fit`): on the 20 longest words of the page (>= 3, else not fitted):
-  native resolution from the PDF image (`engine.native_scale`, not fitted), then blur and stroke spread by a
+  native resolution from the PDF image (`scanpaint.native_scale`, not fitted), then blur and stroke spread by a
   coordinate search over grids, error = linear fit of the degraded candidate to the pixels. Per value: grain (MAD of
   the paper around the box, ink and its edges left out) and colours (`colours`: ink = paper + (darkest 5 % - paper) /
   peak coverage of the degraded candidate: the ink of a full stroke, consistent with the fitted blur), measured on
@@ -513,7 +517,7 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - Ink tails (`render.ink_tail`, `erase_tail`): the OCR box can cut a descender or an ascender (the tail of a Garamond
   'J' goes far below its baseline) and a dot was left under the replacement. The ink connected to the ink inside the
   value's padded box is found by growing it (numpy, at most 0.8 text heights), never into the other words (the parts of
-  the value's own word on both sides of it count as other words: `engine._beside`) or the black boxes, never through a
+  the value's own word on both sides of it count as other words: `scanpaint._beside`) or the black boxes, never through a
   ruled line (runs of ink longer than 3 text heights are not letters), and dropped when it holds more than a third
   of the box in ink. Erased with the paper colour (and its grain). `ink_tail_tests`.
 - A word only partly covered by a value is cut by the widths of its measured font (`PageFonts.advance` ->
@@ -602,7 +606,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   model's cost), the probe renderings (`_rendered`, PIL text drawing of every word in ~46 faces), page quality fit.
 - Every speed-up keeps the results identical. Check it with `tools/snapshot_results.py`: `save` before and after a
   change (`--code <root>` runs an exported older commit), then `compare` prints IDENTICAL (configs, reports, output
-  hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs.
+  hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs. The random ID is
+  written as two hex strings or, when its bytes allow it, as literal strings: both forms are stripped (`ID_RX`; with the
+  hex form only, a file or two of 39 differed from its twin in some runs, which looked like a regression). Run the two
+  snapshots one after the other on an idle machine: the timings are meant to be compared.
 
 ## 12. Test suite: `python tools/check_all.py`
 
@@ -700,7 +707,7 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   of birth or an OCR fragment such as 'CARO'). Privacy first, and the review step shows it.
 - Slanted text (scans, photos): OCR boxes of slanted words can be off by about a line, and Windows OCR does not read
   lines slanted by ~15 degrees or more (`Dossier Test 07`, `known_miss`). Words of slanted lines are read again turned
-  straight (`engine._refine_slanted`, lines of the same slant together) and painted in their own frame
+  straight (`scanpaint._refine_slanted`, lines of the same slant together) and painted in their own frame
   (`render.paint_tilted`, `_ink_band`); the report boxes (PDF points) are checked by `check_all.check_tilt`.
 - Faces: frontal detector (profiles may be missed), tested on public-domain portraits (tools/test_faces) and
   generated pages (Dossier Test 06). Signatures are still ink-based: on a card photographed on a dark table or on a

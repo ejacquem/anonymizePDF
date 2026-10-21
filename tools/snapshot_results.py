@@ -29,7 +29,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_KEY = Path(tempfile.gettempdir()) / "anonymizePDF_snapshot_key.txt"      # a test key, not the user's
-ID_RX = re.compile(rb"/ID\s*\[\s*<[0-9A-Fa-f]+>\s*<[0-9A-Fa-f]+>\s*\]")       # PyMuPDF's random document ID
+# PyMuPDF's random document ID: two PDF strings, each written as hex <...> or, when the bytes allow it, as a literal
+# (...) (the literal form was not stripped: a file differed from its twin in one run out of twenty)
+_PDF_STRING = rb"(?:<[0-9A-Fa-f]*>|\((?:[^()\\]|\\.|\((?:[^()\\]|\\.)*\))*\))"
+ID_RX = re.compile(rb"/ID\s*\[\s*" + _PDF_STRING + rb"\s*" + _PDF_STRING + rb"\s*\]", re.S)
 
 
 def sha(data: bytes) -> str:

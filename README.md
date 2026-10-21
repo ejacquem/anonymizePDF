@@ -12,6 +12,7 @@ Works on digital PDFs (real text layer) and on scans (OCR). Documents are mostly
 app.py                   web app (Flask, 127.0.0.1 only)
 anonymizer/
   engine.py              scan folder -> draft config -> anonymize -> verify -> report
+  scanpaint.py           scanned pages and pictures: find, erase and rewrite the values in the font and quality of the scan
   pii.py                 detectors (IBAN, phone, e-mail, addresses, names...), matching and text/box helpers
   ocr.py                 OCR of scanned pages: Tesseract or Windows built-in OCR
   fake.py                fake replacement values (same length, same format, consistent)
