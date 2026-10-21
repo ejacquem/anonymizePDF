@@ -61,9 +61,19 @@ def lru(name: str, limit: int) -> Lru:
     return m
 
 
+_clearers: list = []
+
+
+def on_clear(fn) -> None:
+    """Also call `fn` (an lru_cache's cache_clear, the OCR cache's clear) when clear_all() is asked."""
+    _clearers.append(fn)
+
+
 def clear_all() -> None:
     for m in _registry:
         m.clear()
+    for fn in _clearers:
+        fn()
 
 
 def stats() -> dict[str, tuple[int, int, int]]:

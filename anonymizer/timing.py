@@ -10,8 +10,9 @@ The time of a stage is EXCLUSIVE: while a stage runs inside another one (the fon
 planned), the outer stage is paused, so the stages add up to the wall time of the collector. A stage outside any
 collector costs nothing. Nothing here changes a result; it only reads the clock.
 
-Work done in a worker process (the pages in parallel) is measured there and merged in with `merge()`: the stages then
-add up to the work of all the workers, which is more than the wall time.
+Work done in a worker process (the pages in parallel) is measured there and added with `add_workers()`: it is kept
+apart (`worker_report()`), because it adds up to more than the wall time; the main process shows the time it waited for
+the workers as the stage 'wait'.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ class Timers:
         self.seconds: dict[str, float] = {}
         self.cpu: dict[str, float] = {}
         self.calls: dict[str, int] = {}
+        self.workers: dict[str, float] = {}         # seconds by stage done in worker processes (all of them added)
         self.stack: list[list] = []                 # [name, wall start of the open slice, cpu start]
         self.t0 = time.perf_counter()
         self.c0 = time.process_time()
@@ -58,12 +60,17 @@ class Timers:
         if self.stack:
             self.stack[-1][1], self.stack[-1][2] = time.perf_counter(), time.process_time()
 
-    def merge(self, other: "Timers | dict"):
-        """Add the stages of another collector (or of a dict {stage: seconds} from a worker process)."""
-        if isinstance(other, dict):
-            for k, v in other.items():
-                self.seconds[k] = self.seconds.get(k, 0.0) + v
-            return
+    def add_workers(self, stages: dict):
+        """Add the stages {stage: seconds} measured by a worker process."""
+        for k, v in stages.items():
+            self.workers[k] = self.workers.get(k, 0.0) + v
+
+    def worker_report(self) -> dict[str, float]:
+        return dict(sorted(((k, round(v, 2)) for k, v in self.workers.items() if v >= 0.005), key=lambda kv: -kv[1]))
+
+    def merge(self, other: "Timers"):
+        """Add the stages of another collector."""
+        self.add_workers(other.workers)
         for k, v in other.seconds.items():
             self.seconds[k] = self.seconds.get(k, 0.0) + v
         for k, v in other.cpu.items():

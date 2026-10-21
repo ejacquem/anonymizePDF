@@ -23,7 +23,7 @@ from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
 
-from . import timing
+from . import memo, timing
 
 ENGINES = ("auto", "tesseract", "windows")
 _choice = os.environ.get("ANON_OCR_ENGINE", "auto").lower()
@@ -194,6 +194,9 @@ def clear_cache() -> None:
     with _cache_lock:
         _cache.clear()
         _cache_size = 0
+
+
+memo.on_clear(clear_cache)
 
 
 # ---------------------------------------------------------------------------

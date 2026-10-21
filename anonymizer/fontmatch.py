@@ -192,6 +192,9 @@ def _rendered(f: Face, text: str):
     return (got[0].astype(float) / 255.0, got[1]) if got else None
 
 
+memo.on_clear(_rendered_u8.cache_clear)
+
+
 def template(f: Face, text: str) -> np.ndarray | None:
     """`text` rendered in face `f` (coverage 0..1), cropped to its ink."""
     got = _rendered(f, text)

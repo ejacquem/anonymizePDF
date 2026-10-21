@@ -72,13 +72,13 @@ def peak_mb() -> int:
 
 
 def _clear_caches():
-    from anonymizer import ocr
-    ocr.clear_cache()
+    from anonymizer import memo
+    memo.clear_all()                               # the memos, the OCR cache, the renderings: this process
     try:
-        from anonymizer import memo
-        memo.clear_all()
+        from anonymizer import workers
+        workers.clear_caches()                     # and the workers' (a page always meets the same worker)
     except ImportError:
-        pass
+        pass                                       # a commit from before the workers
 
 
 def _git(code: Path) -> dict:
@@ -117,6 +117,8 @@ def run_one(engine, ner, folder: str, name: str) -> dict:
 def run(args) -> int:
     KEY.write_text("0123456789abcdef" * 4, encoding="utf-8")
     os.environ["ANON_SECRET_FILE"] = str(KEY)
+    if args.workers:
+        os.environ["ANON_WORKERS"] = str(args.workers)
     code = Path(args.code).resolve() if args.code else ROOT
     sys.path.insert(0, str(code))
     from anonymizer import engine
@@ -138,8 +140,16 @@ def run(args) -> int:
             print(f"[{r + 1}/{args.repeat}] {name}: scan {got['scan']['wall']:.1f}s, anonymize {got['anon']['wall']:.1f}s"
                   f"  (machine busy {max(got['scan']['busy'], got['anon']['busy']) * 100:.0f} %, peak {got['peak_mb']} MB)",
                   flush=True)
+    pool = {}
+    try:
+        from anonymizer import workers
+        pool = {"configured": workers.configured_workers(), "pool_size": workers.pool_size(), **workers.stats}
+        workers.shutdown()
+    except ImportError:
+        pass
     result = {"meta": {"cpu_count": os.cpu_count(), "ner_load_seconds": ner_s, "repeat": args.repeat,
-                       "workers_env": os.environ.get("ANON_WORKERS"), **_git(code), "when": time.strftime("%Y-%m-%d %H:%M")},
+                       "workers_env": os.environ.get("ANON_WORKERS"), "pool": pool, **_git(code),
+                       "when": time.strftime("%Y-%m-%d %H:%M")},
               "docs": best, "all_runs": runs}
     Path(args.out).write_text(json.dumps(result, indent=1), encoding="utf-8")
     show(result)
@@ -147,7 +157,8 @@ def run(args) -> int:
 
 
 def show(result: dict):
-    print(f"\nbest of {result['meta']['repeat']} (names model loaded in {result['meta']['ner_load_seconds']}s)")
+    print(f"\nbest of {result['meta']['repeat']} (names model loaded in {result['meta']['ner_load_seconds']}s; "
+          f"workers {result['meta'].get('pool') or 'none'})")
     print(f"{'document':36s} {'scan':>7s} {'anon':>7s} {'total':>7s}   stages of the anonymization")
     for name, d in result["docs"].items():
         st = ", ".join(f"{k} {v:.1f}" for k, v in list(d["anon"]["stages"].items())[:6])
@@ -189,6 +200,7 @@ def main() -> int:
     r = sub.add_parser("run")
     r.add_argument("out")
     r.add_argument("--repeat", type=int, default=2)
+    r.add_argument("--workers", type=int, help="ANON_WORKERS for the run (1 = one process; default: the app's default)")
     r.add_argument("--code", help="root of another copy of the code (e.g. an exported older commit)")
     r.add_argument("--doc", action="append", help="only the documents whose name contains this (repeatable)")
     c = sub.add_parser("compare")

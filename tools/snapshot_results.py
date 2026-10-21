@@ -76,7 +76,7 @@ def save(args) -> None:
                     pages.append({"pixels": sha(pix.samples),
                                   "text": sha(words_to_text(digital_words(page))[0].encode())})
                 doc.close()
-                report = {k: v for k, v in entry.items() if k not in ("seconds", "stages")}      # timings differ
+                report = {k: v for k, v in entry.items() if k not in ("seconds", "stages", "worker_stages")}      # timings differ
                 files[entry["file"]] = {"report": report, "output_sha256": sha(ID_RX.sub(b"", out.read_bytes())),
                                         "pages": pages}
             result[folder] = {"config": cfg_stable, "scan_seconds": round(scan_s, 2),

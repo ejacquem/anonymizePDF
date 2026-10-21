@@ -63,6 +63,8 @@ anonymizer/
   regions.py           find_codes, find_signatures (+ *_digital variants), is_signature_label, line_angles (skew)
   morph.py             square max / min / closing on arrays, two 1-D passes (same result as PIL's rank filters)
   timing.py            stage timers (ocr, fonts, paint, ocr_check...): exclusive time per stage, one collector per file
+  workers.py           pages in parallel processes: worker pool (one process per slot, sticky routing), the tasks
+                       scan_page / read_scan / name_faces_page / read_page, ANON_WORKERS
   memo.py              in-memory memos keyed by the pixels of a page (bounded LRU, never on disk): faces, codes, line
                        angles, the PageFonts of a page; image_key / array_key / words_key, by_image, clear_all
   faces.py             faces of people (YuNet, ONNX Runtime, offline): detect, find_faces, find_faces_digital
@@ -113,7 +115,9 @@ The original numbered CLI scripts were removed long ago.
 
 Run: `python app.py --root <folder with client folders>` → http://127.0.0.1:5000.
 Options: `--port`, `--ocr-lang fra+eng`, `--ocr-engine auto|tesseract|windows`, `--spacy-model` (repeatable).
-Env: `ANON_SECRET_FILE` (key path), `ANON_OCR_ENGINE`, `TESSERACT_CMD`, `TESSDATA_PREFIX`.
+Env: `ANON_SECRET_FILE` (key path), `ANON_OCR_ENGINE`, `TESSERACT_CMD`, `TESSDATA_PREFIX`, `ANON_WORKERS` (pages in
+parallel processes: 1 = never, default = the cores minus one, at most 6, fewer when the free memory is short),
+`ANON_WORKER_MB` (memory expected per worker, default 800: a worker peaks near 500 MB on a 3-page A4 scan).
 
 ## 4. UI
 
@@ -704,6 +708,53 @@ Order must never change a result (`order_tests`): a value written with several s
 - The names model is loaded once per app process (a background thread at start-up, `app.preload_ner`, and `NER_LOCK`);
   the settings the browser sends again at every start no longer drop it (`save_settings` drops it only when the choice
   of models changes).
+- Pages in parallel processes (`anonymizer/workers.py`): PyMuPDF is not thread-safe and the work holds the GIL, so the
+  pages of a document go to worker PROCESSES, one task per page, and the main process puts the results back in page order.
+  The tasks: `scan_page` (a scanned page from its file: render, OCR, faces / codes / signatures, fonts and quality,
+  paint -> the JPEG, the records, the extras, the log lines of the page), `read_scan` + `name_faces_page` (the scan of a
+  folder: OCR and grey image of each scanned page, then the fonts of the names per page), `read_page` (the OCR of the
+  output pages for the checks). Used by `engine._scan_pdf`, the scanned pages of `_digital` (a mixed file: the scans go
+  to the workers while the digital pages are done here, `_start_pages(beside=)`), `_scan_folder` (`_start_reads`,
+  `_name_faces`) and `verify.read_output`. Everything is assembled in page order (records, extras, trace, log lines), so
+  the output is byte for byte the one process gives: `_finish_page`, and `_name_faces` replays the one-process rule
+  (3 faces per name word over the pages, the first found) on the faces the workers measured.
+  Rules: a worker opens the PDF by path (an image file, a one-page document with nothing beside it, ANON_WORKERS=1:
+  done here); a config with '{n}' in a replacement is not split (`workers.splittable`: `pii.Numberer` numbers in page
+  order); a worker that dies or cannot start gives the page back to the main process (`Task.result()` is None); a
+  process that cannot have children (a daemonic worker of check_all) turns the pool off for its life (`_broken`). The
+  pool is created on first use, each worker in its own single-process executor (a slot), started together
+  (`workers.spread`); page k of a file always goes to slot `(crc32(path) + k) % pool_size`, so the worker that read a
+  page in the scan also anonymizes it and keeps its OCR, fonts and faces in memory (the memos of `memo.py`, per worker).
+  `pool_size()` (fixed per configured value) leaves a core to the app and 800 MB per worker out of the free memory.
+  The initializer imports onnxruntime FIRST (importing it after the winrt OCR packages crashes the process on this PC,
+  a segfault), loads the face model and the font catalog; one thread per worker for numpy / onnxruntime
+  (`ANON_ORT_THREADS`). Each task carries the OCR engine chosen in the app (`workers._call`). Nothing is written to disk.
+  `entry['stages']` is the time of the main process (the stage 'wait' = blocked on a worker), `entry['worker_stages']`
+  the work of the workers added up (more than the wall time). `workers.clear_caches()` empties the workers' memos (the
+  benchmark starts cold). Pool start: ~1.5 s for 2 workers started together (once per app process).
+- Measured with tools/bench.py (best of 2, each run cold, seconds, scan + anonymize of each document alone; the machine
+  was shared with other programs, 40-70 % busy, so read the proportions): step 0 = the timers only (the reference),
+  step 1 = memos + lean data, step 2 = pages in parallel processes (6 workers on 4 cores / 8 threads).
+
+  | document                         | step 0 | step 1 | step 2 |
+  |----------------------------------|-------:|-------:|-------:|
+  | contrat_assurance_scan (3 pages) |   42.6 |   26.9 |   16.7 |
+  | paragraphes_scan (4 pages)       |   42.1 |   34.4 |   16.7 |
+  | releve_banque_mosane_scan (2)    |   54.8 |   42.8 |   27.9 |
+  | releve_banque_mosane (digital)   |    4.5 |    4.0 |    3.5 |
+  | passeport_scan (1 page)          |    8.9 |    8.3 |    7.9 |
+  | releve_scan_cherchable (3)       |   51.7 |   38.6 |   20.3 |
+  | releve_annexe_scannee (mixed)    |   17.1 |   13.1 |   14.5 |
+  | contrat_image_collee (mixed)     |    6.1 |    4.3 |    4.5 |
+  | total                            |  227.7 |  172.3 |  111.9 |
+
+  The whole sample corpus (`snapshot_results.py save`, 42 files, 68 pages, scan + anonymize): 599 s for the code before
+  the timers, 409 s after step 1, 249 s after step 2, IDENTICAL in configs, reports, output hashes, page pixels and text
+  layers each time. By stage, summed over the 8 documents (scan + anonymize): fonts 114 -> 78 s (step 1), faces 43 -> 40 s,
+  OCR of the output 10 -> 4 s, peak memory of the benchmark process 5.8 GB -> 1.9 GB (step 1) -> 1.0 GB (step 2, the
+  main process; each worker peaks near 0.5 GB). The first scan or anonymization of a run of the app also starts the
+  workers (about 1 s for 3 workers started together). A one-page scan is not split (the passport: 7.9 s, fonts 3.2 s and
+  face detection 2.0 s are the left).
 - Every speed-up keeps the results identical. Check it with `tools/snapshot_results.py`: `save` before and after a
   change (`--code <root>` runs an exported older commit), then `compare` prints IDENTICAL (configs, reports, output
   hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs. The random ID is
@@ -750,6 +801,9 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Towns and postcodes (`town_tests`): one fake town per name, the postcode belongs to the fake town, a Swiss postcode
   keeps its length. Detector tests: a BIC of any country after its label, an account with a slash, an address on two
   lines, a postcode that is not the street number.
+- Pages in parallel (`parallel_tests`, run by the main process of check_all: a pool worker is a daemon and may not start
+  workers; every other job runs with ANON_WORKERS=1): a searchable scan, a mixed file and a config with '{n}' give the same
+  config, output file (without the random ID) and report with ANON_WORKERS=1 and 3.
 - Memos and lean data (`memo_tests`): the blur with its taps added in place = the plain form, the 8-bit renderings =
   the float ones, a remembered PageFonts / faces / codes = a fresh computation, `clear_all`, the names model kept when the
   same settings are sent again.

@@ -2230,6 +2230,24 @@ def memo_tests():
     other.putpixel((3, 3), (0, 0, 0))
     check("another image, another key", memo.image_key(other) != memo.image_key(img))
 
+    # the fuzzy comparisons of the scan skip the pairs difflib's cheap bounds rule out: the same answers
+    import random
+    from difflib import SequenceMatcher
+    rnd = random.Random(7)
+    words = ["reyes", "reys", "reye", "morin", "moran", "gaspard", "gasp", "succession", "successon", "compte", "comtpes",
+             "lucas", "lucia", "jacquemin", "jaquemin", "x", "", "monsieur", "monsieul", "virement", "virements"]
+    words += ["".join(rnd.choice("abcdeilmnorstu") for _ in range(rnd.randint(3, 11))) for _ in range(60)]
+    same = all((engine.alike(a, b, c) is not None) == (SequenceMatcher(None, a, b).ratio() >= c) and
+               (engine.alike(a, b, c) in (None, SequenceMatcher(None, a, b).ratio()))
+               for a in words for b in words for c in (0.8, 0.85))
+    stop = {k for k in engine._STOP_KEYS}
+    plain = lambda key: len(key) >= 5 and any(len(x) >= 5 and abs(len(x) - len(key)) <= 2 and    # noqa: E731
+                                              SequenceMatcher(None, key, x).ratio() >= 0.85 for x in stop)
+    same_label = all(engine.is_label_word(w) == (bool(w) and (engine._pkey(w) in engine._STOP_KEYS or
+                                                              engine._ocr_m(engine._pkey(w)) in engine._STOP_KEYS or
+                                                              plain(engine._pkey(w)))) for w in words if w.isalpha())
+    check("alike() = SequenceMatcher's ratio at the cutoff, and is_label_word keeps its answers", same and same_label)
+
     # the names model is kept when the browser sends the same settings again (it did reload it at every page load)
     import app as app_module
     saved = dict(app_module.STATE)
@@ -2937,6 +2955,68 @@ def quality_offset_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def parallel_tests():
+    """The pages of a document done by worker processes give the config, the files and the reports of one process, byte
+    for byte: a searchable scan (pages only), a mixed file (digital pages and a scanned one), and a config that numbers
+    its replacements ('{n}': the numbers follow the page order, so the pages are not split)."""
+    print("\n== pages in parallel processes")
+    import snapshot_results
+    from anonymizer import workers
+
+    names = ("releve_scan_cherchable.pdf", "releve_annexe_scannee.pdf")
+    work = Path(tempfile.mkdtemp(prefix="anon_par_"))
+    saved = os.environ.get("ANON_WORKERS")
+    ner = _names_model()
+
+    def run(n: str, tag: str, numbered: bool = False):
+        os.environ["ANON_WORKERS"] = n
+        folder = work / f"{tag}{n}"
+        folder.mkdir()
+        for name in names:
+            shutil.copy(ROOT / "sample_data" / "Dossier Test 05" / name, folder / name)
+        scan = engine.scan_folder(folder, "par", ner, "fra+eng", lambda m: None)
+        cfg = scan["config"]
+        if numbered:
+            cfg, hit = re.subn(r'(- \{find: "[^"]+", replace: )"[^"]+"(, type: PERSON\})', r'\1"Personne {n}"\2', cfg, count=1)
+            assert hit, "no PERSON entry to number"
+        stable = "\n".join(l for l in cfg.splitlines() if not l.startswith(("# edited", "# generated")))
+        rep = engine.run_anonymize(folder, "par", cfg, "fra+eng", False, lambda m: None)
+        files = {}
+        for e in rep["files"]:
+            data = (folder / e["output"]).read_bytes()
+            files[e["file"]] = (snapshot_results.sha(snapshot_results.ID_RX.sub(b"", data)),
+                                {k: v for k, v in e.items() if k not in ("seconds", "stages", "worker_stages")})
+        return stable, files
+
+    try:
+        before = dict(workers.stats)
+        cfg1, one = run("1", "plain")
+        used_one = workers.stats.get("scan_page", 0) - before.get("scan_page", 0)
+        cfg3, three = run("3", "plain")
+        pages_given = workers.stats.get("scan_page", 0) - before.get("scan_page", 0) - used_one
+        check("one process: no page given to a worker", used_one == 0)
+        check("three workers: the scanned pages went to the workers", pages_given >= 3 or workers.stats.get("fallbacks", 0) > 0 or workers._broken,
+              f"{pages_given} page(s)")
+        check("the config of a scan is the same with three workers", cfg1 == cfg3)
+        for name in names:
+            check(f"{name}: the same output file with three workers", one[name][0] == three[name][0])
+            check(f"{name}: the same report with three workers", one[name][1] == three[name][1])
+        check("no error with three workers", all(not e[1].get("error") for e in three.values()))
+        # a config that numbers its replacements is not split, whatever the number of workers
+        mark = workers.stats.get("scan_page", 0)
+        _, num1 = run("1", "num", numbered=True)
+        _, num3 = run("3", "num", numbered=True)
+        check("a config with '{n}': the scanned pages stay in this process", workers.stats.get("scan_page", 0) == mark)
+        check("a config with '{n}': the same files and reports with three workers",
+              all(num1[n] == num3[n] for n in names))
+    finally:
+        if saved is None:
+            os.environ.pop("ANON_WORKERS", None)
+        else:
+            os.environ["ANON_WORKERS"] = saved
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def key_and_fake_tests(tmp: Path):
     print("\n== secret key and fake values")
     use_key(tmp / "k" / "secret.key")
@@ -3009,11 +3089,12 @@ GROUPS = [
     "incremental_report_tests", "scan_anonymize_batch_tests",
     "first_letter_tests", "account_and_street_names_tests", "client_identifier_tests", "manual_text_tests", "rotated_tests", "town_tests",
     "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
-    "speedup_tests", "memo_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
+    "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests",
 ]
-SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests"}     # left out by --fast
+SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests"}   # left out by --fast
+MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own
 # seconds a job took on a sequential run (group or folder name): the longest jobs are started first
 WEIGHT = {"font_scan_tests": 152, "config options": 105, "quality_offset_tests": 80, "Dossier Test 17": 71,
           "Dossier Test 05": 68, "Dossier Test 01": 46, "Dossier Test 00": 45, "contract_tests": 42,
@@ -3073,7 +3154,8 @@ def build_jobs(args, tmp: Path, folders: list[str]) -> list[dict]:
     jobs = []
     for name in GROUPS:
         if not (args.fast and name in SLOW_GROUPS):
-            jobs.append({"kind": "group", "name": name, "label": name, "key": group_key, "tmp": tmp})
+            jobs.append({"kind": "group", "name": name, "label": name, "key": group_key, "tmp": tmp,
+                     "main": name in MAIN_GROUPS})
     for k, key_file in enumerate(run_keys):
         jobs.append({"kind": "header", "text": f"\n######## {'given' if given else 'random'} key {k + 1}"})
         for folder in folders:
@@ -3104,13 +3186,15 @@ def main():
     folders = args.folder or list(EXPECT)
     tmp = Path(tempfile.mkdtemp(prefix="anon_check_"))
     saved = {k: os.environ.get(k) for k in ("ANON_SECRET_FILE", "ANON_OCR_CACHE_DIR", "OMP_NUM_THREADS",
-                                           "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ANON_ORT_THREADS")}
+                                           "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ANON_ORT_THREADS",
+                                           "ANON_WORKERS")}
     bad_keys: dict = {}
     seconds: list[tuple[float, str]] = []
     t0 = time.time()
     try:
         (tmp / "ocr_cache").mkdir()
         os.environ["ANON_OCR_CACHE_DIR"] = str(tmp / "ocr_cache")
+        os.environ["ANON_WORKERS"] = "1"           # the jobs already run in parallel processes: no pool inside a job
         if args.jobs > 1:                          # several processes: each one on its own core (numpy, onnxruntime)
             for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ANON_ORT_THREADS"):
                 os.environ[name] = "1"
@@ -3120,14 +3204,16 @@ def main():
         if args.jobs > 1:
             pool = mp.get_context("spawn").Pool(args.jobs)
             for i in sorted(runnable, key=lambda i: -WEIGHT.get(jobs[i].get("folder") or jobs[i]["label"], 5)):     # the longest first
-                handles[i] = pool.apply_async(run_job, (jobs[i],))
+                if not jobs[i].get("main"):
+                    handles[i] = pool.apply_async(run_job, (jobs[i],))
         for i, job in enumerate(jobs):
             if job["kind"] == "header":
                 print(job["text"])
                 continue
-            results, text, took = handles[i].get() if pool else run_job(job, capture=False)
+            in_main = not pool or job.get("main")          # run here, while the pool runs the others
+            results, text, took = run_job(job, capture=False) if in_main else handles[i].get()
             print(text, end="")
-            RESULTS.extend(results) if pool else None
+            RESULTS.extend(results) if not in_main else None
             seconds.append((took, job["label"]))
             failed_here = [n for ok, n in results if not ok]
             if failed_here and job["kind"] in ("folder", "options"):

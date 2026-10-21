@@ -391,7 +391,10 @@ class Faker:
         best, score = None, 0.8 if len(key) >= 7 else 0.85
         for (k, other), new in self.names.items():
             if k == kind and abs(len(other) - len(key)) <= 2:
-                r = SequenceMatcher(None, key, other).ratio()
+                sm = SequenceMatcher(None, key, other)
+                if sm.real_quick_ratio() < score or sm.quick_ratio() < score:      # cannot reach the score: skip
+                    continue
+                r = sm.ratio()
                 if r >= score:
                     best, score = new, r
         return best
