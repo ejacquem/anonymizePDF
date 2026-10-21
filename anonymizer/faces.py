@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from . import memo
 from .ocr import DIGITAL_DPI
@@ -23,19 +25,34 @@ WINDOW = 640            # the model takes a fixed 640 x 640 input: big images ar
 SCORE = 0.6             # face score (sqrt(class * objectness)) below which a detection is dropped
 NMS = 0.3               # overlapping detections (IoU above this) are merged, the best one is kept
 _session = None
+_pool: ThreadPoolExecutor | None = None
+
+
+def threads() -> int:
+    """Threads the windows of an image are run on. The workers and the test suite set ANON_ORT_THREADS (one thread per
+    process, the processes are the parallelism): then no more than that. Otherwise up to 4 (ANON_FACE_THREADS)."""
+    env = os.environ.get("ANON_ORT_THREADS") or os.environ.get("ANON_FACE_THREADS")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    return max(1, min(4, os.cpu_count() or 1))
 
 
 def _load():
     """The model, loaded once. Refused if the file is not the one that was tested."""
-    global _session
+    global _session, _pool
     if _session is None:
         if hashlib.sha256(MODEL.read_bytes()).hexdigest() != MODEL_SHA256:
             raise RuntimeError(f"face model changed or damaged: {MODEL}")
         import onnxruntime as ort
         opts = ort.SessionOptions()
-        if os.environ.get("ANON_ORT_THREADS"):         # the test suite runs several processes: one thread each
-            opts.intra_op_num_threads = int(os.environ["ANON_ORT_THREADS"])
+        n = threads()
+        opts.intra_op_num_threads = 1 if n > 1 else n   # the windows are what runs side by side, not the inside of one
         _session = ort.InferenceSession(str(MODEL), sess_options=opts, providers=["CPUExecutionProvider"])
+        if n > 1:
+            _pool = ThreadPoolExecutor(max_workers=n, thread_name_prefix="faces")
     return _session
 
 
@@ -87,28 +104,35 @@ def _starts(n: int) -> list[int]:
     return starts
 
 
-def _detect_at(rgb: np.ndarray, scale: float) -> np.ndarray:
-    """Detections (original pixels) on the image resized by `scale`, cut into windows when it is big."""
-    from PIL import Image
-
-    h, w = rgb.shape[:2]
+def _detect_at(img: Image.Image, scale: float) -> np.ndarray:
+    """Detections (pixels of `img`) on the image resized by `scale`, cut into windows when it is big. The windows are
+    run on a few threads (the model's run releases the GIL) and taken back in their order."""
+    w, h = img.size
     h2, w2 = max(round(h * scale), 1), max(round(w * scale), 1)
-    small = np.asarray(Image.fromarray(rgb).resize((w2, h2), Image.BILINEAR))
-    bgr = small[:, :, ::-1].astype(np.float32)               # the model expects BGR, 0..255
+    small = img if (w2, h2) == (w, h) else img.resize((w2, h2), Image.BILINEAR)    # the same size is the same image
+    pixels = np.asarray(small)
     session = _load()
     names = [o.name for o in session.get_outputs()]
-    found = []
+    spots, inputs = [], []
     for y0 in _starts(h2):
         for x0 in _starts(w2):
             window = np.zeros((WINDOW, WINDOW, 3), dtype=np.float32)
-            patch = bgr[y0:y0 + WINDOW, x0:x0 + WINDOW]
+            patch = pixels[y0:y0 + WINDOW, x0:x0 + WINDOW, ::-1]     # the model expects BGR, 0..255
             window[:patch.shape[0], :patch.shape[1]] = patch
-            outs = session.run(None, {"input": window.transpose(2, 0, 1)[None]})
-            dets = _decode(dict(zip(names, outs)))
-            if len(dets):
-                dets[:, [0, 2]] += x0
-                dets[:, [1, 3]] += y0
-                found.append(dets)
+            spots.append((x0, y0))
+            inputs.append(window.transpose(2, 0, 1)[None])
+
+    def run(x):
+        return session.run(None, {"input": x})
+
+    results = list(_pool.map(run, inputs)) if _pool is not None and len(inputs) > 1 else [run(x) for x in inputs]
+    found = []
+    for (x0, y0), outs in zip(spots, results):
+        dets = _decode(dict(zip(names, outs)))
+        if len(dets):
+            dets[:, [0, 2]] += x0
+            dets[:, [1, 3]] += y0
+            found.append(dets)
     if not found:
         return np.zeros((0, 5))
     dets = np.concatenate(found)
@@ -136,8 +160,10 @@ def detect(rgb: np.ndarray) -> np.ndarray:
     h, w = rgb.shape[:2]
     m = max(h, w)
     found = []
+    image = Image.fromarray(rgb)
+    quarter = (None, Image.Transpose.ROTATE_90, Image.Transpose.ROTATE_180, Image.Transpose.ROTATE_270)   # np.rot90(k)
     for k in range(4):
-        turned = np.ascontiguousarray(np.rot90(rgb, k))
+        turned = image if k == 0 else image.transpose(quarter[k])
         # the whole image at the model's size (big faces), at twice that, and at full size for k = 0 (small faces,
         # such as a portrait on an ID card): full size is cut into windows, the slowest part
         scales = [WINDOW / m, 2 * WINDOW / m] + ([1.0] if k == 0 else [])

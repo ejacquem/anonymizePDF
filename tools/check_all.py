@@ -2230,6 +2230,56 @@ def memo_tests():
     other.putpixel((3, 3), (0, 0, 0))
     check("another image, another key", memo.image_key(other) != memo.image_key(img))
 
+    # face detection: the image is turned by PIL, not resized when the scale is 1, cut into windows converted one by one,
+    # and the windows run on threads: the detections are the ones of the plain loops, bit for bit
+    def detect_plain(rgb):
+        h, w = rgb.shape[:2]
+        m = max(h, w)
+        session = faces._load()
+        names = [o.name for o in session.get_outputs()]
+        found = []
+        for k in range(4):
+            turned = np.ascontiguousarray(np.rot90(rgb, k))
+            for sc in sorted(set([faces.WINDOW / m, 2 * faces.WINDOW / m] + ([1.0] if k == 0 else []))):
+                th, tw = turned.shape[:2]
+                h2, w2 = max(round(th * sc), 1), max(round(tw * sc), 1)
+                small = np.asarray(Image.fromarray(turned).resize((w2, h2), Image.BILINEAR))
+                bgr = small[:, :, ::-1].astype(np.float32)
+                dets_all = []
+                for y0 in faces._starts(h2):
+                    for x0 in faces._starts(w2):
+                        window = np.zeros((faces.WINDOW, faces.WINDOW, 3), dtype=np.float32)
+                        patch = bgr[y0:y0 + faces.WINDOW, x0:x0 + faces.WINDOW]
+                        window[:patch.shape[0], :patch.shape[1]] = patch
+                        outs = session.run(None, {"input": window.transpose(2, 0, 1)[None]})
+                        dets = faces._decode(dict(zip(names, outs)))
+                        if len(dets):
+                            dets[:, [0, 2]] += x0
+                            dets[:, [1, 3]] += y0
+                            dets_all.append(dets)
+                if dets_all:
+                    dets = np.concatenate(dets_all)
+                    dets[:, :4] /= sc
+                    found.append(faces._unrotate(dets, k, h, w))
+        return faces._nms(np.concatenate(found)) if found else np.zeros((0, 5))
+
+    same_faces, n_faces = [], 0
+    for rgb in (np.asarray(Image.open(ROOT / "tools" / "test_faces" / "couple.jpg").convert("RGB")),
+                (np.random.default_rng(1).random((701, 523, 3)) * 255).astype(np.uint8)):
+        a, b = detect_plain(rgb), faces.detect(rgb)
+        from concurrent.futures import ThreadPoolExecutor
+        faces._load()
+        saved_pool, faces._pool = faces._pool, ThreadPoolExecutor(3)       # the windows side by side, whatever the env
+        try:
+            c = faces.detect(rgb)
+        finally:
+            faces._pool.shutdown()
+            faces._pool = saved_pool
+        same_faces.append(a.shape == b.shape == c.shape and np.array_equal(a, b) and np.array_equal(a, c))
+        n_faces = n_faces or len(a)
+    check(f"face detection: PIL turns, windows run on threads = the plain loops, bit for bit ({n_faces} face(s) in the portrait)",
+          all(same_faces) and n_faces >= 1)
+
     # the fuzzy comparisons of the scan skip the pairs difflib's cheap bounds rule out: the same answers
     import random
     from difflib import SequenceMatcher
