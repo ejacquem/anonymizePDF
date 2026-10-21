@@ -565,6 +565,8 @@ def files_to_anonymize(folder: Path) -> list[str]:
 def _batch_phases(d: Path, action: str, redo: bool) -> tuple[list[str], str]:
     """The phases a batch run does on one client folder ('scan', 'anonymize'), and when there are none, why."""
     st = folder_status(d)
+    if action == "scan_anonymize":                       # every folder: scan it, then anonymize it (not all, then all)
+        return ["scan", "anonymize"], ""
     if action == "all":                                  # scan if needed, then anonymize if needed
         scan = not st["config"] or redo
         phases = (["scan"] if scan else []) + (["anonymize"] if scan or st["to_do"] or redo else [])
@@ -580,7 +582,8 @@ def _batch_phases(d: Path, action: str, redo: bool) -> tuple[list[str], str]:
 def batch():
     """Scan or anonymize every client folder below the selected one, one after the other.
     scan: only folders without a config (a reviewed config is never overwritten) unless 'redo'.
-    anonymize: only folders 'to do' (no output yet, or config changed since the last run) unless 'redo'."""
+    anonymize: only folders 'to do' (no output yet, or config changed since the last run) unless 'redo'.
+    scan_anonymize: every folder is scanned, then anonymized, before the next folder starts."""
     data = request.get_json(force=True)
     try:
         base = folder_arg(data)
@@ -588,8 +591,8 @@ def batch():
         return bad(str(e), 404)
     action, redo, ocr_verify = data.get("action"), bool(data.get("redo")), bool(data.get("ocr_verify"))
     quality_offset = _quality_offset(data)
-    if action not in ("scan", "anonymize", "all"):
-        return bad("action must be 'scan', 'anonymize' or 'all'")
+    if action not in ("scan", "anonymize", "all", "scan_anonymize"):
+        return bad("action must be 'scan', 'anonymize', 'all' or 'scan_anonymize'")
 
     def work(log, progress):
         folders = client_folders(base)

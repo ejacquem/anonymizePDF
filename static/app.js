@@ -1647,6 +1647,11 @@ function updateToolbar() {
   $("#btnRun").textContent = batch ? "2 · Anonymize all subfolders" : "2 · Anonymize folder";
   $("#btnScan").title = batch ? "Draft a config in every client folder below that has none (existing configs are kept)" : "";
   $("#btnRun").title = batch ? "Anonymize every client folder below whose outputs are missing or whose config changed" : "";
+  $("#btnBoth").textContent = batch ? "Scan & anonymize all subfolders" : "Scan & anonymize";
+  $("#btnBoth").title = batch
+    ? "Each client folder below is scanned, then anonymized, before the next one starts. Reviewed files are left alone"
+    : "Scan this folder, then anonymize it right away, without reviewing the new config in between";
+  $("#btnBoth").disabled = state.running || (!n && !batch);
   $("#btnScan").disabled = state.running || (!n && !batch);
   $("#btnSave").disabled = state.running || !state.hasConfig || !state.dirty;
   $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
@@ -1751,9 +1756,9 @@ $("#btnScan").onclick = async () => {
   }
 };
 
-$("#btnRun").onclick = async () => {
-  if (state.batchMode) return runBatch("anonymize");
-  if (state.dirty && !(await saveConfig())) return;
+// anonymize every file of the working folder (the config is saved first when it has edits)
+async function anonymizeFolder() {
+  if (state.dirty && !(await saveConfig())) return null;
   const r = await runJob("anonymize", "/api/anonymize",
     { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(),
       quality_offset: state.app.qualityOffset || 0 }, "Anonymize");
@@ -1765,6 +1770,25 @@ $("#btnRun").onclick = async () => {
     showTab("recap");
     if (state.file) { const f = state.file; state.file = null; await openFile(f); }
   }
+  return r;
+}
+
+$("#btnRun").onclick = async () => {
+  if (state.batchMode) return runBatch("anonymize");
+  await anonymizeFolder();
+};
+
+// scan, then anonymize, the working folder (or every folder below it, folder by folder: see runBatch)
+$("#btnBoth").onclick = async () => {
+  if (state.batchMode) return runBatch("scan_anonymize");
+  if (!confirm("Scan this folder and anonymize it right away, without reviewing the new config? Your edits are kept.")) return;
+  if (state.dirty && !(await saveConfig())) return;
+  const s = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan");
+  await loadTree();
+  if (!s || s.status !== "done") return;
+  state.dirty = false;
+  await loadConfig();
+  await anonymizeFolder();
 };
 
 $("#btnRunFile").onclick = async () => {
@@ -1841,10 +1865,12 @@ async function runBatch(action) {
   const redo = $("#batchRedo") && $("#batchRedo").checked;
   if (action === "all" && !confirm("Scan the folders without config and anonymize them right away, without reviewing the new configs?")) return;
   if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder. Your edits and manual data are kept. Continue?")) return;
+  if (action === "scan_anonymize" && !confirm("Scan every client folder below and anonymize it right away, folder by folder, without reviewing the new configs? Your edits are kept, reviewed files are left alone.")) return;
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify,
     quality_offset: state.app.qualityOffset || 0 },
-    { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize" }[action]);
+    { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize",
+      scan_anonymize: "Batch scan & anonymize" }[action]);
   if (r && r.status === "done" && action !== "scan") pendingBoxes.clear();      // every file of the batch is regenerated
   await loadTree();
   await loadConfig();

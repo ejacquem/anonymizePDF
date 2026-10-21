@@ -88,13 +88,16 @@ sample_data/Dossier Test 12/  one person in every form a folder writes a name (f
                               reversed), a second person as control (digital, 3 files; tools/make_test_names.py)
 sample_data/Dossier Test 11/  the reported cases, each line as written (digital + scan): masked cards with X, REF, BT id,
                               REYES / REYS / REYE spellings, 'MLE' in capitals, 'numero du compte' far right
+sample_data/Dossier Test 18/  handwritten signatures (tools/make_test_signatures.py): a digital letter with 6 labelled
+                              signatures, a form with 8 'Signature' boxes over dotted rules, a typed name with a signature
+                              and no label; the same two pages as scans; signatures_truth.json gives every box
 sample_data/Dossier Test 17/  fonts and scan qualities (tools/make_test_fonts.py): 16 fonts regular / bold on a scan at
                               300 / 200 / 150 dpi, a digital page with a pasted picture of text, a 3-page insurance
                               contract (values in sentences, 'Prénom NOM' with the surname in bold, names and an
                               address split across lines, pages turned < 1 degree, 200 / 150 dpi); fonts_truth.json
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
-                       make_test_faces.py (generators, Windows fonts); test_faces/ (public-domain portraits from
+                       make_test_faces.py, make_test_signatures.py (generators, Windows fonts); test_faces/ (public-domain portraits from
                        Wikimedia Commons + reference face boxes faces.json); make_test_invoice.py (Dossier Test 08);
                        make_test_idcard.py also writes the poor copy (Dossier Test 09); make_test_transfers.py (Dossier
                        Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12); key_hunt.py (many random keys on one file);
@@ -139,7 +142,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Trace also lists the glyphs each redaction removed: 'glyphs removed (value)' (the characters of the values) and
   'glyph restored (taken by a neighbouring redaction)' (characters next to a value that the redaction took and that
   were written again). Black boxes and pixel redactions do the same. Invisible characters are never written again.
-- Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Anonymize file** (either file of the pair; the
+- Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Scan & anonymize** (scan, then anonymize, with no
+  review in between: `btnBoth`, `anonymizeFolder()` is the second half; in batch mode the action `scan_anonymize` of
+  `/api/batch` does each folder's scan then its anonymization before the next folder), **Anonymize file** (either file of the pair; the
   report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).
 - Black boxes by hand: **▭ Black box** in the Anonymized pane (drag to draw, drag / handles to move and resize,
@@ -254,6 +259,9 @@ console running `app.py` and the last 12 lines in the job log.
      reloaded by the app after the run) and anonymizes again. A value already in the config is not offered twice. The
      config file is written before the report (the report stays the newer one: the folder is not 'to do'), and only
      if it is still the text the run started with. Each file entry of the report lists `suggested`; the Recap says so.
+   - The report is saved after every file (`_save_report`, through `anon_report.json.tmp`), so a batch or a run that
+     stops keeps the analysis of the files it has done; the output of a file is written when that file is done. The
+     config of a batch is written when the scan of its folder ends (`scan_folder`).
    - Report `anon_report.json` per file: mode, pages, replaced, seconds, items, leftovers, warnings,
      `blackouts: [{page, kind, box (PDF points)}]`, `mrz: [{page, action, format, lines}]`. Each item (one per
      original value) has `boxes: [{page, box (PDF points)}]` = where the value was: scan, digital and pixel-pass
@@ -287,7 +295,11 @@ manual_blackouts:                   # black boxes drawn in the Anonymized pane: 
 There is no list of removed automatic boxes in the config: they are only sent with an anonymization run.
 Missing keys in older configs get the safe defaults (everything on). `find` matching (`pii.term_regex`): case-
 insensitive, flexible whitespace, word boundaries; on scans `ocr=True` also accepts 0/O/D, 1/l/I, 5/S, 8/B, 2/Z,
-missing accents and a space inside a number. Overlaps: longer match wins, terms beat regex.
+missing accents and a space inside a number. Overlaps (`pii.resolve`): terms beat regex, then the rank, then the longer
+match; a match inside a longer one is left out only while that longer one is kept (a town that loses its place to a
+street keeps the code inside it); ties are broken by the replacement, never by the order of the config.
+Order must never change a result (`order_tests`): a value written with several spellings keeps the most frequent one
+(ties: alphabetical), and a town written with several postcodes is one LOCATION term with all its counts.
 
 ## 7. Detection (`pii.py`, `fields.py`)
 
@@ -310,7 +322,10 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   two lines, the number ends it and is never the first digits of a postcode; on one line, a street name does not run
   on to the next line; the address after a label to the end of the line: 'Rue : 04 Library place'; English number
   first: '04 Library place'), POSTAL_CITY (postcode + city in Title case or CAPITALS, prefixes B-, F-, CH-, L-, NL-,
-  D-, I-, A-; not 'Code' / 'Banque' / 'Guichet'...), the town at the end of an address is a POSTAL_CITY too,
+  D-, I-, A-; not 'Code' / 'Banque' / 'Guichet'...), a town followed by its postcode in brackets ('NANTERRE (92000)',
+  'BOULOGNE-BILLANCOURT (72000) (FRANCE)': the value is the town and its code, `_v_town_code`; a year in brackets is no
+  postcode; the fake keeps the brackets and the town of the term alone, `fake.postal_city`, `engine._town_of`), the town
+  at the end of an address is a POSTAL_CITY too,
   ACCOUNT_NUMBER (after "N° de compte" / "Numéro client" / "Compte" / "Compte courant" / "RIB" on the same line, or without
   label when it is five or more digits and one capital letter ('0012345Y', '12345 Y', not running text), with spaces, '-', '.' or '/' as separators, French RIB, long digit runs, apostrophe-grouped digits
   `86'123'456'789'012` with masks, at least 3 groups so amounts `1'240.00` are not caught),
@@ -384,6 +399,9 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   in a sentence: the same town); its postcode belongs to it (`FR_TOWNS` / `BE_TOWNS` hold a real postcode per town).
   A town of the document is a LOCATION term in the config (`scan_folder`), so the same town written alone is replaced
   like the town of a postcode. A capitalised town is never a person ('Sophie PARIS' is no name).
+  The fake keeps the length of the original: a long name ('BOULOGNE-BILLANCOURT') gets towns of the list joined by a hyphen
+  (`fake._compound`, 'MONTAUBAN-CHAMBERY'), since a short town leaves a gap before what follows on the line (the same width
+  in a digital text and in a scan: `town_size_tests`).
 - Names: FR/BE/NL lists by length and **gender** (`gender_of`: lists, then the title, then French endings; the
   `Sexe` field wins on ID documents). Keys without case / accents (`_pkey`: `Élodie` = `elodie`, used in e-mails).
   `Faker.names` memory keeps consistency: initials follow the replaced first name (`initial`, preferring first names
@@ -564,10 +582,16 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   (`_code_structure`: QR finder squares in ≥ 2 corners, or Data Matrix solid left + bottom edges). Digital pages are
   rendered at 150 dpi and searched the same way (image and vector codes).
 - **Signatures**: `is_signature_label` (signature / handtekening / unterschrift among the first two words of the line,
-  or a line of ≤ 4 words — not a sentence; `firma` was dropped: it means "company" in NL/DE). Ink not OCR text of
+  or a line of ≤ 4 words — not a sentence; `firma` was dropped: it means "company" in NL/DE). Also the closing formulas,
+  approvals and places of a signature written without its word (`_SIGNATURE_ANCHOR`: 'Cordialement,', 'Lu et approuvé',
+  'Pour l'entreprise', 'Fait à Paris, le …', 'Le titulaire', 'Signé à …'; a line of ≤ 8 words). A line is cut into labels
+  where the gap between two words is over 2.5 word heights (`_label_segments`: two columns on one row are two labels).
+  Each stroke belongs to ONE label (`_owners`): the nearest label above it in its column (within 8 label heights), else
+  the label below it (within 2 heights). So two signatures stacked between labels are two boxes, not one across the
+  label. The search goes 30 mm below a label and stops at the next signature label of the column. Ink not OCR text of
   normal height, not a ruled line, not in MRZ / photos (the face area widened by 50 %) / codes; seeded next to the
-  label, grown through strokes ≤ 3 mm apart (`_grow`) in a window of 12 mm above / below the label and 5 / 80 mm
-  around it. Components that are solid (fill ≥ 0.4) or lie mostly inside an OCR word box are print, not ink.
+  label, grown through strokes ≤ 3 mm apart (`_grow`) in a window of 12 mm above / 30 mm below the label and 5 / 80 mm
+  around it. A signature with no label (only a typed name under it) is not found: a known limit. Components that are solid (fill ≥ 0.4) or lie mostly inside an OCR word box are print, not ink.
   The label is spared only if the strokes do not touch it. Digital: drawings / images grown the same way.
   A box never covers an OCR word: it is cut on the side that keeps the most dark (signature) pixels and still holds
   the middle of the label (`_clear_of_text`, `ink_mass`). Known limit: a signature on a card whose guilloche is

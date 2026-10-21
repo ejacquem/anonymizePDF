@@ -224,9 +224,15 @@ def _add_labeled(found: dict, words: list[dict], ocr_page: bool, file: str, pno:
 
 
 def _town_of(typ: str, value: str) -> str | None:
-    """The town of a postcode-and-city value ('75017 PARIS' -> 'PARIS') or of a birth place ('RENNES (35)' -> 'RENNES')."""
-    town = re.sub(r"^(?:[A-Z]{1,2}-)?\d{4,5}\s+", "", value) if typ == "POSTAL_CITY" else re.sub(r"\s*\(.*$", "", value)
-    return town.strip() or None
+    """The town of a postcode-and-city value ('75017 PARIS' -> 'PARIS', 'NANTERRE (92000)' -> 'NANTERRE') or of a birth
+    place ('RENNES (35)' -> 'RENNES')."""
+    if typ == "POSTAL_CITY":
+        town = re.sub(r"\s*\((?:[A-Z]{1,2}-)?\d{4,5}\)$", "", value) if re.search(r"\)$", value) else \
+            re.sub(r"^(?:[A-Z]{1,2}-)?\d{4,5}\s+", "", value)
+    else:
+        town = re.sub(r"\s*\(.*$", "", value)
+    town = town.strip()
+    return town if re.search(r"[^\W\d_]", town) else None         # a postcode alone is no town
 
 
 def accept_person(value: str, honorific: bool, from_ner: bool, vocab: frozenset = frozenset()) -> bool:
@@ -389,6 +395,8 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
         e["count"] += 1
         e["files"].add(file)
         e["pages"].add(pno)
+        spellings = e.setdefault("spellings", {})
+        spellings[value] = spellings.get(value, 0) + 1
         e["ner"] = e["ner"] or m.rank >= 100
         e["honorific"] = e["honorific"] or (m.type == "PERSON" and m.rank == PERSON_RANKS[0])
         if m.type == "PERSON" and not e["title"]:
@@ -457,6 +465,11 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                     _detect_words(found, tokens, sequences, pw, True, ner, pdf.name, pno)
 
     _report(progress, len(pdfs), len(pdfs))
+    for e in found.values():
+        # one value, several spellings ('30002 / 05871', '30002/ 05871'): the one written most often is kept, ties by
+        # alphabetical order, so that the order of the files does not change the config
+        if e.get("spellings"):
+            e["value"] = min(e["spellings"].items(), key=lambda kv: (-kv[1], kv[0]))[0]
     faker = Faker(secret_key)        # None: this computer's secret key (anonymizer.secret)
     faker.reserve(e["value"] for e in found.values())
     person_values = [e["value"] for e in found.values() if e["type"] == "PERSON"]
@@ -626,12 +639,22 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     # the town of a postcode ('75017 PARIS') or of a birth place ('RENNES (35)') gets the same fake as the postcode
     # line does, and the same town written alone ('PARIS' in another sentence) is replaced the same way
     known = {norm_value(a["value"]) for a in active}
+    towns: dict[str, dict] = {}                      # 'Lyon' from '69002 Lyon' and '69003 Lyon': one entry, all counted
     for f in [f for f in found.values() if f["type"] in ("POSTAL_CITY", "BIRTH_PLACE")]:
         town = _town_of(f["type"], f["value"])
         if town and norm_value(town) not in known:
-            known.add(norm_value(town))
-            active.append({"type": "LOCATION", "value": town, "count": f["count"], "files": f["files"],
-                           "pages": f["pages"], "replace": faker.city(town), "note": f"town of '{f['value']}'"})
+            t = towns.setdefault(norm_value(town), {"town": town, "count": 0, "files": set(), "pages": set(), "from": []})
+            t["count"] += f["count"]
+            t["files"] |= f["files"]
+            t["pages"] |= f["pages"]
+            t["town"] = min(t["town"], town)              # the spelling does not depend on the file order
+            t["from"].append(f["value"])
+    for key in sorted(towns):                        # the order of the files does not change the list
+        t = towns[key]
+        known.add(key)
+        active.append({"type": "LOCATION", "value": t["town"], "count": t["count"],
+                       "files": t["files"], "pages": t["pages"], "replace": faker.city(t["town"]),
+                       "note": f"town of '{min(t['from'])}'"})
     _align_contained_numbers(active)
     # a value already replaced (e.g. a name under a label) is not suggested again as an uncertain NER guess
     active_values = {norm_value(a["value"]) for a in active}
@@ -1188,6 +1211,30 @@ def _offer_suspects(folder: Path, rel: str, config_text: str, files: list[dict],
     log(f"   {len(offered)} value(s) of the second check added to the config as suggestions (not active)")
 
 
+def _kept_entries(folder: Path, only: list[str] | None) -> list[dict]:
+    """The entries of the report that a run on some files (`only`) keeps: those of the other files. A full run keeps none."""
+    rep_path = folder / REPORT_NAME
+    if only is None or not rep_path.exists():
+        return []
+    try:
+        return [f for f in json.loads(rep_path.read_text(encoding="utf-8")).get("files", []) if f.get("file") not in only]
+    except (OSError, ValueError):
+        return []
+
+
+def _save_report(folder: Path, rel: str, files: list[dict], t_all: float, ocr_verify: bool,
+                 quality_offset: float = 0.0) -> dict:
+    """The report of the run so far, written through a temporary file: a stop in the middle of a write leaves the
+    previous report whole."""
+    report = {"folder": rel, "generated": dt.datetime.now().isoformat(timespec="seconds"),
+              "total_seconds": round(time.time() - t_all, 1), "ocr_verify": ocr_verify,
+              "quality_offset": quality_offset, "files": files}
+    tmp = folder / (REPORT_NAME + ".tmp")
+    tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(folder / REPORT_NAME)
+    return report
+
+
 def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: str, ocr_verify: bool, log,
                   only: list[str] | None = None, removed: list | None = None, progress=None,
                   quality_offset: float = 0.0) -> dict:
@@ -1210,6 +1257,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         raise ValueError("No PDF in this folder")
     log(f"Config: {len(cfg['terms'])} replacement(s), {len(cfg['regex'])} regex rule(s). {len(pdfs)} file(s)."
         + (f" Fake text quality {quality_offset:+.2f} from the detected one." if quality_offset else ""))
+    # the entries of the other files of the folder (a run on some files keeps theirs): read before the report is saved
+    kept = _kept_entries(folder, only)
     files = []
     for i, pdf in enumerate(pdfs, start=1):
         _report(progress, i - 1, len(pdfs), pdf.name)
@@ -1284,23 +1333,12 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         entry["seconds"] = round(time.time() - t0, 1)
         log(f"   done in {entry['seconds']}s")
         files.append(entry)
+        # saved after every file: a batch that stops keeps the analysis of the files it has done
+        report = _save_report(folder, rel, kept + files, t_all, ocr_verify, quality_offset)
     _report(progress, len(pdfs), len(pdfs))
     done = files                                        # the files of this run (the report may keep others)
-    _offer_suspects(folder, rel, config_text, done, log)
-    if only is not None:                                # one file: keep the report of the other files
-        kept = []
-        rep_path = folder / REPORT_NAME
-        if rep_path.exists():
-            try:
-                kept = [f for f in json.loads(rep_path.read_text(encoding="utf-8")).get("files", [])
-                        if f.get("file") not in only]
-            except (OSError, ValueError):
-                kept = []
-        files = kept + files
-    report = {"folder": rel, "generated": dt.datetime.now().isoformat(timespec="seconds"),
-              "total_seconds": round(time.time() - t_all, 1), "ocr_verify": ocr_verify,
-              "quality_offset": quality_offset, "files": files}
-    (folder / REPORT_NAME).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    _offer_suspects(folder, rel, config_text, done, log)      # writes the config, then the report again
+    report = _save_report(folder, rel, kept + files, t_all, ocr_verify, quality_offset)
     total = sum(f["replaced"] for f in done)
     log(f"Finished: {total} replacement(s) in {len(done)} file(s), {report['total_seconds']}s")
     return report

@@ -1180,6 +1180,83 @@ def second_pass_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def incremental_report_tests():
+    """The report of an anonymization is saved after every file: when the second file starts, the first one is in
+    anon_report.json already, so a batch that stops keeps the analysis of the files it has done."""
+    print("\n== report saved file by file")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_report_"))
+    try:
+        for name in ("un.pdf", "deux.pdf"):
+            doc = fitz.open()
+            doc.new_page().insert_text((72, 72), f"Jean Dupont {name}", fontsize=12)
+            doc.save(tmp / name)
+        cfg = "\n".join(["ocr_lang: \"fra+eng\"", "case_sensitive: false", "match_case: true",
+                         "style: {mode: replace, digital_fill: none}", "replacements:",
+                         "  - {find: \"Dupont\", replace: \"Martin\", type: PERSON}", "regex: []"])
+        seen = []
+
+        def progress(done, total, name=""):
+            # called before each file: what is on disk at that moment
+            path = tmp / engine.REPORT_NAME
+            files = json.loads(path.read_text(encoding="utf-8"))["files"] if path.exists() else []
+            seen.append((done, [f["file"] for f in files]))
+
+        rep = engine.run_anonymize(tmp, "report", cfg, "fra+eng", False, lambda m: None, progress=progress)
+        # the files are taken in name order: 'deux.pdf' before 'un.pdf'
+        check("the second file starts with the first one saved in the report",
+              (1, ["deux.pdf"]) in seen, str(seen))
+        check("the report of the run lists both files", [f["file"] for f in rep["files"]] == ["deux.pdf", "un.pdf"])
+        check("no temporary report is left next to it", not (tmp / (engine.REPORT_NAME + ".tmp")).exists())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def scan_anonymize_batch_tests():
+    """The batch action 'scan_anonymize' scans a client folder and anonymizes it, then goes on to the next one: the log
+    shows A scan, A anonymize, B scan, B anonymize, never all the scans first. Both folders end with their outputs."""
+    print("\n== scan & anonymize: folder by folder")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("anon_webapp", ROOT / "app.py")
+    webapp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(webapp)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_both_"))
+    saved_root, saved_models = webapp.STATE["root"], webapp.STATE["spacy_models"]
+    try:
+        use_key(tmp / "key" / "secret.key")
+        for folder in ("A", "B"):
+            (tmp / folder).mkdir()
+            for name in ("releve.pdf", "contrat.pdf"):
+                doc = fitz.open()
+                doc.new_page().insert_text((72, 72), f"Jean Dupont {folder} {name}", fontsize=12)
+                doc.save(tmp / folder / name)
+        webapp.STATE["root"] = tmp
+        webapp.STATE["spacy_models"] = []                  # rules only: no names model to load in a test
+        client = webapp.app.test_client()
+        r = client.post("/api/batch", json={"folder": "", "action": "scan_anonymize", "redo": False,
+                                            "ocr_verify": False})
+        check("the batch starts", r.status_code == 200, r.get_data(as_text=True)[:200])
+        job = r.get_json()["job"]
+        status, log = "running", []
+        for _ in range(600):
+            j = client.get(f"/api/job/{job}?since=0").get_json()
+            status, log = j["status"], j["log"]
+            if status != "running":
+                break
+            time.sleep(0.5)
+        text = "\n".join(log)
+        check("the batch finishes", status == "done", f"{status}: {text[-300:]}")
+        order = [text.find(f"{f}: {ph} ") for f in ("A", "B") for ph in ("scan", "anonymize")]
+        check("the log is A scan, A anonymize, B scan, B anonymize (folder by folder)",
+              all(x >= 0 for x in order) and order == sorted(order), f"positions {order}")
+        for folder in ("A", "B"):
+            check(f"folder {folder} is scanned (a config) and anonymized (outputs)",
+                  (tmp / folder / "anon_config.yaml").exists()
+                  and all((tmp / folder / f"{n}_anonymized.pdf").exists() for n in ("releve", "contrat")))
+    finally:
+        webapp.STATE["root"], webapp.STATE["spacy_models"] = saved_root, saved_models
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def first_letter_tests():
     """The first letter of a name is replaced with the rest of it: 'M. Albert Dupont' never keeps its 'A' (a scan was
     left with 'A' before the fake first name, from the colon skip). Diagonal first letters (A, V, W, Y) are the risk.
@@ -1390,6 +1467,338 @@ def town_tests():
     towns = {k.upper(): v for k, v in {**FR_TOWNS, **BE_TOWNS}.items()}          # the fake town may be in capitals
     check("the fake postcode belongs to the fake town", towns.get(name.upper()) == code, f"{code} {name}")
     check("a Swiss postcode keeps its length and its town", len(f.postal_city("1204 Genève").split(" ", 1)[0]) == 4)
+
+
+PAREN_TOWNS = [
+    # (text as a letter writes it, the value the detector takes, what the case is about)
+    ("BOULOGNE-BILLANCOURT (72000) (FRANCE)", "BOULOGNE-BILLANCOURT (72000)", "a town and its code, then the country"),
+    ("NANTERRE (92000)", "NANTERRE (92000)", "a town in capitals and its postcode in brackets"),
+    ("SAINT-CLOUD (92210)", "SAINT-CLOUD (92210)", "a hyphenated town"),
+    ("Adresse : 12 rue de la Paix\nNANTERRE (92000)", "NANTERRE (92000)", "the town on the line after an address, with a label"),
+    ("Nanterre (92000)", "Nanterre (92000)", "a town in title case"),
+]
+PAREN_ABSENT = [
+    ("Mutation (2024)", "a year in brackets is no postcode"),
+    ("Paris (75)", "a two-digit department is no postcode"),
+    ("Rue de Paris (75001)", "a street is no town (its code alone is the postcode, see street_code_tests)"),
+]
+
+
+def parenthesised_town_tests():
+    """A town followed by its postcode in brackets ('NANTERRE (92000)'), the form of many letters: the value is found,
+    the fake keeps the form and the town, the town alone is the same fake, and a year or a street is no town."""
+    print("\n== towns followed by a postcode in brackets")
+    for text, value, what in PAREN_TOWNS:
+        found = [m.value for m in pii.detect_all(text) if m.type == "POSTAL_CITY"]
+        check(f"{what}: found", value in found, f"{found}")
+    for text, what in PAREN_ABSENT:
+        found = [m.value for m in pii.detect_all(text) if m.type == "POSTAL_CITY"]
+        # the street's code may be found alone (that is a code, not a town): the town 'Paris' must not be
+        check(f"{what}", not any(re.search(r"[^\W\d_]", v) for v in found), f"{found}")
+    from anonymizer.fake import BE_TOWNS, FR_TOWNS
+    f = Faker(b"p" * 32)
+    fake = f.suggest("POSTAL_CITY", "NANTERRE (92000)")
+    m = re.fullmatch(r"(.+) \((\d{5})\)", fake)
+    check("the fake keeps the form 'TOWN (ddddd)'", bool(m), fake)
+    check("the fake town is the town of the term alone (same fake)",
+          bool(m) and m.group(1).upper() == f.city("NANTERRE").upper(), f"{fake} / {f.city('NANTERRE')}")
+    towns = {k.upper() for k in {**FR_TOWNS, **BE_TOWNS}}
+    long_fake = f.suggest("POSTAL_CITY", "BOULOGNE-BILLANCOURT (72000)")
+    check("the fake of a long town is towns of the list joined, not letters",
+          all(part in towns for part in long_fake.split(" (")[0].upper().split("-")), long_fake)
+    # the whole thing on a digital letter: the towns and their codes are gone from the output, the country stays
+    tmp = Path(tempfile.mkdtemp(prefix="anon_paren_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        doc = fitz.open()
+        page = doc.new_page()
+        lines = ["Jean Dupont", "BOULOGNE-BILLANCOURT (72000) (FRANCE)", "NANTERRE (92000)", "SAINT-CLOUD (92210)"]
+        for i, line in enumerate(lines):
+            page.insert_text((72, 90 + 24 * i), line, fontsize=12)
+        doc.save(tmp / "lettre.pdf")
+        cfg = engine.scan_folder(tmp, "paren", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "paren", cfg, "fra+eng", False, lambda m: None)
+        out = " ".join(fitz.open(tmp / "lettre_anonymized.pdf")[0].get_text().split())
+        for town in ("BOULOGNE-BILLANCOURT", "NANTERRE", "SAINT-CLOUD"):
+            check(f"'{town}' is not in the output", town not in out.upper(), out)
+        for code in ("72000", "92000", "92210"):
+            check(f"the postcode {code} is not in the output", code not in out, out)
+        check("the country stays", "(FRANCE)" in out, out)
+        check("the letter has no leftover", not rep["files"][0]["leftovers"], str(rep["files"][0]["leftovers"]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def street_code_tests():
+    """A postcode in brackets after a street ('12 RUE DES LILAS (75020)') is replaced, the street too; a town written
+    before a street's words is not taken, and a code held by a town that loses its place to a street is still found
+    (order of the overlaps: pii.resolve)."""
+    print("\n== postcode in brackets after a street")
+    found = lambda t: [(m.type, m.value) for m in pii.detect_all(t)]          # noqa: E731
+    check("the code after a street is found", ("POSTAL_CITY", "75020") in found("12 RUE DES LILAS (75020)"),
+          str(found("12 RUE DES LILAS (75020)")))
+    check("the street is found without its code", ("STREET_ADDRESS", "12 RUE DES LILAS") in found("12 RUE DES LILAS (75020)"))
+    check("a street without a number keeps its code too", ("POSTAL_CITY", "75001") in found("Rue de Paris (75001)"))
+    check("the code of a street in a sentence is found",
+          ("POSTAL_CITY", "75009") in found("Il habite au 5 rue Lafayette (75009) depuis"))
+    check("a town after a comma is still a town, not a street word",
+          ("POSTAL_CITY", "NANTERRE (92000)") in found("Rue Lafayette, NANTERRE (92000)"))
+    check("a town after a street's words is not taken as a town of its own",
+          not any(t == "POSTAL_CITY" and v.startswith("LILAS") for t, v in found("12 RUE DES LILAS (75020)")))
+    for text, what in [("Mutation (2024)", "a year"), ("Compte (12345)", "a label"), ("placeholder (75020)", "a word that starts with a street keyword")]:
+        check(f"{what} in brackets is no code after a street", not any(t == "POSTAL_CITY" and v.endswith("75020")
+                                                                       or t == "POSTAL_CITY" and v == "12345"
+                                                                       for t, v in found(text)), str(found(text)))
+    f = Faker(b"s" * 32)
+    fake = f.suggest("STREET_ADDRESS", "12 RUE DES LILAS (75020)")
+    m = re.fullmatch(r"(.+) \((\d{5})\)", fake)
+    check("the fake street keeps the code in brackets, with another code of 5 digits",
+          bool(m) and m.group(2) != "75020", fake)
+    check("the fake street is a street: no random letters in its name",
+          bool(m) and bool(re.fullmatch(r"\d+ (RUE|rue) (DES|de|du|la) [A-Za-zÀ-ÿ' ]+", m.group(1))), fake)
+    check("the code alone gets another code of 5 digits", re.fullmatch(r"\d{5}", f.suggest("POSTAL_CITY", "75020"))
+          is not None and f.suggest("POSTAL_CITY", "75020") != "75020")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_street_code_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        doc = fitz.open()
+        page = doc.new_page()
+        for i, line in enumerate(["Jean Dupont", "12 RUE DES LILAS (75020)", "NANTERRE (92000)", "Rue de Paris (75001)"]):
+            page.insert_text((72, 90 + 24 * i), line, fontsize=12)
+        doc.save(tmp / "lettre.pdf")
+        cfg = engine.scan_folder(tmp, "street-code", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "street-code", cfg, "fra+eng", False, lambda m: None)
+        out = " ".join(fitz.open(tmp / "lettre_anonymized.pdf")[0].get_text().split())
+        for text in ("LILAS", "PARIS", "NANTERRE", "75020", "75001", "92000"):
+            check(f"'{text}' is not in the output", text not in out.upper() if not text.isdigit() else text not in out, out)
+        check("the letter has no leftover", not rep["files"][0]["leftovers"], str(rep["files"][0]["leftovers"]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def order_tests():
+    """The result does not depend on the order of the files nor of the config lines: the same two files scanned in both
+    orders give the same config (one spelling of a value, one line for a town written with two postcodes), and a
+    config with its replacements shuffled anonymizes the same text."""
+    print("\n== the order of the files and of the replacements does not matter")
+    import random
+    import yaml
+    tmp = Path(tempfile.mkdtemp(prefix="anon_order_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        texts = {"a": "Code banque 30002 / 05871 - Agence 69002 Lyon", "b": "Code banque 30002/ 05871 - Agence 69003 Lyon"}
+
+        def make(folder, first, second):
+            folder.mkdir()
+            for name, key in (("1.pdf", first), ("2.pdf", second)):
+                doc = fitz.open()
+                doc.new_page().insert_text((72, 72), texts[key], fontsize=12)
+                doc.save(folder / name)
+            return engine.scan_folder(folder, folder.name, None, "fra+eng", lambda m: None)["config"]
+
+        def lines(cfg):
+            return sorted(l.strip() for l in cfg.splitlines() if "- {find" in l)
+
+        forward = make(tmp / "fwd", "a", "b")
+        backward = make(tmp / "bwd", "b", "a")
+        check("the config is the same whichever file is scanned first", lines(forward) == lines(backward),
+              "\n".join(set(lines(forward)) ^ set(lines(backward)))[:400])
+        bank = [l for l in lines(forward) if "BANK_CODE" in l and "part of" not in l]
+        check("one spelling of the bank code, the one written most often (ties: alphabetical)",
+              len(bank) == 1 and bank[0].split('"')[1] in ("30002 / 05871", "30002/ 05871"), str(bank))
+        town = [l for l in lines(forward) if '"Lyon"' in l and "LOCATION" in l]
+        check("a town written with two postcodes is one LOCATION term, counted for both",
+              len(town) == 1 and "2x in 2 file(s)" in town[0], str(town))
+        # the same replacements in another order: the anonymized text is the same
+        cfg = engine.scan_folder(tmp / "fwd", "fwd", None, "fra+eng", lambda m: None)["config"]
+        data = yaml.safe_load(cfg)
+        rng = random.Random(3)
+        shuffled = list(data["replacements"])
+        rng.shuffle(shuffled)
+        results = []
+        for tag, config in (("ord", cfg), ("shf", yaml.safe_dump({**data, "replacements": shuffled}, sort_keys=False,
+                                                              allow_unicode=True))):
+            d = tmp / f"apply_{tag}"
+            d.mkdir()
+            for name in ("1.pdf", "2.pdf"):
+                shutil.copy(tmp / "fwd" / name, d / name)
+            engine.run_anonymize(d, tag, config, "fra+eng", False, lambda m: None)
+            results.append({n: " ".join(fitz.open(d / n.replace(".pdf", "_anonymized.pdf"))[0].get_text().split())
+                            for n in ("1.pdf", "2.pdf")})
+        check("a config with its replacements shuffled anonymizes the same text", results[0] == results[1],
+              f"{results}")
+        # two terms that write the same text differently ('Jean Dupont', 'Jean  Dupont'): whichever comes first in the
+        # config, the same replacement is written
+        tie_doc = fitz.open()
+        tie_doc.new_page().insert_text((72, 72), "Jean Dupont habite ici", fontsize=12)
+        tie_doc.save(tmp / "tie.pdf")
+        ties = []
+        for tag, pair in (("t1", [("Jean  Dupont", "Alpha Zed"), ("Jean Dupont", "Beta Yan")]),
+                          ("t2", [("Jean Dupont", "Beta Yan"), ("Jean  Dupont", "Alpha Zed")])):
+            d = tmp / tag
+            d.mkdir()
+            shutil.copy(tmp / "tie.pdf", d / "tie.pdf")
+            config = "\n".join(["ocr_lang: \"fra+eng\"", "case_sensitive: false", "match_case: true", "replacements:"]
+                               + [f'  - {{find: "{f}", replace: "{r}", type: PERSON}}' for f, r in pair] + ["regex: []"])
+            engine.run_anonymize(d, tag, config, "fra+eng", False, lambda m: None)
+            ties.append(" ".join(fitz.open(d / "tie_anonymized.pdf")[0].get_text().split()))
+        check("two terms for the same text give the same replacement whatever the order of the config",
+              ties[0] == ties[1], str(ties))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def town_size_tests():
+    """A town replaced by a fake of about the same length: a long name ('BOULOGNE-BILLANCOURT') gets joined towns of the
+    list, not a short town that leaves a gap before what follows on the line. The same width in a digital text and in
+    a scan, and the same fake whatever the form of the name."""
+    print("\n== the replacement of a town has the length of the original")
+    from anonymizer.fake import BE_TOWNS, FR_TOWNS
+    f = Faker(b"z" * 32)
+    towns = {k.upper() for k in {**FR_TOWNS, **BE_TOWNS}}
+    for name in ("BOULOGNE-BILLANCOURT", "VILLENEUVE-SAINT-GEORGES", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "LE PLESSIS-ROBINSON"):
+        town, code = f.town(name)
+        ok_len = abs(len(town) - len(name)) <= max(2, round(0.15 * len(name)))
+        check(f"a fake of '{name}' has about its length", ok_len, f"{town} ({len(town)} for {len(name)})")
+        parts = town.split("-")
+        check(f"a fake of '{name}' is towns of the list joined, not letters",
+              all(p.upper() in towns for p in parts), town)
+    check("the same town written in another form: the same fake",
+          f.town("Boulogne-Billancourt") == f.town("BOULOGNE-BILLANCOURT"))
+    check("a short town keeps a short fake (no compound of a short name)",
+          "-" not in f.town("PARIS")[0] and len(f.town("PARIS")[0]) <= 9)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_town_size_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 120), "Jean Dupont", fontsize=12, fontname="helv")
+        page.insert_text((72, 150), "BOULOGNE-BILLANCOURT (72000) (FRANCE)", fontsize=12, fontname="helv")
+        doc.save(tmp / "digital.pdf")
+        cfg = engine.scan_folder(tmp, "digital", None, "fra+eng", lambda m: None)["config"]
+        engine.run_anonymize(tmp, "digital", cfg, "fra+eng", False, lambda m: None)
+
+        def code_end(pdf):
+            # the right edge of the postcode word '(...)' that follows the town on the line
+            words = [w for w in fitz.open(pdf)[0].get_text("words") if abs(w[3] - 150) < 6 or abs(w[3] - 150) < 8]
+            codes = [w for w in words if re.fullmatch(r"\(\d{5}\)", w[4])]
+            return codes[0][2] if codes else None
+
+        end_in, end_out = code_end(tmp / "digital.pdf"), code_end(tmp / "digital_anonymized.pdf")
+        ratio = (end_out - 72) / max(end_in - 72, 1) if end_in and end_out else 0
+        check("a digital line: the replacement ends about where the original did (0.85 to 1.15 of its width)",
+              0.85 <= ratio <= 1.15, f"ratio {ratio:.2f} (ends {end_in} / {end_out})")
+        # the same line as a scan: the postcode's right edge, read by the OCR, against the original's
+        import io
+        from PIL import Image
+        scan_src = fitz.open()
+        spage = scan_src.new_page(width=595, height=842)
+        spage.insert_image(spage.rect, stream=doc[0].get_pixmap(dpi=200, alpha=False).tobytes("jpg", jpg_quality=85))
+        scan_src.save(tmp / "scan.pdf")
+        cfg = engine.scan_folder(tmp, "scan", None, "fra+eng", lambda m: None)["config"]
+        engine.run_anonymize(tmp, "scan", cfg, "fra+eng", False, lambda m: None)
+
+        def ocr_code_end(pdf):
+            img = Image.open(io.BytesIO(fitz.open(pdf)[0].get_pixmap(dpi=200, alpha=False).tobytes("png")))
+            words = [w for w in ocr.ocr_words(img, "fra+eng") if 380 < w["box"][1] < 430]
+            codes = [w for w in words if re.fullmatch(r"\(\d{5}\)", w["text"])]
+            start = min(w["box"][0] for w in words) if words else 0
+            return (start, codes[0]["box"][2]) if codes else None
+
+        before, after = ocr_code_end(tmp / "scan.pdf"), ocr_code_end(tmp / "scan_anonymized.pdf")
+        if before and after:
+            sratio = (after[1] - after[0]) / max(before[1] - before[0], 1)
+            check("a scan line: the replacement ends about where the original did (0.8 to 1.2 of its width)",
+                  0.8 <= sratio <= 1.2, f"ratio {sratio:.2f} ({before} / {after})")
+        else:
+            check("a scan line: the OCR reads the line", False, f"{before} / {after}")
+        check("a digital line: the country is still there",
+              "(FRANCE)" in " ".join(w[4] for w in fitz.open(tmp / "digital_anonymized.pdf")[0].get_text("words")))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def signature_tests():
+    """Signatures next to a label ('Signature', a closing formula, an approval, 'Fait à ...'), on digital pages and on
+    scans of them (sample_data/Dossier Test 18, tools/make_test_signatures.py): every labelled signature is covered by a
+    signature black box, the labels stay readable, and no drawn stroke is left under a box. Two signatures one above
+    the other, each under its own label, are two boxes (see regions._owners)."""
+    print("\n== signatures under a label")
+    from anonymizer import regions
+    check("a closing formula is a signature label", regions.is_signature_label("Cordialement,"))
+    check("an approval is a signature label", regions.is_signature_label("Lu et approuvé"))
+    check("'Fait à Paris, le 12 mars 2024' is a signature label", regions.is_signature_label("Fait à Paris, le 12 mars 2024"))
+    check("a sentence that asks for a signature is no label",
+          not regions.is_signature_label("Merci de retourner ce document après signature"))
+    check("a long sentence beginning with 'Cordialement' is no label",
+          not regions.is_signature_label("Cordialement, nous restons à votre disposition pour toute question"))
+    words = [{"text": "Lu", "line": 1, "box": (10, 100, 20, 110)}, {"text": "et", "line": 1, "box": (22, 100, 30, 110)},
+             {"text": "approuvé", "line": 1, "box": (32, 100, 80, 110)},
+             {"text": "Signature", "line": 1, "box": (300, 100, 380, 110)}, {"text": "titulaire", "line": 1,
+                                                                             "box": (382, 100, 430, 110)}]
+    segs = regions._label_segments(words)
+    check("two labels on one row, in two columns, are two labels", len(segs) == 2
+          and segs[0]["text"] == "Lu et approuvé" and segs[1]["text"] == "Signature titulaire", str([s["text"] for s in segs]))
+    labels = [{"box": (10, 100, 80, 110)}, {"box": (10, 300, 80, 310)}]
+    strokes = [(12, 115, 70, 150), (12, 315, 70, 350)]
+    check("a stroke belongs to the label above it (its signature is written under the label)",
+          regions._owners(strokes, labels, 40) == [0, 1])
+    check("a stroke far from any label belongs to none", regions._owners([(12, 500, 70, 540)], labels, 40) == [None])
+    check("a stroke that runs over the foot of a label is that label's", regions._owners([(12, 106, 70, 130)], labels, 40)
+          == [0])
+
+    folder = ROOT / "sample_data" / "Dossier Test 18"
+    if not (folder / "signatures_truth.json").exists():
+        print("  (no Dossier Test 18: run tools/make_test_signatures.py)")
+        return
+    truth = json.loads((folder / "signatures_truth.json").read_text(encoding="utf-8"))
+    tmp = Path(tempfile.mkdtemp(prefix="anon_sig_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        for p in folder.glob("*.pdf"):
+            shutil.copy(p, tmp / p.name)
+        cfg = engine.scan_folder(tmp, "signatures", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "signatures", cfg, "fra+eng", False, lambda m: None)
+        by_file = {f["file"]: f for f in rep["files"]}
+
+        def covered(t, boxes):
+            x0, y0, x1, y1 = t["box"]
+            area = max((x1 - x0) * (y1 - y0), 1)
+            return any(page == t["page"] and kind == "signature"
+                       and max(0, min(x1, b[2]) - max(x0, b[0])) * max(0, min(y1, b[3]) - max(y0, b[1])) >= 0.6 * area
+                       for page, kind, b in boxes)
+
+        for name in ("signatures_digital.pdf", "signatures_scan.pdf"):
+            f = by_file.get(name)
+            if f is None or f["error"]:
+                check(f"{name}: anonymized", False, str(f and f["error"]))
+                continue
+            boxes = [(b["page"], b["kind"], b["box"]) for b in f.get("blackouts", [])]
+            labelled = [t for t in truth if t["file"] == name and t["labelled"]]
+            missed = [t for t in labelled if not covered(t, boxes)]
+            check(f"{name}: every labelled signature is under a black box ({len(labelled) - len(missed)}/{len(labelled)})",
+                  not missed, "; ".join(f"p{t['page']} {t['label']}" for t in missed))
+            n_sig = sum(1 for _, k, _ in boxes if k == "signature")
+            check(f"{name}: no runaway (at most one box per signature, +2)", n_sig <= len([t for t in truth if t["file"] == name]) + 2,
+                  f"{n_sig} boxes")
+            if name.endswith("_scan.pdf"):
+                continue
+            out = tmp / name.replace(".pdf", "_anonymized.pdf")
+            doc = fitz.open(out)
+            text = " ".join(doc[0].get_text().split())
+            for label in ("Cordialement", "Lu et approuvé", "Pour l'entreprise", "Signature du client"):
+                check(f"{name}: the label '{label}' stays readable", label in text)
+            page = doc[0]
+            for t in labelled:
+                if t["page"] != 1:
+                    continue
+                r = fitz.Rect(t["box"])
+                left = [d for d in page.get_drawings() if fitz.Rect(d["rect"]).intersects(r)
+                        and d.get("fill") != (0.0, 0.0, 0.0) and (fitz.Rect(d["rect"]) & r).get_area()
+                        > 0.5 * max(fitz.Rect(d["rect"]).get_area(), 0.01)]
+                check(f"{name}: no stroke left under the box of '{t['label']}'", not left, str(len(left)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def speedup_tests():
@@ -2342,7 +2751,9 @@ GROUPS = [
     "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
     "split_word_tests", "colon_tests", "street_name_tests", "second_pass_tests", "suspect_suggestion_tests",
+    "incremental_report_tests", "scan_anonymize_batch_tests",
     "first_letter_tests", "account_and_street_names_tests", "manual_text_tests", "rotated_tests", "town_tests",
+    "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
     "speedup_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests",

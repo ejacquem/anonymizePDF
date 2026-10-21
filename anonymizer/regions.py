@@ -29,14 +29,92 @@ MM_PER_INCH = 25.4
 _SIGNATURE_WORD = re.compile(r"(?i)^(signature|handtekening|unterschrift)$")
 
 
+# the lines that come right before a signature without saying so: a closing formula, an approval, a place and a date
+_SIGNATURE_ANCHOR = re.compile(r"(?i)^(cordialement|sinc[èe]rement|bien\s+[àa]\s+vous|veuillez\s+agr[ée]er|"
+                               r"yours\s+(faithfully|sincerely)|kind\s+regards|lu\s+et\s+approuv[ée]e?|"
+                               r"bon\s+pour\s+accord|pour\s+l['’]entreprise|for\s+the\s+company|"
+                               r"le\s+(titulaire|souscripteur|client|locataire|bailleur)|l['’]assur[ée]|"
+                               r"fait\s+[àa]\b|signé\s+[àa]\b|done\s+at|gedaan\s+te|gelezen\s+en\s+goedgekeurd)")
+
+
+def _label_segments(words: list[dict]) -> list[dict]:
+    """The lines of the page ({'text', 'box', 'words'}), each cut where the gap between two words is wider than 2.5 word
+    heights: two labels in two columns ('Lu et approuvé' and 'Signature du titulaire' on one row) are two labels."""
+    out = []
+    for ln in lines_of(words):
+        idx = ln["words"]
+        if len(idx) < 2:
+            out.append(ln)
+            continue
+        heights = sorted(words[i]["box"][3] - words[i]["box"][1] for i in idx)
+        h = max(heights[len(heights) // 2], 1)
+        seg = [idx[0]]
+        for a, b in zip(idx, idx[1:]):
+            if words[b]["box"][0] - words[a]["box"][2] > 2.5 * h:
+                out.append(_segment(words, seg))
+                seg = [b]
+            else:
+                seg.append(b)
+        out.append(_segment(words, seg))
+    return out
+
+
+def _owners(boxes: list[tuple], labels: list[dict], reach: float) -> list[int | None]:
+    """The signature label each stroke box belongs to (an index in `labels`, None for none). A signature is written
+    under its label: the nearest label above it in its column wins (within 8 label heights); a signature written above a
+    label, with no label above it, belongs to the label below (within `reach`, or 2 label heights if more; `reach` is in
+    the units of the boxes). Two signatures one above the other, each under its own label, are then two signatures, not
+    one box across the label between them."""
+    out = []
+    for b in boxes:
+        best = None
+        for i, label in enumerate(labels):
+            lx0, ly0, lx1, ly1 = label["box"]
+            lh = max(ly1 - ly0, 4)
+            if b[2] < lx0 - 3 * lh or b[0] > lx1 + 4 * lh:           # not in the column of the label
+                continue
+            gap_above = b[1] - ly1                                     # the box is under the label
+            gap_below = ly0 - b[3]                                     # the box is above the label
+            # (a stroke that overlaps the label by half its height is on the label: the signature may run over its foot)
+            if -0.5 * lh <= gap_above <= 8 * lh:
+                key = (0, gap_above)
+            elif -0.5 * lh <= gap_below <= max(2 * lh, reach):
+                key = (1, gap_below)
+            else:
+                continue
+            if best is None or key < best[0]:
+                best = (key, i)
+        out.append(best[1] if best else None)
+    return out
+
+
+def _next_label_top(label: dict, labels: list[dict], lh: float, x_reach: float = 4) -> float | None:
+    """Top of the next signature label below `label` in the same column (it overlaps the label's x range, extended by
+    `x_reach` label heights): the signature of that label is not this one, so the search stops there."""
+    lx0, _, lx1, ly1 = label["box"]
+    tops = [o["box"][1] for o in labels if o is not label and o["box"][1] >= ly1 - 1
+            and o["box"][0] <= lx1 + x_reach * lh and o["box"][2] >= lx0 - 3 * lh]
+    return min(tops) if tops else None
+
+
+def _segment(words: list[dict], idx: list[int]) -> dict:
+    boxes = [words[i]["box"] for i in idx]
+    return {"text": " ".join(words[i]["text"] for i in idx).strip(), "words": idx,
+            "box": (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))}
+
+
 def is_signature_label(text: str) -> bool:
     """A label, not a sentence: 'Signature', 'Signature du titulaire / Holder's signature', 'Date et signature',
     'Handtekening:' -> yes; 'Merci de retourner ce document après signature' -> no.
-    The word must be one of the first two words of the line, or the line must be short (4 words at most)."""
+    The word must be one of the first two words of the line, or the line must be short (4 words at most).
+    A closing formula or an approval ('Cordialement,', 'Lu et approuvé', 'Pour l'entreprise', 'Fait à Paris, le 12 mars
+    2024') is a label too: the signature is written under it, without the word."""
     words = [w.strip(" :;,./()'") for w in text.split()]
     words = [w for w in words if w]
     hits = [i for i, w in enumerate(words) if _SIGNATURE_WORD.match(w)]
-    return bool(hits) and (hits[0] < 2 or len(words) <= 4)
+    if hits and (hits[0] < 2 or len(words) <= 4):
+        return True
+    return bool(words) and len(words) <= 8 and bool(_SIGNATURE_ANCHOR.match(text.strip()))
 
 
 def _components(mask: np.ndarray) -> list[tuple[int, int, int, int, int]]:
@@ -289,7 +367,7 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
     mm = dpi / MM_PER_INCH
     gray = np.asarray(img.convert("L"))
     H, W = gray.shape
-    lines = lines_of(words)
+    lines = _label_segments(words)
     label_words = set()
     for ln in lines:
         if is_signature_label(ln["text"]):
@@ -309,15 +387,19 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
         return float(sig_ink[y0:y1, x0:x1].sum())
 
     out = []
-    for ln in lines:
-        if not is_signature_label(ln["text"]):
-            continue
+    labels = [ln for ln in lines if is_signature_label(ln["text"])]
+    for li, ln in enumerate(labels):
         lx0, ly0, lx1, ly1 = ln["box"]
         lh = max(ly1 - ly0, 4)
         # search area: close to the label. A wide area let the grow reach the card's guilloche and the print of the
         # next card; the strokes must start next to the label (seed)
+        # (below the label the search goes down 30 mm: a signature is 1 to 2 cm high, and a window that stops at the
+        # first line cut the strokes that run lower, leaving them visible)
         wx0, wx1 = int(max(lx0 - 5 * mm, 0)), int(min(lx0 + 80 * mm, W))
-        wy0, wy1 = int(max(ly0 - 12 * mm, 0)), int(min(ly1 + 12 * mm, H))
+        wy0, wy1 = int(max(ly0 - 12 * mm, 0)), int(min(ly1 + 30 * mm, H))
+        nxt = _next_label_top(ln, labels, lh)
+        if nxt is not None:
+            wy1 = min(wy1, int(nxt - 1))
         ink = gray[wy0:wy1, wx0:wx1] < 150
 
         def clear(x0, y0, x1, y1, m=2):
@@ -359,6 +441,8 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
             if in_text >= 0.7:
                 continue
             comps.append((x0 * f + wx0, y0 * f + wy0, x1 * f + wx0, y1 * f + wy0))
+        owned = _owners(comps, labels, 12 * mm)
+        comps = [c for c, o in zip(comps, owned) if o == li]
         seed = (lx0 - 3 * lh, ly0 - 2 * lh, lx1 + 4 * lh, ly1 + 8 * lh)   # where a signature starts
         keep = _grow(comps, seed, 3 * mm)
         if not keep:
@@ -407,23 +491,33 @@ def find_signatures_digital(page, words: list[dict], exclude: list[tuple] = ()) 
             continue                                              # a frame / background block
         parts_all.append(tuple(r))
     for info in page.get_image_info():
-        parts_all.append(tuple(info["bbox"]))
+        w, h = info["bbox"][2] - info["bbox"][0], info["bbox"][3] - info["bbox"][1]
+        if w <= 70 * mm and h <= 35 * mm:                       # a pasted page or a photo is not a signature
+            parts_all.append(tuple(info["bbox"]))
     parts_all = [r for r in parts_all if not any(fitz.Rect(r).intersects(x) for x in excluded)]
     out = []
-    for ln in lines_of(words):
-        if not is_signature_label(ln["text"]):
-            continue
+    labels = [ln for ln in _label_segments(words) if is_signature_label(ln["text"])]
+    owners = _owners(parts_all, labels, 12 * 72 / MM_PER_INCH)
+    for li, ln in enumerate(labels):
         lx0, ly0, lx1, ly1 = ln["box"]
         lh = max(ly1 - ly0, 4)
-        seed = (lx0 - 3 * lh, ly0 - 6 * lh, lx1 + 4 * lh, ly1 + 8 * lh)
-        keep = _grow(parts_all, seed, 3 * mm)
+        # (the seed reaches 2 label heights above: a signature of the row above is not this one, and the strokes of
+        # both would be joined across the label, then cut on the wrong side)
+        seed = (lx0 - 3 * lh, ly0 - max(2 * lh, 12 * mm), lx1 + 4 * lh, ly1 + 8 * lh)
+        nxt = _next_label_top(ln, labels, lh)
+        if nxt is not None:
+            seed = (seed[0], seed[1], seed[2], min(seed[3], nxt - 1))
+        own = [b for b, o in zip(parts_all, owners) if o == li]
+        keep = _grow(own, seed, 3 * mm)
         if not keep:
             continue
         r = fitz.Rect(keep[0])
         for k in keep[1:]:
             r |= fitz.Rect(k)
         if r.width >= 2.5 * lh:
-            box = _clear_of_text(tuple(r + (-0.3 * lh, -0.3 * lh, 0.3 * lh, 0.3 * lh)), words,
+            padded = [{**w, "box": (w["box"][0] - 1.5, w["box"][1] - 1.5, w["box"][2] + 1.5, w["box"][3] + 1.5)}
+                      for w in words]
+            box = _clear_of_text(tuple(r + (-0.3 * lh, -0.3 * lh, 0.3 * lh, 0.3 * lh)), padded,
                                  lambda c, keep=keep: _area_in(c, keep), lx0 + (lx1 - lx0) / 2)
             if box:
                 out.append(box)

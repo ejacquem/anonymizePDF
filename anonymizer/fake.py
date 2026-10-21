@@ -642,6 +642,12 @@ class Faker:
         return f"{pre}{m.group('kw')}{m.group('sp')}{m.group('art') or ''}{day}{new_month}{post}"
 
     def street(self, value: str) -> str:
+        # a postcode in brackets after the street ('Rue de Paris (75001)', the label 'Adresse : 12 bis avenue Foch (75016)'):
+        # the street is faked as a street, and the code gets another code of the same length
+        bracket = re.fullmatch(r"(?P<street>.+?)\s*\((?P<code>\d{4,5})\)", value)
+        if bracket:
+            code = self.digits(bracket.group("code"), self.rng("street-code", value))
+            return f"{self.street(bracket.group('street'))} ({code})"
         rng = self.rng("street", value)
         # an 'Avenue' whose A the OCR split in two marks ('i\venue', '/\venue', see pii._FR_STREET) is an avenue
         value = re.sub(r"(?<!\w)[/il1|]\\venue", "Avenue", value)
@@ -717,8 +723,37 @@ class Faker:
         allowed = [t for t in towns if not any(g in towns[t] for g in self.reserved_digits)]
         new = self._pick(allowed, len(name), rng, {name})
         if new is None:
+            # no town of a similar length: two or more towns of the list joined by a hyphen, as the long names of France
+            # do ('BOULOGNE-BILLANCOURT' -> 'MONTAUBAN-CHAMBERY'): the replacement keeps the length of the original, so
+            # that it does not leave a gap before what follows it on the line (the postcode is the one of the first town)
+            joined = self._compound(allowed, len(name), rng, {name})
+            if joined is not None:
+                return joined, towns[joined.split("-", 1)[0]]
+        if new is None:
             return self.scramble(name, rng), None
         return new, towns[new]
+
+    def _compound(self, towns: dict, target: int, rng: random.Random, avoid: set[str]) -> str | None:
+        """Towns of the list joined by hyphens, as long as the length stays within the target: a name of `target`
+        letters gets a fake of about the same length (within 2 letters, or 15 %)."""
+        names = sorted(towns)
+        slack = max(2, round(0.15 * target))
+        avoid = {_pkey(a) for a in avoid}
+        for attempt in range(20):
+            parts: list[str] = []
+            length = 0
+            while True:
+                room = target + slack - length - (1 if parts else 0)
+                options = [t for t in names if len(t) <= room and _pkey(t) not in avoid]
+                if not options or room < 0:
+                    break
+                parts.append(rng.choice(options))
+                length += len(parts[-1]) + (1 if len(parts) > 1 else 0)
+                if abs(length - target) <= slack:
+                    break
+            if parts and abs(length - target) <= slack and len(parts) > 1:
+                return "-".join(parts)
+        return None
 
     def postal_city(self, value: str) -> str:
         # a US city line: 'Anywhere, USA 40000' -> 'Riverton, USA 61230' (a town of the list, the state and the ZIP digits)
@@ -728,6 +763,16 @@ class Faker:
             rng = self.rng("us-town", _norm(city))
             new_city = self._pick(US_TOWNS, len(city), rng, {_norm(city)} | self.reserved) or rng.choice(US_TOWNS)
             return f"{_style_token(city, new_city)}, {us.group('st')} {self.digits(us.group('zip'), rng)}"
+        # a postcode alone, after a street ('12 RUE DES LILAS (75020)'): another postcode of the same length
+        if re.fullmatch(r"\d{4,5}", value):
+            return self.digits(value, self.rng("postal-alone", value))
+        # a town before its postcode in brackets: 'NANTERRE (92000)' -> 'LILLE (59000)' (the same town as the term alone)
+        bracket = re.fullmatch(r"(?P<city>.+?)\s*\((?P<pre>(?:[A-Z]{1,2}-)?)(?P<code>\d{4,5})\)", value)
+        if bracket:
+            city = bracket.group("city")
+            new_city, new_code = self.town(city)
+            code = _code_like(new_code, len(bracket.group("code")), self.rng("postal-code", _norm(city)))
+            return f"{_style_token(city, new_city)} ({bracket.group('pre')}{code})"
         m = re.fullmatch(r"(?P<pre>(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?)(?P<code>\d{4,5})(?P<sp>\s+)(?P<city>.+)", value)
         if not m:
             return self.scramble(value, self.rng("postal", value))
