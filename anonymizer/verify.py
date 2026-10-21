@@ -55,8 +55,8 @@ def read_output(path: Path, ocr_lang: str, use_ocr: bool) -> OutputRead:
         tasks = {}
         if ocr_on and len(doc) >= 2 and path.suffix.lower() == ".pdf" and workers.configured_workers() > 1:
             if workers.worker_count(len(doc)) > 1:      # the pages are read by the workers, in page order here
-                n = workers.spread([(str(path), i) for i in range(len(doc))])
-                tasks = {i: workers.submit(str(path), i, n, workers.read_page, str(path), i, ocr_lang)
+                workers.warm(len(doc))
+                tasks = {i: workers.submit(str(path), i, workers.read_page, str(path), i, ocr_lang)
                          for i in range(len(doc))}
         for i, page in enumerate(doc):
             with timing.stage("check"):

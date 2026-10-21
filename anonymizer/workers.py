@@ -4,8 +4,9 @@ not thread-safe: the pages of a document are given to worker PROCESSES, one task
 results back in page order, so the output is byte for byte what one process would write.
 
   worker_count(n)          how many workers a job of n pages uses (1 = everything stays in this process)
-  spread(pages)            start the workers that [(document, page)] go to; submit(...) then gives them the pages
-  submit(key, index, fn, *args)   run fn(*args) in the worker that owns page `index` of document `key`
+  warm(n)                  start the workers a job of n pages needs (together), up to the pool size
+  submit(key, index, fn, *args)   run fn(*args) on page `index` of document `key`: in the worker that did that page
+                           last time, unless another one is less busy
   scan_page(...)           the task of one scanned page (render, OCR, find photos / codes / signatures, measure the
                            fonts, paint) -> the JPEG of the new page and everything the page recorded
   read_page(...)           the OCR words of one page of a PDF file
@@ -19,8 +20,9 @@ Rules that keep the result identical to the sequential run:
 - a worker that dies, or any pool failure, gives the page back to the main process, which does it itself.
 
 Workers are created on first use and stay (the pool is reused by the next job). Each worker is its own process with a
-slot of its own: page k of a document always goes to the same worker, so what that worker remembered of the page (the
-OCR, the fonts, the faces: anonymizer/memo.py) serves the next job on it. Nothing is written to disk. Setting
+slot of its own. A page goes to the worker that did it last time (so what that worker remembered of the page, the OCR,
+the fonts, the faces: anonymizer/memo.py, serves the next job), unless that worker has more tasks waiting than another
+one: the slot is chosen by load, with that memory as the tie-break. Nothing is written to disk. Setting
 ANON_WORKERS=N caps the workers (1 = never use a pool); the default leaves one core to the app and a share of the
 free memory to the rest of the PC.
 """
@@ -33,6 +35,7 @@ import os
 import threading
 import time
 import zlib
+from collections import OrderedDict
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
@@ -42,6 +45,8 @@ MAX_DEFAULT = 6                                                   # no more by d
 _lock = threading.Lock()
 _broken = False                                                   # the pool cannot be created here: no workers
 _slots: dict[int, ProcessPoolExecutor] = {}
+_pending: dict[int, int] = {}                                     # slot -> tasks given to it and not finished
+_assigned: OrderedDict = OrderedDict()                            # (document, page) -> the slot that did it last
 _size: dict[int, int] = {}                                        # configured workers -> the pool size, fixed once chosen
 stats = {"started": 0, "start_seconds": 0.0, "tasks": 0, "fallbacks": 0}
 
@@ -163,20 +168,22 @@ def _start(indexes) -> None:
         stats["start_seconds"] += time.perf_counter() - t0
 
 
-def _slot(i: int) -> ProcessPoolExecutor:
-    if i not in _slots:
-        _start([i])
-    ex = _slots.get(i)
-    if ex is None:
-        raise BrokenProcessPool(f"worker {i} did not start")
-    return ex
-
-
 def _drop(i: int):
     with _lock:
         ex = _slots.pop(i, None)
+        _pending.pop(i, None)
     if ex is not None:
         ex.shutdown(wait=False, cancel_futures=True)
+
+
+def warm(n_tasks: int) -> int:
+    """Make sure the workers a job of `n_tasks` pages needs are running (up to the pool size), starting the missing ones
+    together. Returns the number running."""
+    want = min(max(n_tasks, 1), pool_size())
+    missing = [i for i in range(pool_size()) if i not in _slots][:max(want - len(_slots), 0)]
+    if missing:
+        _start(missing)
+    return len(_slots)
 
 
 def pool_size() -> int:
@@ -192,9 +199,28 @@ def pool_size() -> int:
     return _size[n]
 
 
-def slot_of(key: str, index: int, workers: int) -> int:
-    """The slot of page `index` of document `key`: the same every time, consecutive pages on consecutive slots."""
-    return (zlib.crc32(key.encode("utf-8")) + index) % max(workers, 1)
+def _choose(key: str, index: int) -> int:
+    """The running slot for page `index` of document `key`: the one that did it last time, or else one picked from the
+    name (consecutive pages on consecutive slots), when it is not busier than the least busy; else the least busy."""
+    with _lock:
+        live = sorted(_slots)
+        if not live:
+            return -1
+        pref = _assigned.get((key, index))
+        if pref not in _slots:
+            pref = live[(zlib.crc32(key.encode("utf-8")) + index) % len(live)]
+        least = min(_pending.get(i, 0) for i in live)
+        slot = pref if _pending.get(pref, 0) <= least else min(live, key=lambda i: (_pending.get(i, 0), i))
+        _assigned[(key, index)] = slot
+        _assigned.move_to_end((key, index))
+        while len(_assigned) > 512:
+            _assigned.popitem(last=False)
+        return slot
+
+
+def _done(slot: int, _future=None) -> None:
+    with _lock:
+        _pending[slot] = max(_pending.get(slot, 0) - 1, 0)
 
 
 def _call(fn, engine_choice: str, args: tuple):
@@ -210,18 +236,35 @@ class Task:
     """A page given to a worker. result() is the worker's answer, or None if the pool failed (the caller then does the
     page itself); an error raised by the page is raised again here."""
 
-    def __init__(self, slot: int, fn, args: tuple):
+    def __init__(self, key: str, index: int, fn, args: tuple):
         from . import ocr
 
-        self.slot, self.fn, self.args = slot, fn, args
+        self.fn, self.args = fn, args
+        self.slot = -1
         self.future: Future | None = None
         try:
-            self.future = _slot(slot).submit(_call, fn, ocr.choice(), args)
+            self.slot = _choose(key, index)
+            if self.slot < 0:
+                _start([0])
+                self.slot = _choose(key, index)
+            ex = _slots.get(self.slot)
+            if ex is None:
+                raise BrokenProcessPool("no worker")
+            with _lock:
+                _pending[self.slot] = _pending.get(self.slot, 0) + 1
+            self.future = ex.submit(_call, fn, ocr.choice(), args)
+            self.future.add_done_callback(lambda f, s=self.slot: _done(s))
             stats["tasks"] += 1
             stats[fn.__name__] = stats.get(fn.__name__, 0) + 1
         except Exception:  # noqa: BLE001  (the pool could not start: the main process does the work)
             stats["fallbacks"] += 1
-            _drop(slot)
+            if self.slot >= 0:
+                _done(self.slot)
+                _drop(self.slot)
+            self.future = None
+
+    def done(self) -> bool:
+        return self.future is None or self.future.done()
 
     def result(self):
         if self.future is None:
@@ -238,17 +281,9 @@ class Task:
             self.future.cancel()
 
 
-def spread(pages: list[tuple]) -> int:
-    """Get ready for the pages [(document key, page index)]: the workers they go to are started together (the first
-    time). Returns the pool size to give to submit()."""
-    n = pool_size()
-    _start(sorted({slot_of(key, index, n) for key, index in pages}))
-    return n
-
-
-def submit(key: str, index: int, workers: int, fn, *args) -> Task:
-    """fn(*args) in the worker of page `index` of document `key` (with `workers` slots)."""
-    return Task(slot_of(key, index, workers), fn, args)
+def submit(key: str, index: int, fn, *args) -> Task:
+    """fn(*args) in a worker, for page `index` of document `key` (see _choose)."""
+    return Task(key, index, fn, args)
 
 
 def _forget() -> int:

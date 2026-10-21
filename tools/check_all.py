@@ -3017,13 +3017,16 @@ def parallel_tests():
     work = Path(tempfile.mkdtemp(prefix="anon_par_"))
     saved = os.environ.get("ANON_WORKERS")
     ner = _names_model()
+    # a client folder of one-page files: two scans, a digital statement (the files go to the workers beside each other)
+    singles = (("Dossier Test 03", "passeport_scan.pdf"), ("Dossier Test 04", "carte_identite_scan.pdf"),
+               ("Dossier Test 01", "releve_banque_mosane.pdf"))
 
-    def run(n: str, tag: str, numbered: bool = False):
+    def run(n: str, tag: str, numbered: bool = False, sources=None):
         os.environ["ANON_WORKERS"] = n
         folder = work / f"{tag}{n}"
         folder.mkdir()
-        for name in names:
-            shutil.copy(ROOT / "sample_data" / "Dossier Test 05" / name, folder / name)
+        for src_folder, name in sources or [("Dossier Test 05", x) for x in names]:
+            shutil.copy(ROOT / "sample_data" / src_folder / name, folder / name)
         scan = engine.scan_folder(folder, "par", ner, "fra+eng", lambda m: None)
         cfg = scan["config"]
         if numbered:
@@ -3052,6 +3055,15 @@ def parallel_tests():
             check(f"{name}: the same output file with three workers", one[name][0] == three[name][0])
             check(f"{name}: the same report with three workers", one[name][1] == three[name][1])
         check("no error with three workers", all(not e[1].get("error") for e in three.values()))
+        # several one-page files: each one is a task, they run beside each other, and the results are the same
+        mark = workers.stats.get("scan_page", 0)
+        cfg_s1, one_s = run("1", "singles", sources=singles)
+        cfg_s3, three_s = run("3", "singles", sources=singles)
+        check("a folder of one-page files: the scans went to the workers", workers.stats.get("scan_page", 0) - mark >= 2
+              or workers.stats.get("fallbacks", 0) > 0 or workers._broken)
+        check("a folder of one-page files: the same config with three workers", cfg_s1 == cfg_s3)
+        check("a folder of one-page files: the same files and reports with three workers",
+              all(one_s[n] == three_s[n] for _, n in singles) and len(one_s) == len(singles))
         # a config that numbers its replacements is not split, whatever the number of workers
         mark = workers.stats.get("scan_page", 0)
         _, num1 = run("1", "num", numbered=True)

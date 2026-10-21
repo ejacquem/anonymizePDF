@@ -64,7 +64,7 @@ anonymizer/
   morph.py             square max / min / closing on arrays, two 1-D passes (same result as PIL's rank filters)
   timing.py            stage timers (ocr, fonts, paint, ocr_check...): exclusive time per stage, one collector per file
   workers.py           pages in parallel processes: worker pool (one process per slot, sticky routing), the tasks
-                       scan_page / read_scan / name_faces_page / read_page, ANON_WORKERS
+                       scan_page / read_scan / name_faces_page / read_page, ANON_WORKERS; slot chosen by load
   memo.py              in-memory memos keyed by the pixels of a page (bounded LRU, never on disk): faces, codes, line
                        angles, the PageFonts of a page; image_key / array_key / words_key, by_image, clear_all
   faces.py             faces of people (YuNet, ONNX Runtime, offline): detect, find_faces, find_faces_digital
@@ -723,8 +723,14 @@ Order must never change a result (`order_tests`): a value written with several s
   order); a worker that dies or cannot start gives the page back to the main process (`Task.result()` is None); a
   process that cannot have children (a daemonic worker of check_all) turns the pool off for its life (`_broken`). The
   pool is created on first use, each worker in its own single-process executor (a slot), started together
-  (`workers.spread`); page k of a file always goes to slot `(crc32(path) + k) % pool_size`, so the worker that read a
-  page in the scan also anonymizes it and keeps its OCR, fonts and faces in memory (the memos of `memo.py`, per worker).
+  (`workers.warm`). A page goes to the slot that did it last time (`workers._choose`: `_assigned`, else a pick from the
+  file name), unless that slot has more tasks waiting than the least busy one: then to the least busy. So the worker
+  that read a page in the scan usually also anonymizes it and keeps its OCR, fonts and faces in memory (the memos of
+  `memo.py`, per worker), and a folder of one-page files does not pile up on one slot.
+  `run_anonymize` gives the scanned pages of ALL the files of the run to the workers ahead (`engine._Feeder`: the next
+  files are prepared while fewer tasks are waiting than there are workers), so the files run beside each other, and the
+  checks of a file (output written, OCR, second check) happen while the workers already do the next ones. A lone
+  one-page file stays in this process (no reason to leave it).
   `pool_size()` (fixed per configured value) leaves a core to the app and 800 MB per worker out of the free memory.
   The initializer imports onnxruntime FIRST (importing it after the winrt OCR packages crashes the process on this PC,
   a segfault), loads the face model and the font catalog; one thread per worker for numpy / onnxruntime
