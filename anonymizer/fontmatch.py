@@ -641,6 +641,24 @@ class PageFonts:
             bold = bool(bold_hint)
         return face(family, bold), margin
 
+    def quick_face(self, box, near_words: int = 3) -> Face | None:
+        """A rough face for the value written in `box`: the face with the best summed score over its own words and a few
+        words of its line, against sharp candidates (no page quality, no weight analysis). For the scan, which only
+        needs the width the value takes in its font, not the look. None when nothing could be measured."""
+        own = self.value_words(box)
+        total: dict[Face, float] = {}
+        seen = 0
+        for i in own + self.line_words(own, near_words):
+            s = self.raw_scores(i)
+            if not s:
+                continue
+            seen += 1
+            k = min(_letters(self.words[i]["text"]), 8) * (2.0 if i in own else 1.0)
+            best = max(s.values())
+            for f, v in s.items():
+                total[f] = total.get(f, 0.0) + k * (v - best)
+        return max(total, key=total.get) if seen else None
+
     def _colours(self, img, i: int, q):
         """(paper, ink) measured on word i in the face that fits it best, None when it cannot be measured."""
         s = self.scores(i)

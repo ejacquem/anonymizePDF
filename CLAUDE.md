@@ -509,6 +509,17 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   new PNG over the redaction. Options off: Helvetica text as before.
 - Trace items of replaced values have `look` ('Calibri Bold, 200 dpi, blur 1.0px, spread +0.00px, grain 4'), shown in
   the Trace tooltip; the page log lists the fonts used and the scan quality.
+- Fake names by width (`Faker._pick_name`, `engine._name_faces`): the fakes were picked by letter count, so a wider
+  one was squeezed and a narrower one left a gap. `scan_folder` keeps each scanned page (grey image, words), and once the
+  names are known it measures a rough face (`PageFonts.quick_face`: best summed score of the value's words and three of
+  its line against sharp candidates, no page quality) of up to `NAME_FACES_PER_WORD` (3) occurrences of each name word
+  (through the aliases). `Faker.faces[key]` then lets `name_token` choose, among the valid candidates (same rules,
+  length within 3 letters), the one whose width in those fonts (`face.font(64).getlength`, styled like the original) is
+  closest to the original's; candidates within 1.5 % of the best (ln) are equals and the key decides, so the same key
+  gives the same fake and the name memory keeps the files consistent. Without faces (digital documents, no scan) the
+  letter-count pick is untouched. `stats['width_error']` and the log say the gain: mean |ln width ratio| 11.0 % ->
+  2.4 % on the 23 name words of Dossier Test 17 (`name_width_tests`). Cost: the scan of Dossier Test 17 takes
+  ~9 s more (names in 16 fonts on 3 pages).
 - Limits: close look-alikes are mixed up on soft copies (Arial / Roboto, Courier New / Courier Prime, DejaVu Sans
   Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; italics are not candidates;
   ~0.1-0.3 s per value.

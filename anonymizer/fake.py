@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import random
 import re
 import string
@@ -222,6 +223,10 @@ class Faker:
         # replacement of the full word, cut the same way (see name_token)
         self.truncations: dict[str, str] = {}
         self.kind_seen: dict[str, str] = {}      # name word key -> the kind it was first replaced with
+        # name word key -> the faces (fontmatch.Face) it is written in on the scanned pages: a replacement is chosen
+        # among the candidates by the width it takes in those fonts (see _pick_name)
+        self.faces: dict[str, list] = {}
+        self.width_error: list[tuple[float, float]] = []    # per name word fitted: (by letters, by width) mean |ln ratio|
 
     # ---------- primitives ----------
     def rng(self, kind: str, value: str, attempt: int = 0) -> random.Random:
@@ -344,10 +349,41 @@ class Faker:
         # not the original, not a real name of these documents, not a fake already given to another name
         taken = {_pkey(v) for (k, _), v in self.names.items() if k == kind}
         avoid = {_norm(token)} | (avoid or set()) | self.reserved | taken
-        new = self._pick(pool, len(token), rng, avoid) or self.scramble(token, rng)
+        new = self._pick_name(pool, token, key, kind, rng, avoid) or self.scramble(token, rng)
         if key:
             self.names[(kind, key)] = new
         return _style_token(token, new)
+
+    WIDTH_SLACK = 3        # letters more or fewer than the original that a pick by width may use
+    WIDTH_TIE = 0.015      # candidates this close (ln of the width ratio) to the best are equally good: the key decides
+
+    def _pick_name(self, pool, token: str, key: str, kind: str, rng: random.Random, avoid: set[str]):
+        """The replacement of a name word. By letter count (_pick), as always; when the word is written on scanned
+        pages in known fonts (self.faces[key]), among the valid candidates (same rules: not the original, not a name of
+        the documents, not given to another name) the one whose width in those fonts is closest to the original's: a
+        wider fake is squeezed, a narrower one leaves a gap before what follows. Still decided by the key."""
+        by_letters = self._pick(pool, len(token), rng, avoid)
+        faces = self.faces.get(key)
+        if not faces or by_letters is None:
+            return by_letters
+        skip = {_pkey(a) for a in avoid}
+        cands = [x for x in pool if abs(len(x) - len(token)) <= self.WIDTH_SLACK and _pkey(x) not in skip]
+        if not cands:
+            return by_letters
+
+        def width(face, text: str) -> float:
+            return max(face.font(64).getlength(text), 1.0)
+
+        def error(x: str) -> float:               # mean |ln(width ratio)| over the fonts the word is written in
+            styled = _style_token(token, x)
+            return sum(abs(math.log(width(f, styled) / width(f, token))) for f in faces) / len(faces)
+
+        errors = {x: error(x) for x in cands}
+        best = min(errors.values())
+        near = sorted(x for x, e in errors.items() if e <= best + self.WIDTH_TIE)
+        pick = self.rng("name-width-" + kind, key).choice(near)
+        self.width_error.append((error(by_letters), errors[pick]))
+        return pick
 
     def _similar_name(self, kind: str, key: str) -> str | None:
         if len(key) < 4:                                  # 'REYS' and 'REYE' are close to 'REYES' (0.89)

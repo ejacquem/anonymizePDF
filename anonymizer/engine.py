@@ -436,6 +436,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     found: dict = {}
     tokens: dict[str, int] = {}
     sequences: dict[str, dict] = {}
+    seen_pages: list[dict] = []        # the scanned pages as read (grey image, words): the fonts of the names are measured on them
     for fi, pdf in enumerate(pdfs, start=1):
         _report(progress, fi - 1, len(pdfs), pdf.name)
         doc = open_source(pdf)
@@ -447,17 +448,20 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                 if not can_ocr:
                     log(f"   page {pno}: no visible text and no OCR engine available -> skipped")
                     continue
-                words = ocr_words(render_page(page, 300), default_ocr_lang)
+                img = render_page(page, 300)
+                words = ocr_words(img, default_ocr_lang)
                 log(f"   page {pno}: OCR ({len(words)} words)")
+                seen_pages.append({"gray": np.asarray(img.convert("L")), "words": words, "scale": native_scale(page, 300)})
                 _detect_words(found, tokens, sequences, words, True, ner, pdf.name, pno)
                 if lay["words"]:                       # a scanner's invisible OCR layer: read it too
                     _detect_words(found, tokens, sequences, lay["words"], False, ner, pdf.name, pno)
                 continue
             _detect_words(found, tokens, sequences, lay["words"], False, ner, pdf.name, pno)
             if lay["pixels"] and can_ocr:                # text that only exists as pixels (images)
-                _, pw = _pixel_words(page, lay["visible"], default_ocr_lang)
+                pimg, pw = _pixel_words(page, lay["visible"], default_ocr_lang)
                 if pw:
                     log(f"   page {pno}: OCR of the images ({len(pw)} words)")
+                    seen_pages.append({"gray": np.asarray(pimg.convert("L")), "words": pw, "scale": native_scale(page, 300)})
                     _detect_words(found, tokens, sequences, pw, True, ner, pdf.name, pno)
 
     _report(progress, len(pdfs), len(pdfs))
@@ -472,6 +476,10 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
 
     # persons first: full names (active) + their separate parts
     persons = [e for e in found.values() if e["type"] == "PERSON"]
+    # the fonts the name words are written in on the scans: a fake is chosen by the width it takes in them
+    name_keys = {_pkey(t.strip(",.;:")) for e in persons for t in e["value"].split() if len(t.strip(",.;:")) >= 3}
+    faker.faces = _name_faces(seen_pages, name_keys, faker.aliases)
+    seen_pages.clear()
 
     def gender(e):  # 'Sexe / Sex' field, else the first name, else the title (Mme / M. ...) before the name
         if e.get("sex"):
@@ -641,9 +649,45 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     if old.exists():
         text = configmodel.keep_edits(text, old.read_text(encoding="utf-8"))
     stats = {"files": len(pdfs), "active": len(active), "inactive": len(off), "seconds": round(time.time() - t0, 1)}
+    if faker.width_error:                  # the gain of the pick by width, on the name words written on scans
+        before = sum(b for b, _ in faker.width_error) / len(faker.width_error)
+        after = sum(a for _, a in faker.width_error) / len(faker.width_error)
+        stats["width_error"] = (round(before, 4), round(after, 4))
+        log(f"{len(faker.width_error)} name word(s) of the scans chosen by width: mean width error "
+            f"{before * 100:.1f} % by letters -> {after * 100:.1f} %")
     log(f"Done: {len(active)} active replacement(s), {len(off)} suggestion(s) left commented out "
         f"({stats['seconds']}s)")
     return {"config": text, "stats": stats}
+
+
+def _name_faces(pages: list[dict], keys: set[str], aliases: dict[str, str]) -> dict[str, list]:
+    """The faces (fontmatch.Face) the name words are written in on the scanned pages read: name word key (through the
+    aliases) -> one face per occurrence measured. Only the pages that hold a name word are measured."""
+    cfg = {"style": {"mode": "replace", "font_match": True, "quality_match": True}}
+    out: dict[str, list] = {}
+    for pg in pages:
+        words = pg["words"]
+        idx = [i for i, w in enumerate(words) if _pkey(w["text"].strip(",.;:()")) in keys]
+        idx = [i for i in idx if len(out.get(_alias(aliases, words[i]), [])) < NAME_FACES_PER_WORD]
+        if not idx:
+            continue
+        pf = page_fonts(pg["gray"], words, cfg, pg["scale"])       # no slant measure here: a rough face is enough
+        for i in idx:
+            key = _alias(aliases, words[i])
+            if len(out.get(key, [])) >= NAME_FACES_PER_WORD:      # a name is written in one or two fonts: a few are enough
+                continue
+            face = pf.quick_face(words[i]["box"])
+            if face is not None:
+                out.setdefault(key, []).append(face)
+    return out
+
+
+NAME_FACES_PER_WORD = 3          # occurrences of a name word measured on the scans (the scan stays quick)
+
+
+def _alias(aliases: dict[str, str], word: dict) -> str:
+    pk = _pkey(word["text"].strip(",.;:()"))
+    return aliases.get(pk, pk)
 
 
 def name_truncations(names: list[str]) -> dict[str, str]:

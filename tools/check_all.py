@@ -1992,6 +1992,63 @@ def contract_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def name_width_tests():
+    """Fake name words chosen by the width they take in the font of the scan: among the valid candidates the one whose
+    width is closest to the original's, so a fake is neither squeezed nor followed by a gap. Still decided by the key."""
+    print("\n== fake names chosen by width")
+    from anonymizer import fontmatch
+    from PIL import ImageFont
+
+    wide, narrow = fontmatch.face("Verdana"), fontmatch.face("Arial Narrow")
+    if wide is None or narrow is None:
+        print("  (Verdana / Arial Narrow not installed: skipped)")
+        return
+    key = hashlib.sha256(b"check_all names by width").digest()
+    names = ["Vermeulen", "Jacquemin", "Dupont", "Lefèvre", "Marchand", "Benali", "Dewulf", "Goffin", "Lejeune",
+             "Materne", "Hendrickx", "Beaumont", "Morin", "Petit", "Lambert", "Verhaegen"]
+    faces = {_pkey(n): [wide if i % 2 else narrow] for i, n in enumerate(names)}
+
+    def width_error(face, token, fake):
+        w = lambda t: face.font(64).getlength(t)                               # noqa: E731
+        return abs(math.log(w(fake) / w(token)))
+
+    plain, fitted = Faker(key), Faker(key)
+    fitted.faces = faces
+    got_plain = {n: plain.name_token(n, "last") for n in names}
+    got_fitted = {n: fitted.name_token(n, "last") for n in names}
+    e_plain = np.mean([width_error(faces[_pkey(n)][0], n, got_plain[n]) for n in names])
+    e_fitted = np.mean([width_error(faces[_pkey(n)][0], n, got_fitted[n]) for n in names])
+    check(f"width: the fakes fit the font better than by letters ({e_plain * 100:.1f} % -> {e_fitted * 100:.1f} %)",
+          e_fitted < 0.5 * e_plain, f"{e_plain:.3f} -> {e_fitted:.3f}")
+    check("width: no fake is worse than the letter-count one by more than the tie margin",
+          all(after <= before + 0.02 for before, after in fitted.width_error), str(fitted.width_error[:4]))
+    again = Faker(key)
+    again.faces = faces
+    check("width: the same key and fonts give the same fakes", all(again.name_token(n, "last") == got_fitted[n] for n in names))
+    other = Faker(hashlib.sha256(b"another key").digest())
+    other.faces = faces
+    check("width: another key gives other fakes", sum(other.name_token(n, "last") != got_fitted[n] for n in names) >= len(names) // 2)
+    check("width: no fake is the original, a word of the documents or the same for two names",
+          all(_pkey(got_fitted[n]) != _pkey(n) for n in names) and len(set(map(_pkey, got_fitted.values()))) == len(names))
+    check("width: nothing is measured without fonts", not plain.width_error and not Faker(key).width_error)
+    firsts = ["Élodie", "Inès", "Océane", "Sophie", "Camille", "Gaëlle"]
+    f2 = Faker(key)
+    f2.faces = {_pkey(n): [wide] for n in firsts}
+    check("width: a female first name stays female", all(_pkey(f2.name_token(n, "first", gender="f")) in {_pkey(x) for x in FEMALE_NAMES}
+                                                         for n in firsts))
+    # a whole folder of scans: the names of the insurance contract (Dossier Test 17) are written in known fonts
+    tmp = Path(tempfile.mkdtemp(prefix="anon_width_"))
+    try:
+        src = ROOT / "sample_data" / "Dossier Test 17"
+        shutil.copy(src / "contrat_assurance_scan.pdf", tmp)
+        stats = engine.scan_folder(tmp, "width", None, "fra+eng", lambda m: None)["stats"]
+        before, after = stats.get("width_error", (0.0, 0.0))
+        check(f"width: names of the contract chosen by width ({before * 100:.1f} % -> {after * 100:.1f} % mean width error)",
+              "width_error" in stats and after < 0.5 * before, str(stats))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def quality_offset_tests():
     """The 'Fake text quality' app setting: the detected quality corrected by an offset (-1 .. +1). 0 changes nothing,
     below 0 the fakes get softer / grainier / coarser, above 0 cleaner, +1 fully sharp; a run records it."""
@@ -2103,6 +2160,7 @@ GROUPS = [
     "split_word_tests", "colon_tests", "street_name_tests", "second_pass_tests", "suspect_suggestion_tests",
     "first_letter_tests", "account_and_street_names_tests", "manual_text_tests", "rotated_tests", "town_tests",
     "speedup_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
+    "name_width_tests",
     "key_and_fake_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests"}     # left out by --fast
