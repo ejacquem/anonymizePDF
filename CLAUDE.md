@@ -159,7 +159,13 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   (the lines it crosses are covered). Listed in the Config tab under Typed texts (`manual.texts`, `manual_texts:` in the
   YAML, `engine.parse_config`, `_manual_texts`); Apply regenerates the anonymized file. A typed text is shown stretched in the
   viewer and while it is typed (`textFit`, same metrics as the PDF); double-click a typed text to edit it; the ✕ of a box
-  removes it. The text takes the colour of the text under its box.
+  removes it. The text takes the colour of the text under its box. A typed text is edited by a double-click on it, with or
+  without the Text tool (the place is found from the pointer: `viewers.anon.box` dblclick, the texts are drawn only while
+  the tool is on); a click elsewhere while it is typed places it and closes its box (`activeEditor`, a capture listener:
+  that click starts nothing else). While a typed text is moved or resized its background is transparent (`.bbox.text.moving`).
+  With a box tool on, the right button drags the view (the left one draws), and the context menu is off there.
+  Shortcuts with the mouse over a viewer: T toggles the Text tool, B the Black box tool, F shows the Config tab and
+  focuses its search (`focusConfigSearch`).
 - Undo / Redo (Anonymized pane head, `#btnUndo` / `#btnRedo`, Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z): every change of the black
   boxes and typed texts of the selected file (draw, move, resize, delete, edit a text, remove an automatic box) is one
   step. `rememberBoxes()` takes a snapshot BEFORE the change (the file's `manual.blackouts` and `manual.texts`, and its

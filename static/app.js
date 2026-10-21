@@ -542,9 +542,13 @@ for (const which of VIEWERS) {
     stepZoom(e.deltaY < 0 ? 1 : -1, { which, x: e.clientX - r.left, y: e.clientY - r.top });
   }, { passive: false });
 
+  // the right button of a drag moves the view too, while a box tool is on (the left one draws the boxes)
+  box.addEventListener("contextmenu", (e) => {
+    if (boxes.tool || boxes.textTool) e.preventDefault();
+  });
   // click + drag moves the view (image mode); the other pane follows through the scroll sync above
   box.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || nativeMode() || !viewers[which].pages.length) return;
+    if ((e.button !== 0 && e.button !== 2) || nativeMode() || !viewers[which].pages.length) return;
     const r = box.getBoundingClientRect();
     if (e.clientX - r.left >= box.clientWidth || e.clientY - r.top >= box.clientHeight) return;  // on a scrollbar
     e.preventDefault();
@@ -878,9 +882,11 @@ function drawBoxes() {
       const bx = boxes.preview && boxes.preview.key === e.key ? boxes.preview.box : e.box;
       const d = document.createElement("div");
       const resizing = boxes.drag && boxes.drag.ent && boxes.drag.ent.key === e.key && boxes.drag.mode !== "move";
+      const dragged = boxes.drag && boxes.drag.ent && boxes.drag.ent.key === e.key && boxes.drag.mode !== "create";
       d.className = "bbox" + (e.type === "auto" ? " auto" : "") + (e.type === "text" ? " text" : "")
         + (boxes.selKey === e.key ? " sel" : "")
-        + (resizing ? " resizing" : "");                       // see-through while a side or corner is dragged
+        + (resizing ? " resizing" : "")                        // see-through while a side or corner is dragged
+        + (dragged && e.type === "text" ? " moving" : "");     // a text box is transparent while it is moved or resized
       d.dataset.bkey = e.key;
       if (e.type === "text") {
         const f = textFit(e.text, bx, k);
@@ -1132,6 +1138,8 @@ function fitEditor(input, r, k) {
     width: f.wPx / f.sx + "px", paddingLeft: f.pad / f.sx + "px" });
 }
 
+// the text being typed (one at a time): a click elsewhere places it and closes its box (see the capture listener below)
+let activeEditor = null;
 function openTextEditor(pageEl, r, onDone, initial = "") {
   const k = pageScale();
   const input = document.createElement("input");
@@ -1143,14 +1151,17 @@ function openTextEditor(pageEl, r, onDone, initial = "") {
   fitEditor(input, r, k);
   input.addEventListener("input", () => fitEditor(input, r, k));
   let done = false;
+  const api = { place: () => finish(true) };
   const finish = (ok) => {
     if (done) return;
     done = true;
+    if (activeEditor === api) activeEditor = null;
     const value = input.value.trim();
     input.remove();
     if (ok && value) onDone(value);
     else setStatus("Text cancelled", "");
   };
+  activeEditor = api;
   input.addEventListener("keydown", (e) => {
     e.stopPropagation();
     if (e.key === "Enter") finish(true);
@@ -1161,11 +1172,27 @@ function openTextEditor(pageEl, r, onDone, initial = "") {
   input.focus();
 }
 
-viewers.anon.list.addEventListener("dblclick", (e) => {
-  const box = e.target.closest(".bbox.text");
-  const pageEl = e.target.closest(".page");
-  if (!box || !pageEl || !state.model) return;
-  const ent = boxEntries().find((x) => x.key === box.dataset.bkey);
+// a click elsewhere while a text is typed places it and closes its box: that click does nothing else (no new box)
+document.addEventListener("pointerdown", (e) => {
+  if (!activeEditor || e.target.closest(".btextinput")) return;
+  e.stopPropagation();
+  activeEditor.place();
+}, true);
+
+// double-click on a typed text edits it. The texts are drawn only while the Text tool is on, so the place is found from
+// the pointer (the text whose box holds it), whatever the tool
+viewers.anon.box.addEventListener("dblclick", (e) => {
+  // the page under the pointer: the pan holds the pointer (capture), so the target can be the pane, not the page
+  const pageEl = [...viewers.anon.list.children].find((p) => {
+    const r = p.getBoundingClientRect();
+    return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  });
+  if (!pageEl || !state.model || e.target.closest(".btextinput")) return;
+  const page = +pageEl.dataset.page;
+  const [x, y] = pagePoint(pageEl, e);
+  const hits = boxEntries().filter((t) => t.type === "text" && t.page === page
+    && x >= t.box[0] && x <= t.box[2] && y >= t.box[1] && y <= t.box[3]);
+  const ent = hits[hits.length - 1];                          // the last one drawn: the one on top
   if (!ent) return;
   boxes.selKey = ent.key;
   drawBoxes();
@@ -1343,6 +1370,29 @@ document.addEventListener("keydown", (e) => {
     else if (boxes.tool) setBoxTool(false);
     else if (boxes.selKey) { boxes.selKey = null; drawBoxes(); }
   }
+});
+
+// T / B / F with the mouse over a viewer: the Text tool, the Black box tool, the search of the configuration
+let overViewer = false;
+VIEWERS.forEach((w) => {
+  viewers[w].box.addEventListener("mouseenter", () => { overViewer = true; });
+  viewers[w].box.addEventListener("mouseleave", () => { overViewer = false; });
+});
+async function focusConfigSearch() {
+  showTab("config");
+  if (state.cfgView !== "table") await switchView("table");
+  const search = $("#cfgSearch");
+  if (search.hidden) return;
+  search.focus();
+  search.select();
+}
+document.addEventListener("keydown", (e) => {
+  if (!overViewer || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target && e.target.closest && e.target.closest("input, textarea, select, [contenteditable]")) return;
+  const key = (e.key || "").toLowerCase();
+  if (key === "t" && !$("#btnText").disabled) { e.preventDefault(); return $("#btnText").click(); }
+  if (key === "b" && !$("#btnBox").disabled) { e.preventDefault(); return $("#btnBox").click(); }
+  if (key === "f") { e.preventDefault(); return focusConfigSearch(); }
 });
 
 // ---------- manual review flag ----------
