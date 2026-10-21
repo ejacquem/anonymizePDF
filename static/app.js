@@ -3,7 +3,7 @@
 const $ = (s) => document.querySelector(s);
 const state = {
   tree: null, nodes: {}, folder: null, file: null,
-  open: new Set([""]), dirty: false, running: false, hasConfig: false, report: null, status: null,
+  open: new Set([""]), dirty: false, running: false, runKeepsConfig: false, hasConfig: false, report: null, status: null,
 };
 
 // ---------- helpers ----------
@@ -313,6 +313,7 @@ async function setViewer(which, path) {
   v.pages = [];
   v.stamp = Date.now();
   v.list.innerHTML = "";
+  if (which === "orig") resetTermSearch();
   v.box.scrollTop = 0;
   v.box.scrollLeft = 0;
   name.textContent = path ? baseName(path) : "";
@@ -801,6 +802,14 @@ function redrawTermFrame() {
   if (termSel.i >= 0 && termSel.hits[termSel.i]) drawTermFrame(termSel.hits[termSel.i]);
 }
 
+// the blue frame belongs to the original it was found in: a new original (or folder) forgets the search
+function resetTermSearch() {
+  termSel.key = null;
+  termSel.hits = [];
+  termSel.i = -1;
+  viewers.orig.list.querySelectorAll(".tlbox").forEach((n) => n.remove());
+}
+
 function drawTermFrame(h) {
   viewers.orig.list.querySelectorAll(".tlbox").forEach((n) => n.remove());
   const pageEl = viewers.orig.list.children[h.page - 1];
@@ -992,6 +1001,14 @@ function textPanelHtml() {
 function selectBox(key) {
   boxes.selKey = key;
   drawBoxes();
+}
+
+// a row of the black boxes or of the typed texts: select its box and centre the anonymized pane on it, as a click
+// on a replaced value centres the original (locateTerm)
+function focusBox(key) {
+  const e = boxEntries().find((x) => x.key === key);
+  selectBox(key);
+  if (e) centerOn("anon", e);
 }
 
 function setBoxTool(on) {
@@ -1701,7 +1718,7 @@ $("#cfgTable").addEventListener("click", (ev) => {
   const t = ev.target;
   if (t.dataset && t.dataset.bdel) { ev.stopPropagation(); return deleteBox(t.dataset.bdel); }
   const row = t.closest && t.closest(".brow");
-  if (row) { selectBox(row.dataset.bkey); return; }
+  if (row) { focusBox(row.dataset.bkey); return; }
   if (t.classList.contains("gchk")) { ev.stopPropagation(); return; }    // do not fold the group
   if (t.classList.contains("edel")) {                         // removed by hand: flagged, kept out of the next scan
     const e = state.model.entries[+t.closest(".erow").dataset.i];
@@ -1806,7 +1823,8 @@ function updateToolbar() {
     : "Scan this folder, then anonymize it right away, without reviewing the new config in between";
   $("#btnBoth").disabled = state.running || (!n && !batch);
   $("#btnScan").disabled = state.running || (!n && !batch);
-  $("#btnSave").disabled = state.running || !state.hasConfig || !state.dirty;
+  const scanning = state.running && !state.runKeepsConfig;    // a scan rewrites the config when it ends: no save meanwhile
+  $("#btnSave").disabled = scanning || !state.hasConfig || !state.dirty;
   $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
   const cur = currentOriginalNode();                          // either file of the pair works
   $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur;
@@ -1869,6 +1887,7 @@ async function runJob(kind, url, body, label, opts = {}) {
   let started;
   try { started = await post(url, body); } catch (e) { alert(e.message); return null; }
   state.running = true;
+  state.runKeepsConfig = kind === "anonymize" || !!opts.keepsConfig;   // a scan writes the config when it ends
   updateToolbar();
   setStatus(label + "…", "busy");
   showProgress({ done: 0, total: 0 });
@@ -1886,6 +1905,7 @@ async function runJob(kind, url, body, label, opts = {}) {
     if (j.status !== "running") { last = j; break; }
   }
   state.running = false;
+  state.runKeepsConfig = false;
   if (last) showProgress(last.progress);
   if (last && last.status === "done") setStatus(label + ": done", "ok");
   else setStatus(label + ": failed", "err");
@@ -2025,7 +2045,7 @@ async function runBatch(action) {
   const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify,
     quality_offset: state.app.qualityOffset || 0 },
     { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize",
-      scan_anonymize: "Batch scan & anonymize" }[action]);
+      scan_anonymize: "Batch scan & anonymize" }[action], { keepsConfig: action === "anonymize" });
   if (r && r.status === "done" && action !== "scan") pendingBoxes.clear();      // every file of the batch is regenerated
   await loadTree();
   await loadConfig();
