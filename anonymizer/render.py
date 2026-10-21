@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from . import morph
+from . import morph, quality
 from .pii import fitz
 
 # ---------------------------------------------------------------------------
@@ -728,27 +728,37 @@ def scan_text_layout(original: str, new: str, box, bold: bool = False, face=None
     return font, xy, sx
 
 
-def stretch_layout(text: str, box, bold: bool = False):
+def stretch_layout(text: str, box, bold: bool = False, face=None):
     """Scan: font, baseline and horizontal scale so that `text` fills the box (a hand-typed text: the box is the size of
-    the text, the text stretches to it). Height: the ink fills the box, with a small margin."""
+    the text, the text stretches to it). Height: the ink fills the box, with a small margin. `face`: a
+    fontmatch.Face (the font of the page), else Arial."""
     x0, y0, x1, y1 = box
     h = max(y1 - y0, 4)
     pad = max(h * 0.06, 1.0)
-    asc, desc = load_font(100, bold).getmetrics()
+    load = _loader(face, bold)
+    asc, desc = load(100).getmetrics()
     size = max(int(100 * (h - 2 * pad) / max(asc + desc, 1)), 6)
-    font = load_font(size, bold)
+    font = load(size)
     asc, _ = font.getmetrics()
     sx = max(x1 - x0 - 2 * pad, 1) / max(font.getlength(text), 1)
     return font, (x0 + pad, y0 + pad + asc), sx
 
 
-def paint_text_box(img, box, text: str, ink, bold: bool = False):
+def paint_text_box(img, box, text: str, ink, bold: bool = False, face=None, q=None, key=None):
     """Scan: the box is painted with the paper colour around it, then the typed text is written in it, stretched,
-    in `ink` (the colour of the text it replaces, see ink_color)."""
+    in `ink` (the colour of the text it replaces, see ink_color). `face` (fontmatch.Face) and `q` (quality.Quality):
+    the font and the quality of the page, as for the replacements (None: Arial, sharp, as before)."""
     x = [int(round(v)) for v in box]
-    ImageDraw.Draw(img).rectangle(x, fill=background_color(img, x))
-    font, xy, sx = stretch_layout(text, box, bold)
-    write_text(img, xy, text, font, tuple(ink), sx)
+    paper = background_color(img, x)
+    if q is not None:
+        quality.erase(img, x, paper, q, ("text", key))
+    else:
+        ImageDraw.Draw(img).rectangle(x, fill=paper)
+    font, xy, sx = stretch_layout(text, box, bold, face)
+    if q is not None:
+        quality.paint(img, text, font, xy, sx, tuple(ink), q, ("text", key))
+    else:
+        write_text(img, xy, text, font, tuple(ink), sx)
 
 
 def style_rgb(style: dict | None) -> tuple:
@@ -817,15 +827,27 @@ def _mrz_font(char_w: float):
     return ImageFont.truetype(path, max(int(round(100 * char_w / adv)), 6))
 
 
+def tilted_face(gray: np.ndarray, text: str, box, bold_hint: bool = False):
+    """The font of a value written at an angle, measured in the patch turned straight (`gray`, the value's ink in `box`):
+    the page's measures skip slanted words, their OCR box is not their ink. None when it cannot be measured."""
+    from . import fontmatch
+
+    text = (text or "").strip()
+    if not text:
+        return None
+    box = tuple(float(v) for v in box)
+    pf = fontmatch.PageFonts(gray, [{"text": text, "box": box, "line": ("tilted", 0)}])
+    return pf.face_for(box, bold_hint)[0]
+
+
 def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: bool, blackbox: bool, look=None,
-                 key=None):
+                 key=None, match_font: bool = True):
     """A word written at an angle: turned straight in a patch of the page, erased and rewritten there (`new`, or
     nothing), then turned back. Only the pixels of the erased area are pasted back, the rest of the page is kept.
-    `look` (fontmatch.Look): the font and the quality to write with (None = Arial, sharp).
+    `look` (fontmatch.Look): the font and the quality to write with (None = Arial, sharp). Its face is None for a
+    slanted value (the page's measures skip it): the font is then measured in the straightened patch (`match_font`:
+    the font matching is on).
     Returns the area changed on the page (x0, y0, x1, y1), in pixels."""
-    from . import quality
-
-    from PIL import ImageDraw
 
     x0, y0, x1, y1 = (int(round(v)) for v in box)
     m = int(0.3 * max(x1 - x0, y1 - y0)) + 10
@@ -859,7 +881,10 @@ def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: boo
             d.rectangle(t, fill=paper)
         if new:
             # never wider than the original value: a longer replacement is written smaller, not over the next field
-            font, xy, sx = scan_text_layout(original, new, t, bold, look.face if look is not None else None)
+            face = look.face if look is not None else None
+            if look is not None and face is None and match_font:
+                face = tilted_face(gray.astype(np.uint8), original, t, bold)       # before it was erased
+            font, xy, sx = scan_text_layout(original, new, t, face.bold if face is not None else bold, face)
             if q is not None:
                 quality.paint(turned, new, font, xy, sx, ink, q, key)
             else:
@@ -931,8 +956,10 @@ def _erase_ink(img, zone, h: float):
     img.paste(Image.fromarray(np.dstack(bands).astype(np.uint8)), box)
 
 
-def draw_mrz(img, draw, info: dict, zone: tuple, lines: list[str]):
-    """Erase the old MRZ text (paper colour, see _erase_ink) and write the new lines at the old positions."""
+def draw_mrz(img, draw, info: dict, zone: tuple, lines: list[str], q=None, key=None):
+    """Erase the old MRZ text (paper colour, see _erase_ink) and write the new lines at the old positions. `q`
+    (quality.Quality): the blur, spread and grain of the page, so the lines are not sharper than the card around them
+    (None: crisp, as before)."""
     ink = ink_color(img, info["lines"][0])                  # before the old text is erased
     _erase_ink(img, zone, info["height"])
     font = _mrz_font(info["char_w"])
@@ -940,7 +967,10 @@ def draw_mrz(img, draw, info: dict, zone: tuple, lines: list[str]):
     pitch = (info["lines"][1][3] - info["lines"][0][3]) if len(info["lines"]) > 1 else 1.8 * h
     for i, text in enumerate(lines):
         baseline = info["lines"][0][3] + i * pitch
-        draw.text((info["x"], baseline), text, font=font, anchor="ls", fill=ink)
+        if q is not None:
+            quality.paint(img, text, font, (info["x"], baseline), 1.0, ink, q, ("mrz", key, i))
+        else:
+            draw.text((info["x"], baseline), text, font=font, anchor="ls", fill=ink)
 
 
 def ink_color(img, box):
@@ -1009,6 +1039,75 @@ def ink_start(img, box) -> float:
     if (b - a) <= 0.6 * text_h and occupancy <= 0.4:          # a colon: narrow, a few rows, a gap after it
         return max(x0, xa + runs[1][0] - 1.0)
     return x0
+
+
+TAIL_REACH = 0.8        # how far a tail may reach beyond a value's box, in text heights
+TAIL_MAX = 0.35         # ... and how much ink it may hold, as a share of the box (more is a structure, not a tail)
+
+
+def _long_runs(mask: np.ndarray, length: int) -> np.ndarray:
+    """The pixels of `mask` that lie in a horizontal run of at least `length` pixels (a ruled line)."""
+    out = np.zeros_like(mask)
+    d = np.diff(np.pad(mask, ((0, 0), (1, 1))).astype(np.int8), axis=1)
+    ys, starts = np.nonzero(d == 1)
+    _, ends = np.nonzero(d == -1)
+    for y, a, b in zip(ys, starts, ends):
+        if b - a >= length:
+            out[y, a:b] = True
+    return out
+
+
+def ink_tail(gray: np.ndarray, box, others=()):
+    """The ink that belongs to a value's letters but lies outside its (padded) box: the tail of a descender or an
+    ascender that the OCR box cut (a Garamond 'J' goes far below its baseline). Ink connected to the ink inside `box`,
+    growing at most TAIL_REACH text heights, never into `others` (boxes of the other words, of photos, of codes): a
+    line below or a frame that the tail touches is not part of it, and a growth that holds too much ink (a ruled line
+    or a frame reached through the tail) is dropped. Returns (x0, y0, mask) with the mask of the tail pixels (True =
+    erase), or None when there is no tail. Numpy only."""
+    from . import morph
+
+    x0, y0, x1, y1 = (int(round(v)) for v in box)
+    h = max(y1 - y0, 4)
+    reach = max(int(TAIL_REACH * h), 3)
+    H, W = gray.shape
+    ax0, ay0, ax1, ay1 = max(x0 - reach, 0), max(y0 - reach, 0), min(x1 + reach, W), min(y1 + reach, H)
+    if ax1 - ax0 < 4 or ay1 - ay0 < 4:
+        return None
+    win = gray[ay0:ay1, ax0:ax1].astype(float)
+    paper = np.percentile(win, 85)
+    ink = win < paper - 60
+    lines = _long_runs(ink, 3 * h) | _long_runs(ink.T, 3 * h).T       # ruled lines and frames are not letters
+    ink &= ~lines
+    inside = np.zeros_like(ink)
+    inside[max(y0 - ay0, 0):max(y1 - ay0, 0), max(x0 - ax0, 0):max(x1 - ax0, 0)] = True
+    for ox0, oy0, ox1, oy1 in others:
+        ink[max(int(oy0) - ay0, 0):max(int(oy1) - ay0, 0), max(int(ox0) - ax0, 0):max(int(ox1) - ax0, 0)] &= inside[
+            max(int(oy0) - ay0, 0):max(int(oy1) - ay0, 0), max(int(ox0) - ax0, 0):max(int(ox1) - ax0, 0)]
+    grown = ink & inside
+    if not grown.any():
+        return None
+    for _ in range(reach):                                   # ink connected to the ink of the box, step by step
+        bigger = (morph.square_max(grown.astype(np.uint8), 3) > 0) & ink
+        if np.array_equal(bigger, grown):
+            break
+        grown = bigger
+    tail = grown & ~inside
+    if not tail.any() or tail.sum() > TAIL_MAX * max((x1 - x0) * (y1 - y0), 1):
+        return None
+    return ax0, ay0, (morph.square_max(tail.astype(np.uint8), 3) > 0) & ~inside      # + the soft edge of the strokes
+
+
+def erase_tail(img, tail, paper, q=None, key=None):
+    """Paint the pixels of an ink tail (see ink_tail) with the paper colour, and the grain of the paper when the
+    quality is matched (`q`)."""
+    x0, y0, mask = tail
+    h, w = mask.shape
+    patch = np.empty((h, w, 3))
+    patch[:] = paper
+    if q is not None:
+        patch += quality.noise((h, w), q, ("tail", key))[..., None]
+    img.paste(Image.fromarray(np.clip(np.round(patch), 0, 255).astype(np.uint8)), (x0, y0),
+              Image.fromarray(mask.astype(np.uint8) * 255))
 
 
 def background_color(img, box):

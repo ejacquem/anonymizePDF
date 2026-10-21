@@ -437,7 +437,9 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   is not covered.
 - Typed texts (`render.paint_text_box_pdf`, `paint_text_box`): the box is removed (redaction filled with the paper
   colour, then a rectangle of the same colour for the lines), the text is written with its height filled by the box and
-  its width stretched to the box (`morph`, or a mask resized on scans). Scans: `stretch_layout` / `write_text`.
+  its width stretched to the box (`morph`, or a mask resized on scans). Scans: `stretch_layout` / `write_text`; the
+  text takes the font of the words under its box (`PageFonts.face_for`, font_match on) and the page's quality with the
+  grain of the box (quality_match on), else Arial, sharp, as before (`render.paint_text_box(face=, q=)`).
 - Scans, the value's box: a word only partly covered is cut by the Arial widths of its characters (`pii._advance`,
   `match_boxes`). `render.ink_start` skips a colon-like first mark only (narrow, a few rows of the text height, a gap
   after it), so a colon before the value is not counted; a letter is never skipped (an 'A' keeps its foot and is
@@ -453,12 +455,16 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
 - MRZ (`draw_mrz`): OCR-B if installed, else Consolas. The character advance comes from the OCR box of the chevron
   line (`find_mrz`, not from the ink of the page: a card edge next to the MRZ made the text too wide). The old text is
   erased pixel by pixel (`_erase_ink`: dark pixels take the local paper colour), never with a flat rectangle, then the
-  new lines are written with the same ink colour.
+  new lines are written with the same ink colour, and with the page's quality (blur, spread, grain of the area around
+  the zone: `engine.page_quality`, `render.draw_mrz(q=)`) when the quality is matched, so they are not sharper than the
+  card. `mrz_typed_quality_tests`.
 
 ## 10b. Font and quality of scanned text (`fontmatch.py`, `quality.py`; plan and results: docs/font_matching.md)
 
 - Candidates (`fontmatch.CATALOG`): Windows fonts (font folders, no admin) + `anonymizer/fonts`; a family not found
-  is skipped. A Face = family + bold (+ file).
+  is skipped. A Face = family + bold (+ file). The italics are families of their own ('Arial Italic' = ariali.ttf /
+  arialbi.ttf), 14 of them where the files exist: a slanted word takes an italic face and its fake is written slanted
+  (`italic_tests`). They make 74 faces instead of 46 on a computer with all the Windows fonts.
 - Font of a word (`word_scores`): the OCR text rendered in every face (`template`, 64 px, cut to its ink), compared
   with the ink of the word (`ink_crop`) at 24 px high: correlation of the shapes minus 1.6 x |log width ratio|. A face
   far too wide / narrow (0.35) is not compared (`WIDTH_PRUNE`). Once the page quality is known the candidates are
@@ -500,8 +506,16 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   corrected by `quality.adjust` before painting. Below 0, per 0.1: +0.2 px blur, +1 grain level, -5 % resolution;
   above 0 the blur, grain and spread shrink in proportion and the resolution comes back; +1 = sharp. 0 = as detected.
   Test: `quality_offset_tests`.
-- Slanted words (|angle| >= TILT_MIN) are not measured (their OCR box is not their ink): a slanted value is Arial with
-  the page quality (`page_fonts(skip=)`).
+- Slanted words (|angle| >= TILT_MIN) are not measured on the page (their OCR box is not their ink, `page_fonts(skip=)`):
+  a slanted value takes the page quality, and its font is measured in the patch `paint_tilted` turns straight
+  (`render.tilted_face`: the value's text and its ink box in that patch, a PageFonts of one word), Arial when it cannot
+  be measured or when the font matching is off (`tilted_font_tests`).
+- Ink tails (`render.ink_tail`, `erase_tail`): the OCR box can cut a descender or an ascender (the tail of a Garamond
+  'J' goes far below its baseline) and a dot was left under the replacement. The ink connected to the ink inside the
+  value's padded box is found by growing it (numpy, at most 0.8 text heights), never into the other words (the parts of
+  the value's own word on both sides of it count as other words: `engine._beside`) or the black boxes, never through a
+  ruled line (runs of ink longer than 3 text heights are not letters), and dropped when it holds more than a third
+  of the box in ink. Erased with the paper colour (and its grain). `ink_tail_tests`.
 - A word only partly covered by a value is cut by the widths of its measured font (`PageFonts.advance` ->
   `pii.match_boxes(advance=)`), not Arial's (a monospaced e-mail cut like Arial left pieces of letters).
 - Pictures of digital pages (`_pixel_pass`): the same looks; every value is erased on a copy of the page image, the
@@ -521,8 +535,7 @@ missing accents and a space inside a number. Overlaps: longer match wins, terms 
   2.4 % on the 23 name words of Dossier Test 17 (`name_width_tests`). Cost: the scan of Dossier Test 17 takes
   ~9 s more (names in 16 fonts on 3 pages).
 - Limits: close look-alikes are mixed up on soft copies (Arial / Roboto, Courier New / Courier Prime, DejaVu Sans
-  Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; italics are not candidates;
-  ~0.1-0.3 s per value.
+  Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; ~0.1-0.3 s per value.
 
 ## 11. Identity documents: MRZ, photos, QR codes, signatures
 
@@ -639,6 +652,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Detectors (`detector_tests`, no OCR): the strings the real files showed ('MONSIEUR' is no BIC, capitalised cities,
   Swiss VAT, apostrophe references and amounts, 'Code SWIFT' not a name, identity by shape).
 - `KEEP`: values that must stay readable in a digital output (no over-redaction), e.g. 'MONSIEUR'.
+- Scan rendering (`name_width_tests`, `tilted_font_tests`, `mrz_typed_quality_tests`, `ink_tail_tests`, `italic_tests`):
+  see section 10b.
 - Text of scans in sentences (`scan_text_tests`, no OCR: punctuation, line cuts, filling, 'i\venue', a phone over a
   line break, 'Nlonsieur'; `contract_tests`, the insurance contract: no leftover / suspect, every word of every value
   in the weight of the word it replaced, letters of the line's size on the turned pages, ink as dark).

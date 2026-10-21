@@ -1546,7 +1546,7 @@ def speedup_tests():
                     best = (c, k, top)
         return (best[1], best[2]) if best else None
 
-    from PIL import ImageDraw
+    from PIL import Image, ImageDraw
     pairs = 0
     agree = 0
     for family, text, size, soft in (("Arial", "Jacquemin", 44, 0.0), ("Georgia", "Vermeulen", 52, 1.2),
@@ -1697,7 +1697,7 @@ def font_unit_tests():
 
     # the grainy erase covers exactly what the flat rectangle covered (nothing of the value is left at an edge)
     import random as _random
-    from PIL import ImageDraw
+    from PIL import Image, ImageDraw
     rnd, same = _random.Random(1), True
     for _ in range(200):
         x0, y0 = rnd.uniform(-5, 50), rnd.uniform(-5, 25)
@@ -2049,6 +2049,182 @@ def name_width_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def tilted_font_tests():
+    """A value written at an angle takes the font measured in the patch turned straight (it was Arial: the page's
+    measures skip slanted words), also the weight."""
+    print("\n== font of slanted text")
+    from PIL import Image, ImageDraw
+    from anonymizer import fontmatch, quality, render
+
+    for family, kind in (("Georgia", "serif"), ("Courier New", "mono"), ("Verdana", "sans")):
+        face = fontmatch.face(family)
+        if face is None:
+            continue
+        layer = Image.new("RGBA", (520, 120), (0, 0, 0, 0))
+        ImageDraw.Draw(layer).text((20, 90), "Vermeulen", font=face.font(74), anchor="ls", fill=(25, 25, 25, 255))
+        rot = layer.rotate(-7, resample=Image.BICUBIC, expand=True)
+        page = Image.new("RGB", (900, 320), (238, 236, 228))
+        page.paste(rot, (150, 60), rot)
+        a = np.asarray(rot)[:, :, 3] > 40
+        ys, xs = np.nonzero(a)
+        box = (150 + xs.min(), 60 + ys.min(), 150 + xs.max(), 60 + ys.max())
+        look = fontmatch.Look(None, 0.0, quality.SHARP)
+        seen = []
+        real = render.tilted_face
+        render.tilted_face = lambda *a_, **k_: (seen.append(real(*a_, **k_)), seen[-1])[1]
+        try:
+            render.paint_tilted(page.copy(), box, 7.0, "Vermeulen", "Dewulf", (25, 25, 25), False, False, look, ("t", 1), True)
+            n_on = len(seen)
+            render.paint_tilted(page.copy(), box, 7.0, "Vermeulen", "Dewulf", (25, 25, 25), False, False, look, ("t", 1), False)
+        finally:
+            render.tilted_face = real
+        got = seen[0] if seen else None
+        check(f"slanted {family}: the font is measured in the patch turned straight ({got.family if got else None})",
+              got is not None and got.kind == kind, str(got))
+        check(f"slanted {family}: font matching off -> not measured", len(seen) == n_on)
+
+
+def mrz_typed_quality_tests():
+    """The rebuilt MRZ and the typed texts are written with the quality of the page (blur, grain) and, for a typed text,
+    the font of the words under it. With the quality off they are exactly what they were: crisp, Arial."""
+    print("\n== MRZ and typed texts: quality and font of the page")
+    from PIL import Image, ImageDraw
+    from anonymizer import fontmatch, quality, render
+
+    def paper():
+        img = Image.new("RGB", (640, 220), (232, 230, 220))
+        ImageDraw.Draw(img).text((20, 60), "ABCDEFGHIJ0123456789<<<<<<<<<<", font=render._mrz_font(14.0), anchor="ls", fill=(30, 30, 30))
+        return img
+
+    info = {"lines": [(20, 40, 450, 60), (20, 70, 450, 90)], "height": 20, "char_w": 14.0, "x": 20}
+    zone = (10, 30, 620, 100)
+    lines = ["P<FRALEFEVRE<<CAMILLE<HELENE<<<<<<<<<<<<<<<", "21CK48329FRA9205141F3102085<<<<<<<<<<<<<<06"]
+
+    def sharpness(img, box):
+        g = np.asarray(img.convert("L")).astype(float)[box[1]:box[3], box[0]:box[2]]
+        return float(np.abs(np.diff(g, axis=1)).mean())
+
+    crisp, soft = paper(), paper()
+    render.draw_mrz(crisp, ImageDraw.Draw(crisp), info, zone, lines)
+    q = quality.Quality(scale=1.0, blur=1.6, spread=0.0, grain=4.0)
+    render.draw_mrz(soft, ImageDraw.Draw(soft), info, zone, lines, q, 1)
+    old = paper()                                      # what draw_mrz did before: erase, then draw the text with PIL
+    ink = render.ink_color(old, info["lines"][0])
+    render._erase_ink(old, zone, info["height"])
+    for i, text in enumerate(lines):
+        ImageDraw.Draw(old).text((20, 60 + i * 30), text, font=render._mrz_font(14.0), anchor="ls", fill=ink)
+    check("MRZ: without a quality it is written as before, crisp", np.array_equal(np.asarray(crisp), np.asarray(old)))
+    s_crisp, s_soft = sharpness(crisp, (10, 30, 620, 100)), sharpness(soft, (10, 30, 620, 100))
+    check(f"MRZ: with the page quality it is softer ({s_crisp:.1f} -> {s_soft:.1f} mean edge)", s_soft < 0.85 * s_crisp)
+    again = paper()
+    render.draw_mrz(again, ImageDraw.Draw(again), info, zone, lines, q, 1)
+    check("MRZ: a rerun gives the same pixels (the grain is seeded)", np.array_equal(np.asarray(soft), np.asarray(again)))
+
+    georgia = fontmatch.face("Georgia")
+    box = (40, 120, 330, 170)
+    a, b, c = paper(), paper(), paper()
+    render.paint_text_box(a, box, "Jean Dupont", (30, 30, 30))
+    render.paint_text_box(b, box, "Jean Dupont", (30, 30, 30), False, georgia, q, (1, 0))
+    expected = paper()
+    ImageDraw.Draw(expected).rectangle([int(round(v)) for v in box], fill=render.background_color(expected, [int(round(v)) for v in box]))
+    font, xy, sx = render.stretch_layout("Jean Dupont", box, False)
+    render.write_text(expected, xy, "Jean Dupont", font, (30, 30, 30), sx)
+    check("typed text: without a font or a quality it is written as before (Arial, sharp)", np.array_equal(np.asarray(a), np.asarray(expected)))
+    if georgia is not None:
+        check("typed text: with the page's font and quality it is different (and softer)",
+              not np.array_equal(np.asarray(a), np.asarray(b)) and sharpness(b, box) < sharpness(a, box))
+    render.paint_text_box(c, box, "Jean Dupont", (30, 30, 30), False, georgia, q, (1, 0))
+    check("typed text: a rerun gives the same pixels", np.array_equal(np.asarray(b), np.asarray(c)))
+
+
+def ink_tail_tests():
+    """A descender or an ascender that the OCR box cut (the tail of a Garamond 'J') is erased with the value; the line
+    below, a ruled line and the rest of a word are not touched."""
+    print("\n== ink tails")
+    from PIL import Image, ImageDraw
+    from anonymizer import fontmatch, render
+
+    face = fontmatch.face("Garamond")
+    if face is None:
+        print("  (Garamond not installed: skipped)")
+        return
+    f = face.font(96)
+    base = 140
+    page = Image.new("RGB", (700, 330), (238, 236, 228))
+    d = ImageDraw.Draw(page)
+    d.text((40, base), "Jules", font=f, anchor="ls", fill=(25, 25, 25))
+    d.text((40, base + 100), "Prochaine ligne", font=f, anchor="ls", fill=(25, 25, 25))
+    bb = d.textbbox((40, base), "Jules", font=f, anchor="ls")
+    gray = np.asarray(page.convert("L"))
+    box = (bb[0] - 3, base + f.getbbox("J", anchor="ls")[1] - 3, bb[2] + 3, base + 3)          # the OCR box + the pad
+    others = [(30, base + 40, 640, base + 130)]
+    tail = render.ink_tail(gray, box, others)
+    check("tail: the J descender below the box is found", tail is not None and int(tail[2].sum()) > 20)
+    img = page.copy()
+    render.erase_tail(img, tail, (238, 236, 228))
+    after = np.asarray(img.convert("L"))
+    x0, y0, x1, y1 = (int(v) for v in box)
+    left = int((after[y1 + 1:base + 40, x0:x1] < 128).sum())
+    was = int((gray[y1 + 1:base + 40, x0:x1] < 128).sum())
+    check(f"tail: no ink of the value is left under the box ({was} -> {left} dark pixels)", was > 20 and left == 0)
+    check("tail: the line below is untouched", np.array_equal(after[base + 40:base + 140], gray[base + 40:base + 140]))
+    check("tail: the letters inside the box are untouched", np.array_equal(after[y0:y1, x0:x1], gray[y0:y1, x0:x1]))
+    # the rest of a word that touches the value is not a tail
+    page2 = Image.new("RGB", (700, 200), (238, 236, 228))
+    ImageDraw.Draw(page2).text((40, base - 30), "Jules-Dupont", font=f, anchor="ls", fill=(25, 25, 25))
+    bb2 = ImageDraw.Draw(page2).textbbox((40, base - 30), "Jules", font=f, anchor="ls")
+    box2 = (bb2[0] - 3, base - 30 + f.getbbox("J", anchor="ls")[1] - 3, bb2[2] + 3, base - 30 + 3)
+    g2 = np.asarray(page2.convert("L"))
+    word = (bb2[0], box2[1], bb2[0] + int(f.getlength("Jules-Dupont")), base - 30 + 25)
+    rest = [r for r in engine._beside(word, (bb2[0], box2[1], bb2[2], base - 30 + 5))]
+    t2 = render.ink_tail(g2, box2, rest)
+    check("tail: the rest of the word ('-Dupont') is not taken for a tail",
+          t2 is None or not t2[2][:, int(bb2[2]) + 12 - t2[0]:].any())
+    # a ruled line that crosses the tail is not erased
+    page3 = page.copy()
+    ImageDraw.Draw(page3).line((10, base + 20, 690, base + 20), fill=(25, 25, 25), width=3)
+    g3 = np.asarray(page3.convert("L"))
+    t3 = render.ink_tail(g3, box, others)
+    img3 = page3.copy()
+    if t3 is not None:
+        render.erase_tail(img3, t3, (238, 236, 228))
+    a3 = np.asarray(img3.convert("L"))
+    check("tail: a ruled line crossing the value is kept", np.array_equal(a3[base + 19:base + 23, 100:600], g3[base + 19:base + 23, 100:600]))
+
+
+def italic_tests():
+    """Italic faces are candidates of the font matching: a slanted word takes an italic face, an upright one does not."""
+    print("\n== italic faces")
+    from PIL import Image, ImageDraw
+    from anonymizer import fontmatch
+
+    names = {f.family for f in fontmatch.faces()}
+    have = [n for n in ("Arial Italic", "Georgia Italic", "Verdana Italic") if n in names]
+    check("italic: the italic families of the catalog are found on this computer", len(have) >= 2, str(sorted(names)))
+    hits = tries = 0
+    upright = 0
+    for fam in ("Arial", "Georgia", "Verdana", "Times New Roman"):
+        for italic in (False, True):
+            f = fontmatch.face(fam + (" Italic" if italic else ""))
+            if f is None:
+                continue
+            page = Image.new("L", (600, 120), 238)
+            ImageDraw.Draw(page).text((20, 85), "Vermeulen Hendrickx", font=f.font(60), anchor="ls", fill=30)
+            g = np.asarray(page)
+            word = {"text": "Hendrickx", "box": (20 + f.font(60).getlength("Vermeulen "), 30, 20 + f.font(60).getlength("Vermeulen Hendrickx"), 95)}
+            got = fontmatch.word_scores(g, word)
+            if not got:
+                continue
+            best = max(got[0], key=got[0].get)
+            if italic:
+                tries += 1
+                hits += best.family.endswith("Italic")
+            else:
+                upright += not best.family.endswith("Italic")
+    check(f"italic: a slanted word takes an italic face ({hits}/{tries})", tries >= 3 and hits >= tries - 1)
+    check("italic: an upright word does not", upright >= 3)
+
+
 def quality_offset_tests():
     """The 'Fake text quality' app setting: the detected quality corrected by an offset (-1 .. +1). 0 changes nothing,
     below 0 the fakes get softer / grainier / coarser, above 0 cleaner, +1 fully sharp; a run records it."""
@@ -2160,7 +2336,7 @@ GROUPS = [
     "split_word_tests", "colon_tests", "street_name_tests", "second_pass_tests", "suspect_suggestion_tests",
     "first_letter_tests", "account_and_street_names_tests", "manual_text_tests", "rotated_tests", "town_tests",
     "speedup_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
-    "name_width_tests",
+    "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests"}     # left out by --fast

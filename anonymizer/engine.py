@@ -17,6 +17,7 @@ import re
 import random
 import time
 from collections import defaultdict
+from dataclasses import replace
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -975,6 +976,29 @@ def page_looks(img, pf, plan, cfg: dict, bold_of, covered=()) -> list:
     return out
 
 
+def page_quality(pf, cfg: dict):
+    """The quality (blur, spread, resolution) the page's text is written with, for what is not a replacement of a
+    value: the MRZ and the typed texts. None when the quality is not matched (crisp, as before)."""
+    style = cfg["style"]
+    if pf is None or not style["quality_match"]:
+        return None
+    q = pf.page_quality()
+    return quality.adjust(q, style["quality_offset"]) if style.get("quality_offset") else q
+
+
+def _beside(word, value) -> list:
+    """What of an OCR word is not the value `value` (boxes in pixels): the whole word when they do not overlap, else the
+    parts of the word to the left and to the right of the value (the rest of 'marc.lejeune@gmail.com')."""
+    if not (min(word[2], value[2]) > max(word[0], value[0]) and min(word[3], value[3]) > max(word[1], value[1])):
+        return [word]
+    out = []
+    if word[0] < value[0]:
+        out.append((word[0], word[1], value[0], word[3]))
+    if word[2] > value[2]:
+        out.append((value[2], word[1], word[2], word[3]))
+    return out
+
+
 def _inside(box, areas) -> bool:
     cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     return any(a[0] <= cx <= a[2] and a[1] <= cy <= a[3] for a in areas)
@@ -1534,6 +1558,14 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
         ink = look.ink if look is not None and look.quality is not None and look.ink else render.ink_color(img, boxes[0])
         looks.append((ink, is_bold, look))
     n_bold = sum(1 for look in looks if look[1])
+    # the MRZ and the typed texts are written like the page: its quality (with the grain around each), the font of the
+    # words under a typed box
+    page_q = page_quality(pf, cfg)
+    mrz_q = replace(page_q, grain=quality.grain(gray, zone)) if page_q is not None and zone else None
+    typed_looks = []
+    for box, _ in typed:
+        face = pf.face_for(box)[0] if pf is not None and cfg["style"]["font_match"] else None
+        typed_looks.append((face, replace(page_q, grain=quality.grain(gray, box)) if page_q is not None else None))
     fonts_used: dict = {}
     for k, ((m, boxes), (ink, is_bold, look)) in enumerate(zip(plan, looks)):
         face = look.face if look is not None else None
@@ -1553,7 +1585,8 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             angle = _angle_at(angles, b)
             key = (pno, k, i)                       # seeds the grain: the same file on every run
             if abs(angle) >= TILT_MIN:             # a slanted word: written and erased in its own frame
-                changed.append(render.paint_tilted(img, b, angle, m.value, part, ink, is_bold, blackbox, look, key))
+                changed.append(render.paint_tilted(img, b, angle, m.value, part, ink, is_bold, blackbox, look, key,
+                                                   cfg["style"]["font_match"]))
                 continue
             b = (render.ink_start(img, b), b[1], b[2], b[3])        # the value starts at its first glyph, not a colon
             box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
@@ -1562,6 +1595,11 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                 quality.erase(img, box, fill, q, key)          # the paper colour, with the grain of the scan
             else:
                 draw.rectangle(box, fill=fill)
+            # a descender or an ascender the OCR box cut (the tail of a Garamond 'J') is ink of the value too
+            others = covered + [r for w in words for r in _beside(w["box"], b)]
+            tail = render.ink_tail(gray, box, others)
+            if tail is not None:
+                render.erase_tail(img, tail, fill, q, key)
             _note(extras, pno, [v * 72 / 300 for v in box], "scan match (" + ("replaced" if part else "removed") + ")",
                   m.value, part, described if part else "")
             changed.append(box)
@@ -1580,7 +1618,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                         "box": _pt_box(changed), "placed": not blackbox and any(parts)})
     if mrz:
         lines = _new_mrz(words, mrz, cfg)
-        render.draw_mrz(img, draw, mrz, zone, lines)
+        render.draw_mrz(img, draw, mrz, zone, lines, mrz_q, pno)
         _note(extras, pno, [v * 72 / 300 for v in zone], "MRZ zone erased and rebuilt (scan)")
         extras["mrz"].append({"page": pno, "action": "regenerated", "format": mrz["format"], "lines": lines})
         log(f"   page {pno}: machine readable zone (MRZ, {mrz['format']}) regenerated")
@@ -1593,8 +1631,9 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     if photos or codes or signs or manual:
         log(f"   page {pno}: blacked out {len(photos)} photo(s), {len(codes)} QR code(s), {len(signs)} signature(s), "
             f"{len(manual)} box(es) drawn by hand")
-    for (box, text), ink in zip(typed, typed_inks):                     # typed by hand: painted over the page
-        render.paint_text_box(img, box, text, ink)
+    for k, ((box, text), ink) in enumerate(zip(typed, typed_inks)):     # typed by hand: painted over the page
+        face, q = typed_looks[k]
+        render.paint_text_box(img, box, text, ink, face.bold if face is not None else False, face, q, (pno, k))
     log(f"   page {pno}/{n_pages} (scan): OCR {len(words)} words, {len(plan)} replacement(s)"
         f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
     if fonts_used:

@@ -256,10 +256,12 @@ regex:                       # optional, your own patterns
 * Digital PDFs: the fake text uses the original font when the PDF or the PC has it, else the closest standard font
   (the Log says which). Scans: the font is recognised among the candidate fonts only (a font that is not on the PC
   nor bundled gets the closest look-alike, e.g. Helvetica -> Arial); on soft copies close fonts can be mixed up
-  (Arial / Roboto, Courier New / Courier Prime). Slanted text is written in Arial (with the scan's quality). A page
-  written entirely in bold can be read as regular text with ink spread. The Log says which fonts were used, the
-  Trace view shows the font and quality of each replacement. Fake names are chosen by number of letters, so a
-  slightly wider name may be drawn a little smaller.
+  (Arial / Roboto, Courier New / Courier Prime). Italic fonts are candidates too, and slanted text takes the font
+  measured once the line is turned straight. A page written entirely in bold can be read as regular text with ink
+  spread. The Log says which fonts were used, the Trace view shows the font and quality of each replacement. On
+  scans the fake names are chosen so that they take about the width of the name they replace in its font (digital
+  PDFs: by number of letters, and a slightly wider name may be drawn a little smaller). The machine readable zone and
+  the texts typed by hand are written with the blur and grain of the scan (and, for typed text, its font).
 * On digital PDFs, an image only partly under a black box stays in the file, with the covered pixels overwritten.
 
 Bundled fonts (`anonymizer/fonts`, used to recognise and rewrite scanned text): DejaVu Sans / Serif (Bitstream Vera

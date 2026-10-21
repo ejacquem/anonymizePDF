@@ -49,6 +49,22 @@ CATALOG = [
     ("Source Sans 3", "sans", ("SourceSans3-Regular.ttf",), ("SourceSans3-Bold.ttf",)),
     ("Barlow", "sans", ("Barlow-Regular.ttf",), ("Barlow-Bold.ttf",)),
     ("Courier Prime", "mono", ("CourierPrime-Regular.ttf",), ("CourierPrime-Bold.ttf",)),
+    # italics: a family of their own ("Arial Italic" is a family whose regular and bold are the italic files), so the
+    # matching tells an upright word from a slanted one; a family whose file is not found is skipped like the others
+    ("Arial Italic", "sans", ("ariali.ttf",), ("arialbi.ttf",)),
+    ("Arial Narrow Italic", "sans", ("arialni.ttf",), ("arialnbi.ttf",)),
+    ("Times New Roman Italic", "serif", ("timesi.ttf",), ("timesbi.ttf",)),
+    ("Calibri Italic", "sans", ("calibrii.ttf",), ("calibriz.ttf",)),
+    ("Cambria Italic", "serif", ("cambriai.ttf",), ("cambriaz.ttf",)),
+    ("Georgia Italic", "serif", ("georgiai.ttf",), ("georgiaz.ttf",)),
+    ("Verdana Italic", "sans", ("verdanai.ttf",), ("verdanaz.ttf",)),
+    ("Segoe UI Italic", "sans", ("segoeuii.ttf",), ("segoeuiz.ttf",)),
+    ("Trebuchet MS Italic", "sans", ("trebucit.ttf",), ("trebucbi.ttf",)),
+    ("Garamond Italic", "serif", ("garait.ttf",), ()),
+    ("Bookman Old Style Italic", "serif", ("bookosi.ttf",), ("bookosbi.ttf",)),
+    ("Century Gothic Italic", "sans", ("gothici.ttf",), ("gothicbi.ttf",)),
+    ("Courier New Italic", "mono", ("couri.ttf",), ("courbi.ttf",)),
+    ("Consolas Italic", "mono", ("consolai.ttf",), ("consolaz.ttf",)),
 ]
 DEFAULT_FAMILY = "Arial"            # the font of the replacements when the matching is off or not sure
 WIDTH_WEIGHT = 1.6                  # weight of the width clue (log of the width ratio) against the shape clue
