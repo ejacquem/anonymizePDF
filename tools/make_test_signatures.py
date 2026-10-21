@@ -3,7 +3,9 @@
   signatures_digital.pdf   digital letter: 6 labelled signatures on page 1 ('Fait à', 'Signature du client', 'Cordialement',
                            'Lu et approuvé', 'Signature du titulaire', 'Pour l'entreprise'), a form with 8 'Signature'
                            boxes over dotted rules on page 2, a typed name with a signature and no label on page 3
-  signatures_scan.pdf      the same pages 1 and 2 as scans (pictures, 200 dpi, no text layer)
+                           and page 4: a grid of one row, 'Le notaire ... a signé' in the left cell and the signature
+                           far to the right, in the other cell; the same without frames ('Signé par ...')
+  signatures_scan.pdf      the same pages 1, 2 and 4 as scans (pictures, 200 dpi, no text layer; 4 is page 3)
 
 signatures_truth.json (written next to the documents) gives every signature: the file, the page, the label next to it
 (or none), whether it has a label that the detector should find, and its box in PDF points, so that tools/check_all.py
@@ -109,6 +111,25 @@ def page_three(doc, rng, truth: list, name: str):
     truth.append({"file": name, "page": 3, "label": None, "labelled": False, "box": [round(v, 1) for v in box]})
 
 
+def page_four(doc, rng, truth: list, name: str):
+    """A grid of one row and two cells: on the left 'Le notaire ... a signé', the signature far to the right, in the
+    other cell; below, the same without frames ('Signé par ...') and the signature at the right of the page."""
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 90), "Acte signé en l'étude", fontsize=12, fontname="helv")
+    for rect in ((60, 160, 300, 240), (300, 160, 535, 240)):
+        page.draw_rect(rect, color=(0.2, 0.2, 0.2), width=0.8)
+    label = "Le notaire Maître Dupont a signé"
+    page.insert_text((70, 205), label, fontsize=10, fontname="helv")
+    box = draw_signature(page, rng, 400, 172, 120, 46)
+    truth.append({"file": name, "page": 4, "label": label, "labelled": True, "box": [round(v, 1) for v in box]})
+    label = "Signé par M. Martin"
+    page.insert_text((72, 400), label, fontsize=10, fontname="helv")
+    box = draw_signature(page, rng, 390, 380, 130, 44)
+    truth.append({"file": name, "page": 4, "label": label, "labelled": True, "box": [round(v, 1) for v in box]})
+    page.insert_text((72, 520), "Ce document est fictif : les signatures et les noms sont inventés.", fontsize=8,
+                     fontname="helv")
+
+
 def to_scan(src: Path, dst: Path, pages: list[int], truth: list, name: str):
     """Scans of some pages: each page is a picture at SCAN_DPI (no text layer), truth boxes turned into the same points."""
     source = fitz.open(src)
@@ -132,14 +153,15 @@ def main():
     page_one(doc, rng, truth, digital.name)
     page_two(doc, rng, truth, digital.name)
     page_three(doc, rng, truth, digital.name)
+    page_four(doc, rng, truth, digital.name)
     doc.save(digital)
     # the scan: pages 1 and 2 (the typed name of page 3 is left out of the scan: its signature has no label anyway)
     scan_name = "signatures_scan.pdf"
-    to_scan(digital, folder / scan_name, [1, 2], [], scan_name)
+    to_scan(digital, folder / scan_name, [1, 2, 4], [], scan_name)
+    scan_page = {1: 1, 2: 2, 4: 3}             # the page 4 of the letter is the page 3 of the scan
     for t in list(truth):                       # a copy: the scan entries are added to the list
-        if t["page"] in (1, 2) and t["file"] == digital.name:
-            scan_truth = dict(t, file=scan_name)
-            truth.append(scan_truth)
+        if t["page"] in scan_page and t["file"] == digital.name:
+            truth.append(dict(t, file=scan_name, page=scan_page[t["page"]]))
     (folder / "signatures_truth.json").write_text(json.dumps(truth, indent=1, ensure_ascii=False), encoding="utf-8")
     print(f"{len(truth)} signature(s) in {folder}")
 

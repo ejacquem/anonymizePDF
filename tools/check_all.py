@@ -1746,6 +1746,24 @@ def signature_tests():
     check("a stroke far from any label belongs to none", regions._owners([(12, 500, 70, 540)], labels, 40) == [None])
     check("a stroke that runs over the foot of a label is that label's", regions._owners([(12, 106, 70, 130)], labels, 40)
           == [0])
+    # a signature in the next cell of a grid: on the label's row, far to its right
+    check("'Le notaire Maître Dupont a signé' is a signature label", regions.is_signature_label("Le notaire Maître Dupont a signé"))
+    check("'Signé par M. Martin' and 'Signed by the client' are signature labels",
+          regions.is_signature_label("Signé par M. Martin") and regions.is_signature_label("Signed by the client"))
+    check("'Les parties ont signé' and 'heeft getekend' are signature labels",
+          regions.is_signature_label("Les parties ont signé") and regions.is_signature_label("De notaris heeft getekend"))
+    check("a sentence about a contract signed is no label",
+          not regions.is_signature_label("Le contrat a été signé le 12 mars par les deux parties")
+          and not regions.is_signature_label("Documents signés et enregistrés"))
+    check("a long sentence with 'a signé' is no label", not regions.is_signature_label(
+        "Après lecture de ce document le client confirme qu'il a signé la proposition en présence de son conseiller"))
+    far = (400, 98, 520, 140)
+    check("a stroke far to the right on the label's row is the label's (row_reach)",
+          regions._owners([far], labels, 40, 400) == [0] and regions._owners([far], labels, 40) == [None])
+    check("a stroke far to the right, a line below, is not on the row", regions._owners([(400, 180, 520, 220)], labels, 40, 400) == [None])
+    check("a stroke further right than the reach is nobody's", regions._owners([(700, 98, 800, 140)], labels, 40, 400) == [None])
+    check("a stroke in a label's own column wins over the row rule",
+          regions._owners([(12, 115, 70, 150)], [{"box": (10, 100, 80, 110)}, {"box": (200, 100, 260, 110)}], 40, 300) == [0])
 
     folder = ROOT / "sample_data" / "Dossier Test 18"
     if not (folder / "signatures_truth.json").exists():

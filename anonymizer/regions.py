@@ -37,6 +37,14 @@ _SIGNATURE_ANCHOR = re.compile(r"(?i)^(cordialement|sinc[èe]rement|bien\s+[àa]
                                r"fait\s+[àa]\b|signé\s+[àa]\b|done\s+at|gedaan\s+te|gelezen\s+en\s+goedgekeurd)")
 
 
+# a line that says who signed ('Le notaire Maître Dupont a signé', 'Signé par M. Martin', 'Signed by the client'): the
+# signature is written next to it, in the cell on its right or under it, without the word 'signature'
+_SIGNED = re.compile(r"(?i)\b((a|ont|has|have|heeft|hebben)\s+(sign[ée]e?s?|signed|getekend|ondertekend)|"
+                     r"(sign[ée]e?s?|signed)\s+(par|by)|(getekend|ondertekend)\s+door)\b")
+SIGNED_MAX_WORDS = 14       # longer is a sentence of a text, not a line of a signature block
+ROW_REACH_MM = 130          # how far to the right of a label, on its row, a signature can be (a cell of a grid)
+
+
 def _label_segments(words: list[dict]) -> list[dict]:
     """The lines of the page ({'text', 'box', 'words'}), each cut where the gap between two words is wider than 2.5 word
     heights: two labels in two columns ('Lu et approuvé' and 'Signature du titulaire' on one row) are two labels."""
@@ -59,18 +67,26 @@ def _label_segments(words: list[dict]) -> list[dict]:
     return out
 
 
-def _owners(boxes: list[tuple], labels: list[dict], reach: float) -> list[int | None]:
+def _owners(boxes: list[tuple], labels: list[dict], reach: float, row_reach: float = 0.0) -> list[int | None]:
     """The signature label each stroke box belongs to (an index in `labels`, None for none). A signature is written
     under its label: the nearest label above it in its column wins (within 8 label heights); a signature written above a
     label, with no label above it, belongs to the label below (within `reach`, or 2 label heights if more; `reach` is in
     the units of the boxes). Two signatures one above the other, each under its own label, are then two signatures, not
-    one box across the label between them."""
+    one box across the label between them. `row_reach` (the units of the boxes, 0 = off): a stroke on the label's row,
+    to its right, up to that far, is the label's too (the signature in the next cell of a grid), after any label that
+    has it in its column."""
     out = []
     for b in boxes:
         best = None
         for i, label in enumerate(labels):
             lx0, ly0, lx1, ly1 = label["box"]
             lh = max(ly1 - ly0, 4)
+            if row_reach and b[0] > lx1 + 4 * lh:                     # far to the right: the label's row, if it is on it
+                if b[0] - lx1 <= row_reach and b[3] >= ly0 - lh and b[1] <= ly1 + 4 * lh:
+                    key = (2, b[0] - lx1)
+                    if best is None or key < best[0]:
+                        best = (key, i)
+                continue
             if b[2] < lx0 - 3 * lh or b[0] > lx1 + 4 * lh:           # not in the column of the label
                 continue
             gap_above = b[1] - ly1                                     # the box is under the label
@@ -108,11 +124,14 @@ def is_signature_label(text: str) -> bool:
     'Handtekening:' -> yes; 'Merci de retourner ce document après signature' -> no.
     The word must be one of the first two words of the line, or the line must be short (4 words at most).
     A closing formula or an approval ('Cordialement,', 'Lu et approuvé', 'Pour l'entreprise', 'Fait à Paris, le 12 mars
-    2024') is a label too: the signature is written under it, without the word."""
+    2024') is a label too: the signature is written under it, without the word. So is a line that says who signed
+    ('Le notaire Maître Dupont a signé'): the signature is in the cell next to it."""
     words = [w.strip(" :;,./()'") for w in text.split()]
     words = [w for w in words if w]
     hits = [i for i, w in enumerate(words) if _SIGNATURE_WORD.match(w)]
     if hits and (hits[0] < 2 or len(words) <= 4):
+        return True
+    if words and len(words) <= SIGNED_MAX_WORDS and _SIGNED.search(text):
         return True
     return bool(words) and len(words) <= 8 and bool(_SIGNATURE_ANCHOR.match(text.strip()))
 
@@ -173,13 +192,26 @@ def _components(mask: np.ndarray) -> list[tuple[int, int, int, int, int]]:
 # scans
 # ---------------------------------------------------------------------------
 
-def _grow(boxes: list[tuple], seed: tuple, gap: float) -> list[tuple]:
-    """Boxes touching the seed area, then every box within `gap` of a selected one (a signature's strokes,
-    however far the stroke runs), but nothing isolated further away (a stamp, other text)."""
+def _long_runs(mask: np.ndarray, length: int) -> np.ndarray:
+    """The pixels of `mask` that lie in a horizontal run of at least `length` pixels (a ruled line)."""
+    out = np.zeros_like(mask)
+    d = np.diff(np.pad(mask, ((0, 0), (1, 1))).astype(np.int8), axis=1)
+    ys, starts = np.nonzero(d == 1)
+    _, ends = np.nonzero(d == -1)
+    for y, a, b in zip(ys, starts, ends):
+        if b - a >= length:
+            out[y, a:b] = True
+    return out
+
+
+def _grow(boxes: list[tuple], seed, gap: float) -> list[tuple]:
+    """Boxes touching the seed area (one box, or a list of them), then every box within `gap` of a selected one (a
+    signature's strokes, however far the stroke runs), but nothing isolated further away (a stamp, other text)."""
+    seeds = [seed] if seed and not isinstance(seed[0], (tuple, list)) else list(seed)
     def near(a, b):
         return a[0] - gap <= b[2] and b[0] - gap <= a[2] and a[1] - gap <= b[3] and b[1] - gap <= a[3]
 
-    chosen = [b for b in boxes if near(b, seed)]
+    chosen = [b for b in boxes if any(near(b, sd) for sd in seeds)]
     rest = [b for b in boxes if b not in chosen]
     grew = True
     while grew and rest:
@@ -395,7 +427,7 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
         # next card; the strokes must start next to the label (seed)
         # (below the label the search goes down 30 mm: a signature is 1 to 2 cm high, and a window that stops at the
         # first line cut the strokes that run lower, leaving them visible)
-        wx0, wx1 = int(max(lx0 - 5 * mm, 0)), int(min(lx0 + 80 * mm, W))
+        wx0, wx1 = int(max(lx0 - 5 * mm, 0)), int(min(max(lx0 + 80 * mm, lx1 + ROW_REACH_MM * mm), W))
         wy0, wy1 = int(max(ly0 - 12 * mm, 0)), int(min(ly1 + 30 * mm, H))
         nxt = _next_label_top(ln, labels, lh)
         if nxt is not None:
@@ -413,6 +445,7 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
                 clear(x0, y0, x1, y1)
         for box in exclude:
             clear(*box)
+        ink &= ~(_long_runs(ink, int(15 * mm)) | _long_runs(ink.T, int(15 * mm)).T)   # a cell frame, a rule, a border
         if not ink.any():
             continue
         # components at reduced resolution (fast), dropping specks and long straight lines (borders, rules)
@@ -441,9 +474,10 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
             if in_text >= 0.7:
                 continue
             comps.append((x0 * f + wx0, y0 * f + wy0, x1 * f + wx0, y1 * f + wy0))
-        owned = _owners(comps, labels, 12 * mm)
+        owned = _owners(comps, labels, 12 * mm, ROW_REACH_MM * mm)
         comps = [c for c, o in zip(comps, owned) if o == li]
-        seed = (lx0 - 3 * lh, ly0 - 2 * lh, lx1 + 4 * lh, ly1 + 8 * lh)   # where a signature starts
+        seed = [(lx0 - 3 * lh, ly0 - 2 * lh, lx1 + 4 * lh, ly1 + 8 * lh),    # where a signature starts: under the label,
+                (lx1, ly0 - lh, lx1 + ROW_REACH_MM * mm, ly1 + 4 * lh)]       # or in the cell next to it, on its row
         keep = _grow(comps, seed, 3 * mm)
         if not keep:
             continue
@@ -461,10 +495,27 @@ def find_signatures(img: Image.Image, words: list[dict], exclude: list[tuple] = 
             elif y1 <= ly0 + 1:
                 box[3] = ly0 - 1
         if box[3] - box[1] > 0.5 * lh:
-            box = _clear_of_text(box, words, ink_mass, lx0 + (lx1 - lx0) / 2)   # never over a word of the page
+            mid = lx0 + (lx1 - lx0) / 2
+            # (never over a word of the page; the cut keeps the label's middle, unless the signature is in another cell)
+            box = _clear_of_text(box, words, ink_mass, mid if box[0] <= mid <= box[2] else None)
             if box and box[3] - box[1] > 0.5 * lh:
                 out.append(box)
     return out
+
+
+def _only_straight(d: dict) -> bool:
+    """A drawing made of horizontal and vertical lines and rectangles only (the frame of a table cell, a rule): never
+    handwriting. A signature is made of curves, or of slanted segments."""
+    items = d.get("items") or []
+    if not items:
+        return False
+    for it in items:
+        if it[0] in ("re", "qu"):
+            continue
+        if it[0] == "l" and (abs(it[1].x - it[2].x) < 0.3 or abs(it[1].y - it[2].y) < 0.3):
+            continue
+        return False
+    return True
 
 
 def _area_in(c, parts) -> float:
@@ -489,6 +540,8 @@ def find_signatures_digital(page, words: list[dict], exclude: list[tuple] = ()) 
             continue                                              # ruled line
         if r.width * r.height > 0.08 * page_area:
             continue                                              # a frame / background block
+        if _only_straight(d):
+            continue                                              # the frame of a cell, a rule: no pen draws that
         parts_all.append(tuple(r))
     for info in page.get_image_info():
         w, h = info["bbox"][2] - info["bbox"][0], info["bbox"][3] - info["bbox"][1]
@@ -497,7 +550,7 @@ def find_signatures_digital(page, words: list[dict], exclude: list[tuple] = ()) 
     parts_all = [r for r in parts_all if not any(fitz.Rect(r).intersects(x) for x in excluded)]
     out = []
     labels = [ln for ln in _label_segments(words) if is_signature_label(ln["text"])]
-    owners = _owners(parts_all, labels, 12 * 72 / MM_PER_INCH)
+    owners = _owners(parts_all, labels, 12 * 72 / MM_PER_INCH, ROW_REACH_MM * 72 / MM_PER_INCH)
     for li, ln in enumerate(labels):
         lx0, ly0, lx1, ly1 = ln["box"]
         lh = max(ly1 - ly0, 4)
@@ -507,6 +560,7 @@ def find_signatures_digital(page, words: list[dict], exclude: list[tuple] = ()) 
         nxt = _next_label_top(ln, labels, lh)
         if nxt is not None:
             seed = (seed[0], seed[1], seed[2], min(seed[3], nxt - 1))
+        seed = [seed, (lx1, ly0 - lh, lx1 + ROW_REACH_MM * mm, ly1 + 4 * lh)]    # or in the cell next to the label
         own = [b for b, o in zip(parts_all, owners) if o == li]
         keep = _grow(own, seed, 3 * mm)
         if not keep:
@@ -517,8 +571,10 @@ def find_signatures_digital(page, words: list[dict], exclude: list[tuple] = ()) 
         if r.width >= 2.5 * lh:
             padded = [{**w, "box": (w["box"][0] - 1.5, w["box"][1] - 1.5, w["box"][2] + 1.5, w["box"][3] + 1.5)}
                       for w in words]
+            mid = lx0 + (lx1 - lx0) / 2
             box = _clear_of_text(tuple(r + (-0.3 * lh, -0.3 * lh, 0.3 * lh, 0.3 * lh)), padded,
-                                 lambda c, keep=keep: _area_in(c, keep), lx0 + (lx1 - lx0) / 2)
+                                 lambda c, keep=keep: _area_in(c, keep),
+                                 mid if r.x0 - 0.3 * lh <= mid <= r.x1 + 0.3 * lh else None)
             if box:
                 out.append(box)
     return out

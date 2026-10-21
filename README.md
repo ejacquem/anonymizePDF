@@ -195,7 +195,9 @@ rebuilt as a new image; on digital PDFs the text, the image pixels and the vecto
   With `photos_only_on_id_documents: true` faces are searched only on pages that look like an identity document;
   the default is `false` (every page). Configs written before this change keep their own value.
 * `signatures` – handwriting next to a label such as "Signature", "Signature du titulaire", "Date et signature",
-  "Handtekening" (a label, not a sentence containing the word). The whole signature is followed, even long strokes.
+  "Handtekening" (a label, not a sentence containing the word), a closing formula, or a line that says who signed
+  ("Le notaire Maître X a signé", "Signé par ..."). The signature can be under the label or on its row, far to the
+  right (the next cell of a grid, up to 13 cm). The whole signature is followed, even long strokes.
 * `qr_codes` – QR codes and other 2D barcodes (Data Matrix, 2D-Doc), on scans and digital PDFs.
 
 ## Machine readable zone (MRZ)
