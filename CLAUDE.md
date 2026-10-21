@@ -333,7 +333,12 @@ Order must never change a result (`order_tests`): a value written with several s
   D-, I-, A-; not 'Code' / 'Banque' / 'Guichet'...), a town followed by its postcode in brackets ('NANTERRE (92000)',
   'BOULOGNE-BILLANCOURT (72000) (FRANCE)': the value is the town and its code, `_v_town_code`; a year in brackets is no
   postcode; the fake keeps the brackets and the town of the term alone, `fake.postal_city`, `engine._town_of`), the town
-  at the end of an address is a POSTAL_CITY too,
+  at the end of an address is a POSTAL_CITY too. A town and its postcode are also entries of their own: the town is a
+  LOCATION term, the postcode alone a POSTAL_CITY term whose replacement is the postcode of the whole value's fake, so the
+  parts agree with the whole. A PERSON whose words are one after the other inside a town ('HUGO BP' in 'HUGO BP (09062)')
+  is no name: the town has priority, the name and its parts are unchecked (`engine._contains`, `_word_keys`; the note
+  says so). A text found both as a street and as a town is one entry, the town. A label before a town ('Bénéficiaire
+  HUGO BP') is trimmed (`_TOWN_NOT_FIRST`);
   ACCOUNT_NUMBER (after "N° de compte" / "Numéro client" / "Compte" / "Compte courant" / "RIB" on the same line, or without
   label when it is five or more digits and one capital letter ('0012345Y', '12345 Y', not running text), with spaces, '-', '.' or '/' as separators, French RIB, long digit runs, apostrophe-grouped digits
   `86'123'456'789'012` with masks, at least 3 groups so amounts `1'240.00` are not caught),
@@ -341,7 +346,11 @@ Order must never change a result (`order_tests`): a value written with several s
   digits, and an identifier written alone 'BT187536HE8O43': lowest priority; from 10 to 79 characters of capitals and
   digits, a long one (16+) needs only a letter and 8 digits: '123456789CFEECFTE123456789'; an identifier after its label
   `_ID_LABEL`: 'REF.MANDAT', 'REF.CLIENT', 'identifiant client 12 1234 5678', 'Id client', 'N° de contrat', 'LIBELLE:',
-  'Communication:', one block or groups, at least 6 digits, `_v_id_labeled`; test `client_identifier_tests`), DOC_NUMBER,
+  'Communication:', 'CREANCIER:', one block or groups, at least 6 digits, `_v_id_labeled`; test `client_identifier_tests`).
+  A label glued to its number, with no colon (an OCR that lost it: 'CREANCIER12345678912465789', 'REF.CLIENT12345678',
+  'LIBELLE123456789'), is no part of the identifier: only the number is replaced (`_GLUED_LABEL`, `_v_mixed_id`,
+  `_v_reference`), and a long number (6 digits or more) is matched inside the glued word (`term_regex`: only the digits
+  count as boundary). `label_and_town_tests`. DOC_NUMBER,
   BIRTH_PLACE, DATE (`/ . -` or spaces `14 05 1992`), PERSON, NER ORG / LOCATION (always commented out).
 - Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid.
 - A word cut across two lines ('JACQUEM' / 'IN LUCAS') is joined in the page text (`pii._cut_words`, used by

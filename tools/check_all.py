@@ -1877,6 +1877,76 @@ def signature_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def label_and_town_tests():
+    """Two kinds of values that the detectors mixed up, now kept apart. A label glued to its number after an OCR that lost
+    the colon ('CREANCIER12345678912465789', 'REF.CLIENT12345678'): the number is replaced, the label stays. A town written
+    with its postcode ('HUGO BP (09062)', a postal box): the town and the postcode are entries of their own, consistent with
+    the whole value; a name inside a town is no name (the town has priority and the name is unchecked); the same text as
+    a street and as a town is one entry; a label before a town ('Bénéficiaire') is no part of it."""
+    print("\n== labels glued to numbers, towns and postcodes")
+    found = lambda t: [(m.type, m.value) for m in pii.detect_all(t)]          # noqa: E731
+    check("a label glued to its number: only the number is found",
+          ("CONTRACT_REF", "12345678912465789") in found("CREANCIER12345678912465789"), str(found("CREANCIER12345678912465789")))
+    check("'LIBELLE123456789': the number alone", ("CONTRACT_REF", "123456789") in found("LIBELLE123456789"))
+    check("'REF.CLIENT12345678': the number alone", ("CONTRACT_REF", "12345678") in found("REF.CLIENT12345678"))
+    check("a label with its colon is kept as before", ("ACCOUNT_NUMBER", "12345678912465789") in found("CREANCIER:12345678912465789")
+          or ("CONTRACT_REF", "12345678912465789") in found("CREANCIER:12345678912465789"))
+    check("a label before a town is no part of it: 'Bénéficiaire HUGO BP (09062)' gives the town",
+          ("POSTAL_CITY", "HUGO BP (09062)") in found("Bénéficiaire HUGO BP (09062)"), str(found("Bénéficiaire HUGO BP (09062)")))
+    check("'Beneficiaire' without accent too", ("POSTAL_CITY", "HUGO BP (09062)") in found("Beneficiaire HUGO BP (09062)"))
+    check("a name inside a town: the town's words contain the name",
+          engine._contains(engine._word_keys("HUGO BP (09062)"), engine._word_keys("Hugo BP")))
+    check("a name that is not a town word is not inside it", not engine._contains(engine._word_keys("HUGO BP"),
+                                                                                  engine._word_keys("Jean Dupont")))
+    tmp = Path(tempfile.mkdtemp(prefix="anon_town_name_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        doc = fitz.open()
+        page = doc.new_page()
+        lines = ["Jean Dupont habite HUGO BP (09062).", "Bénéficiaire HUGO BP (09062)", "Nom de la rue: HUGO BP (09062)",
+                 "CREANCIER:12345678912465789", "REF.CLIENT12345678"]
+        for i, line in enumerate(lines):
+            page.insert_text((72, 90 + 22 * i), line, fontsize=11, fontname="helv")
+        doc.save(tmp / "lettre.pdf")
+        cfg = engine.scan_folder(tmp, "lettre", None, "fra+eng", lambda m: None)["config"]
+        active = [l for l in cfg.splitlines() if l.lstrip().startswith("- {find")]
+        commented = [l for l in cfg.splitlines() if l.lstrip().startswith("# - {find")]
+        check("the town of the postal box is a town term", any('find: "HUGO BP"' in l and "LOCATION" in l for l in active),
+              "\n".join(active)[:300])
+        check("the name inside the town is unchecked (a suggestion)",
+              not any("PERSON" in l and "HUGO" in l for l in active)
+              and any("PERSON" in l and "HUGO" in l and "inside the town" in l for l in commented), "\n".join(commented)[:300])
+        check("the street and the town of the same text are one entry", not any(
+            'find: "HUGO BP (09062)"' in l and "STREET_ADDRESS" in l for l in active + commented))
+        whole = re.search(r'find: "HUGO BP \(09062\)", replace: "([^"]+)"', cfg)
+        code = re.search(r'find: "09062", replace: "(\d{5})"', cfg)
+        check("the postcode on its own is the code of the whole value's fake",
+              whole is not None and code is not None and whole.group(1).endswith(f"({code.group(1)})"),
+              f"{whole and whole.group(1)} / {code and code.group(1)}")
+        rep = engine.run_anonymize(tmp, "lettre", cfg, "fra+eng", False, lambda m: None)
+        out = " ".join(fitz.open(tmp / "lettre_anonymized.pdf")[0].get_text().split())
+        check("the letter has no leftover", not rep["files"][0]["leftovers"], str(rep["files"][0]["leftovers"]))
+        check("'HUGO' is not left in the output", "HUGO" not in out.upper(), out)
+        check("'09062' is not left in the output", "09062" not in out, out)
+        check("'Jean Dupont' is replaced", "Jean Dupont" not in out, out)
+        check("the label 'Bénéficiaire' stays readable", "Bénéficiaire" in out, out)
+        check("the label 'Nom de la rue:' stays readable", "Nom de la rue:" in out, out)
+        check("the label 'CREANCIER:' stays readable", "CREANCIER:" in out, out)
+        check("the label 'REF.CLIENT' stays readable", "REF.CLIENT" in out, out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def licence_title_tests():
+    """The title of a driving licence is no name on an identity page: the second check read 'PERMIS DE CONDUIRE' as names
+    on the output of Dossier Test 07 (the labels are not read there, so the words are taken by their shape)."""
+    print("\n== the title of a driving licence is no name")
+    from anonymizer import fields
+    for word in ("PERMIS", "CONDUIRE", "RIJBEWIJS"):
+        check(f"'{word}' is a word of the document, not a name", fields.is_boilerplate(word))
+    check("a surname is still no boilerplate", not fields.is_boilerplate("DUPONT"))
+
+
 def speedup_tests():
     """The helpers behind the speed-ups give exactly the results of the code they replaced."""
     print("\n== speed-up helpers")

@@ -171,7 +171,7 @@ _DATE_LIKE = re.compile(r"\d{1,2}[./]\d{1,2}[./]\d{2,4}")
 
 _ID_LABEL = (r"(?<![\w])(?i:(?:r[ée]f(?:[ée]rence)?|identifiant|id|num[ée]ro|n[°o])\.?[ \t]*(?:de[ \t]+|du[ \t]+|unique[ \t]+(?:de[ \t]+)?)?"
              r"(?:client|abonn[ée]|contrat|police|dossier|mandat|rum|facture|paiement|op[ée]ration|commande|transaction|"
-             r"adh[ée]rent|membre|compte[ \t]+client|b[ée]n[ée]ficiaire|d[ée]biteur)|libell[ée]|communication)")
+             r"adh[ée]rent|membre|compte[ \t]+client|b[ée]n[ée]ficiaire|d[ée]biteur)|libell[ée]|communication|cr[ée]ancier)")
 
 
 def _v_id_labeled(m):
@@ -191,15 +191,35 @@ def _v_account_labeled(m):
 
 
 def _v_reference(m):
-    """A reference written after its label ('REF : 5483651240000XA3'): at least 4 digits."""
-    return (m.start(1), m.end(1)) if sum(c.isdigit() for c in m.group(1)) >= 4 else None
+    """A reference written after its label ('REF : 5483651240000XA3'): at least 4 digits. A label glued to the number
+    ('REF.CLIENT12345678') is no part of the reference."""
+    value, start = m.group(1), m.start(1)
+    glued = _GLUED_LABEL.match(value)
+    if glued:
+        value, start = value[glued.end():], start + glued.end()
+    return (start, m.end(1)) if sum(c.isdigit() for c in value) >= 4 else None
+
+
+# a label written against its number, with no colon ('CREANCIER12345678912465789' after an OCR that lost the colon):
+# the label stays readable, only the number is replaced
+_GLUED_LABEL = re.compile(r"(?i)(?:cr[ée]ancier|libell[ée]|client|mandat|rum|facture|paiement|op[ée]ration|commande|"
+                          r"transaction|adh[ée]rent|membre|abonn[ée]|contrat|police|dossier|r[ée]f[ée]rence|ref|"
+                          r"identifiant|id|num[ée]ro|n[°o]|communication|b[ée]n[ée]ficiaire|d[ée]biteur|compte|montant|"
+                          r"motif|objet)(?=\d)")
 
 
 def _v_mixed_id(m):
     """An identifier written alone ('BT187536HE8O43'): letters and digits, at least 2 letters and 4 digits. A long one
     ('123456789CFEECFTE123456789', '123456789123456E123456789123456789': 16 characters or more) only needs a letter and
-    8 digits: nothing else looks like that."""
+    8 digits: nothing else looks like that. A label glued to its number ('LIBELLE123456789', 'REF.CLIENT12345678') is no
+    part of the identifier: the number alone is the value (6 digits or more)."""
     value = m.group()
+    glued = _GLUED_LABEL.match(value)
+    if glued:
+        rest = value[glued.end():]
+        if sum(c.isdigit() for c in rest) >= 6 and len(rest) <= 60:
+            return m.start() + glued.end(), m.end()
+        return None
     letters, digits = sum(c.isalpha() for c in value), sum(c.isdigit() for c in value)
     if letters >= 2 and digits >= 4 and len(value) <= 24:
         return m.start(), m.end()
@@ -227,7 +247,9 @@ def _v_postal(m):
 # words that are never the start of a town written before its postcode: a street type, a connector, a label
 _TOWN_NOT_FIRST = {"rue", "avenue", "av", "boulevard", "bd", "chemin", "allee", "allée", "route", "impasse", "quai",
                    "place", "cours", "square", "passage", "de", "du", "des", "la", "le", "les", "et", "sur", "en",
-                   "adresse", "address", "ville", "commune", "city", "town"}
+                   "adresse", "address", "ville", "commune", "city", "town",
+                   "bénéficiaire", "beneficiaire", "créancier", "creancier", "débiteur", "debiteur", "libellé",
+                   "libelle", "nom", "name", "montant", "motif", "objet", "identifiant", "référence", "reference"}
 
 
 def _v_code_after_street(m):
@@ -631,8 +653,11 @@ def term_regex(term: str, case_sensitive: bool = False, ocr: bool = False) -> re
     term = str(term).strip()
     piece = _ocr_piece if ocr and len(term) >= 4 else re.escape
     body = r"\s*".join(piece(p) for p in term.split())
-    pre = r"(?<!\w)" if re.match(r"\w", term) else ""
-    post = r"(?!\w)" if re.search(r"\w$", term) else ""
+    # a long number is the same number glued to a label letter ('CLIENT12345678', 'CREANCIER12345678912465789'): only
+    # the digits on each side count as a boundary
+    long_number = re.fullmatch(r"\d{6,}", term) is not None
+    pre = r"(?<!\d)" if long_number else (r"(?<!\w)" if re.match(r"\w", term) else "")
+    post = r"(?!\d)" if long_number else (r"(?!\w)" if re.search(r"\w$", term) else "")
     return re.compile(pre + body + post, 0 if case_sensitive else re.I)
 
 
