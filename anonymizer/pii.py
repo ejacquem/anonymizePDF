@@ -63,6 +63,18 @@ def _v_iban(m):
     return None
 
 
+_IBAN_SHAPE_COUNTRIES = {"BE", "FR", "NL", "DE", "LU", "CH"}
+
+
+def _v_iban_shape(m):
+    """The shape of an IBAN of a neighbouring country, with a checksum that fails: an OCR that garbles a digit makes a
+    real account unreadable for the checksum, and the account is not less private for it (privacy first: covered)."""
+    s = m.group().replace(" ", "")
+    if s[:2] in _IBAN_SHAPE_COUNTRIES and 15 <= len(s) <= 34 and sum(c.isdigit() for c in s) >= 12:
+        return m.start(), m.end()
+    return None
+
+
 def _sepa_creditor_ok(s: str) -> bool:
     """SEPA creditor identifier: CC kk BBB national-id; the check digits kk cover national-id + CC (not BBB)."""
     s = s.replace(" ", "").upper()
@@ -208,6 +220,14 @@ _GLUED_LABEL = re.compile(r"(?i)(?:cr[ée]ancier|libell[ée]|client|mandat|rum|f
                           r"motif|objet)(?=\d)")
 
 
+def _v_ref_groups(m):
+    """A reference written in groups (after its label or alone): six digits at least."""
+    grouped = bool(m.re.groups)
+    value = m.group(1) if grouped else m.group()
+    start, end = (m.start(1), m.end(1)) if grouped else (m.start(), m.end())
+    return (start, end) if sum(c.isdigit() for c in value) >= 6 else None
+
+
 def _v_mixed_id(m):
     """An identifier written alone ('BT187536HE8O43'): letters and digits, at least 2 letters and 4 digits. A long one
     ('123456789CFEECFTE123456789', '123456789123456E123456789123456789': 16 characters or more) only needs a letter and
@@ -329,8 +349,15 @@ _NL_STREET = (
 )
 
 # Order = priority (earlier wins when matches overlap)
+_ROLE = (r"titulaire|cotitulaire|co-titulaire|b[ée]n[ée]ficiaire|mandataire|mandant|assur[ée]e?|souscripteur|souscriptrice|"
+         r"emprunteur|emprunteuse|locataire|propri[ée]taire|client|cliente|repr[ée]sent[ée]e? par|au nom de|"
+         r"[àa] l'attention de|[àa] l'ordre de|d[ée]funt|d[ée]funte|h[ée]ritier|h[ée]riti[èe]re")
+_NOT_NAME = r"nous|vous|il|elle|ils|elles|le|la|les|un|une|ce|cet|cette|ces|pour|par|dans|sur|avec|sans|est|sont|ont|aura|doit"
+
 DETECTORS = [
     ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban),
+    # the same shape, the checksum not required ('BE 70 0016 9028 4173' read with a space after the country, a garbled digit)
+    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2} ?\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban_shape),
     ("CREDIT_CARD", re.compile(r"(?<!\d)(?:\d[ \-]?){13,19}(?!\d)"), _v_card),
     # masked card number: '6703 **** **** 4471', '4975 XXXX XXXX 1234', 'Carte x4412'
     # the mask may be any run of stars or X ('495321XXXXXX7425' is a card as well as '6703 **** 4471')
@@ -340,6 +367,10 @@ DETECTORS = [
     # a reference with letters and digits after its label: 'REF : 5483651240000XA3'
     ("CONTRACT_REF", re.compile(r"(?<!\w)(?i:r[ée]f(?:[ée]rence)?|ref)\.?\s*(?:n[°o]\.?\s*)?[:\-]?\s*"
                                 r"([A-Z0-9][A-Z0-9\-/]{5,}[A-Z0-9])(?![\w])"), _v_reference),
+    # a reference in groups after its label: 'REF 77 3094 2281', 'référence BT 4471 -0926 AX' (the groups are digits, or
+    # two or three capitals; at least 6 digits in all)
+    ("CONTRACT_REF", re.compile(r"(?<!\w)(?i:r[ée]f(?:[ée]rence)?|ref)\.?[ 	]*(?:n[°o]\.?[ 	]*)?[:\-]?[ 	]*"
+                                r"((?:[A-Z]{1,3}|[\-]?\d+)(?:[ ](?:[A-Z]{1,3}|[\-]?\d+)){1,5})(?![\w])"), _v_ref_groups),
     # SEPA creditor identifier (direct debit): 'BE79ZZZ0404484654', 'FR12ZZZ123456'
     ("SEPA_CREDITOR_ID", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28}(?![A-Za-z0-9])"),
      _v_sepa_creditor),
@@ -363,6 +394,9 @@ DETECTORS = [
     # in front keeps other numbers out
     ("PHONE", re.compile(r"(?<![\w+])(?:\+|00)\d{1,3}[ .\-/\n]?(?:\(0\)[ .\-/]?)?\d(?:[ .\-/\n]?\d){6,10}(?!\d)"),
      _v_phone),
+    # the same after an OCR that lost the '+': '32 81 22 40 17' (the country code of Belgium, France, the Netherlands, and
+    # the groups in twos)
+    ("PHONE", re.compile(r"(?<![\w+.,/\-])(?:32|33|31)[ ]\d{1,2}(?:[ ]\d{2}){3,4}(?![\d.,/\-])"), _v_phone),
     ("PHONE", re.compile(r"(?<![\w+])0[1-9]\d{0,2}(?:[ .\-/]?\d{2,3}){2,4}(?!\d)"), _v_phone),
     # a North American number: '1 202 111-2222', '(202) 111-2222', '202.111.2222'
     ("PHONE", re.compile(r"(?<![\w+])(?:1[ .\-])?\(?\d{3}\)?[ .\-]\d{3}[ .\-]\d{4}(?!\d)"), None),
@@ -455,6 +489,10 @@ DETECTORS = [
     # after a title, up to five capitalised words ('Monsieur Théo Aurélien Gaspard Morin' keeps its surname)
     # (not after a dot: 'a.m. Standard Time' is an hour, not 'M. Standard Time')
     ("PERSON", re.compile(rf"(?<![\w.]){_HONORIFIC}[ ]+({_CAP}{_WORD}+(?:[ ]{_CAP}{_WORD}+){{0,4}})"), _v_group1),
+    # a name after the word for its role: 'le titulaire Cl\u00e9ment Dessaint', 'au nom de Quentin Rossignol' (capitalised words that
+    # are not words of a sentence; `engine.scan_folder` keeps it only if no word of it is an ordinary word of the documents)
+    ("PERSON", re.compile(rf"(?<![\w.])(?i:{_ROLE})[ ]+((?!(?i:{_NOT_NAME})\b){_CAP}{_WORD}+(?:[ ]{_CAP}{_WORD}+){{0,2}})"),
+     _v_group1),
     # 'Pr\u00e9nom NOM': up to two middle names ('Merve Chantal Ga\u00eblle REYES'), a surname that may be cut ('REY', 'RE')
     ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_CAP}[a-z\u00e0-\u00ff'\u2019\-]+(?:[ ]{_CAP}[a-z\u00e0-\u00ff'\u2019\-]+){{0,2}}"
                           rf"[ ]+{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]*)(?!\w)"), _v_group1),  # Prenom NOM
@@ -462,6 +500,9 @@ DETECTORS = [
     # capitals only: 'REYES MERVE'. Kept only when a word is a known name (see engine.scan_folder)
     ("PERSON", re.compile(rf"(?<!\w)(?!{_HONORIFIC}[ ])({_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+(?:[ ]{_UP}{_UP}[A-Z\u00c0-\u00dd'\u2019\-]+){{1,2}})(?!\w)"),
      _v_group1),
+    # a reference in groups, with no label ('BT 4471 -0926 AX': a label the OCR garbled, or a sentence that only says "the
+    # reference"): letters, two groups of digits, letters
+    ("CONTRACT_REF", re.compile(r"(?<![\w/])[A-Z]{2,3}[ ]\d{3,5}[ ]-?\d{3,5}(?:[ ][A-Z]{1,3})?(?![\w])"), _v_ref_groups),
     # an identifier written alone, letters and digits: 'BT187536HE8O43' (lowest priority: other detectors win)
     # (a number may start it: '254H089SJ425', a policy number that the OCR reads on a line of its own)
     ("CONTRACT_REF", re.compile(r"(?<![\w/])[A-Z0-9][A-Z0-9]{9,79}(?![\w])"), _v_mixed_id),
@@ -469,8 +510,9 @@ DETECTORS = [
 # capitalised words in a row, an initial counting as a word: 'Théo A. Morin', 'Lucas Martin Lu', 'MORIN Théo'. Kept
 # only with a word the documents already know as a name (see engine.scan_folder): no title and no capitals rule
 CAP_SEQUENCE = re.compile(rf"(?<![\w'’\-]){_CAP}{_WORD}*\.?(?:[ ]{_CAP}{_WORD}*\.?){{0,5}}(?![\w'’\-])")
-# ranks of the PERSON heuristics, in order: honorific (M. Dupont), 'Prenom NOM', 'NOM Prenom'
+# ranks of the PERSON heuristics, in order: honorific (M. Dupont), a role (le titulaire Dupont), 'Prenom NOM', 'NOM Prenom'
 PERSON_RANKS = [i for i, (t, _, _) in enumerate(DETECTORS) if t == "PERSON"]
+ROLE_RANK = PERSON_RANKS[1]
 CAPS_NAME_RANK = PERSON_RANKS[-1]     # the capitals-only pattern, the last PERSON heuristic (see detect_structured)
 STRUCTURED_TYPES = list(dict.fromkeys(t for t, _, _ in DETECTORS))
 

@@ -49,6 +49,7 @@ anonymizer/
   pii.py               DETECTORS (regex + validators), spaCy NER (load_ner, detect_ner), detect_all, resolve,
                        term_regex (OCR-tolerant mode), apply_config, words_to_text, match_boxes, plan_page
   ocr.py               OCR engines (Tesseract / Windows winrt), engine(), ocr_words(), fix_digits(), render_page()
+  ocrpage.py           a page read more than once: page_words() = the 300 dpi reading repaired with the page rescaled (section 9)
   fake.py              Faker: deterministic fake values (HMAC with the secret key), name memory, all value types
   secret.py            per-PC secret key (created once, outside the repo)
   render.py            digital: FontBook, page_spans, style_at, free_right, insert_replacement, black_out_digital;
@@ -94,7 +95,11 @@ sample_data/Dossier Test 18/  handwritten signatures (tools/make_test_signatures
 sample_data/Dossier Test 17/  fonts and scan qualities (tools/make_test_fonts.py): 16 fonts regular / bold on a scan at
                               300 / 200 / 150 dpi, a digital page with a pasted picture of text, a 3-page insurance
                               contract (values in sentences, 'Prénom NOM' with the surname in bold, names and an
-                              address split across lines, pages turned < 1 degree, 200 / 150 dpi); fonts_truth.json
+                              address split across lines, pages turned < 1 degree, 200 / 150 dpi); paragraphes_scan.pdf
+                              (--paragraphs): 4 pages of paragraphs, each its own ink and coarse scan (blue Calibri 110 dpi
+                              sampled with no antialiasing, black and white Times 100 dpi, grey Verdana / Tahoma 200 dpi
+                              with copier spread, faded Garamond / Consolas 200 dpi): 38 values, 7 of them dates that are
+                              not replaced by design; fonts_truth.json
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
                        make_test_faces.py, make_test_signatures.py (generators, Windows fonts); test_faces/ (public-domain portraits from
@@ -265,7 +270,9 @@ console running `app.py` and the last 12 lines in the job log.
      with a space less or a 0 read O left '5802 Participation' as a postcode and a town). Every value found that is not a replacement is listed in the report (`suspects`) and as a warning
      in the Recap. It catches what the config never knew (verify_output only searches the detected values). Types:
      `LEAK_TYPES`, dates and identity values on ID pages, honorific names. A value close to a replacement (ratio ≥ 0.8
-     after OCR digit folding, `_ocr_fold`) is a replacement read back by the OCR, not a leak. Test: `check_all`
+     after OCR digit folding, `_ocr_fold`) is a replacement read back by the OCR, not a leak; so is a value that looks
+     more like a replacement (>= 0.65) than like any original value (`_read_back`: a long fake identifier with half its
+     digits misread). Test: `check_all`
      reports the second check of every output (`suspects`).
      The values it finds are also offered as commented suggestions in the folder's `anon_config.yaml`
      (`engine.suspect_suggestions`, `_offer_suspects`, at the end of `run_anonymize`): a fake from the key, the info
@@ -317,7 +324,9 @@ Order must never change a result (`order_tests`): a value written with several s
 
 ## 7. Detection (`pii.py`, `fields.py`)
 
-- Types: IBAN (mod-97), BIC (8 or 11 characters with a European country code at 5-6, `pii.bic_plausible`; after its
+- Types: IBAN (mod-97; a second detector takes the shape of an IBAN of BE / FR / NL / DE / LU / CH with a failed checksum or
+  a space after the country code, 'BE 70 0016 9028 4173': an OCR that garbles a digit makes a real account unreadable for
+  the checksum, and it is not less private; over-redaction is accepted), BIC (8 or 11 characters with a European country code at 5-6, `pii.bic_plausible`; after its
   label such as 'BIC/SWIFT', or just after an IBAN: a bare word such as 'MONSIEUR' or 'VIREMENT' is no BIC). A BIC is the
   bank's public identifier, not the client's: it is a suggestion (commented out), off by default (`engine.ACTIVE_TYPES`),
   not in the active types. Account numbers after their label may end with a letter ('000012345Y'),
@@ -358,6 +367,13 @@ Order must never change a result (`order_tests`): a value written with several s
   `_v_reference`), and a long number (6 digits or more) is matched inside the glued word (`term_regex`: only the digits
   count as boundary). `label_and_town_tests`. DOC_NUMBER,
   BIRTH_PLACE, DATE (`/ . -` or spaces `14 05 1992`), PERSON, NER ORG / LOCATION (always commented out).
+- What a coarse scan gives the OCR (Dossier Test 17, paragraph file): a number without the '+' of its country code
+  ('32 81 22 40 17': PHONE, country codes 32 / 33 / 31, groups of two), a reference in groups after its label ('REF 77 3094
+  2281', 'référence BT 4471 -0926 AX': CONTRACT_REF, 6 digits at least) and alone ('BT 4471 -0926 AX': letters, two digit
+  groups, letters: the label the OCR garbled), a name after the word for its role ('le titulaire Clément Dessaint', 'au
+  nom de ...', bénéficiaire, mandataire, assuré, locataire, client...: `pii._ROLE`, `ROLE_RANK`; active only when no word of
+  it is an ordinary word of the documents, `engine.accept_person(role=)`; a pronoun or article after the role word is no
+  name). Test: `detector_tests`.
 - Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid.
 - A word cut across two lines ('JACQUEM' / 'IN LUCAS') is joined in the page text (`pii._cut_words`, used by
   `words_to_text`) only when the joined word (6 letters or more, letters only) is written whole elsewhere on the same page
@@ -459,6 +475,20 @@ Order must never change a result (`order_tests`): a value written with several s
   letters (the `F` of Sexe) and sometimes whole labels, reads only part of a passport MRZ line 1 and none of an ID
   card MRZ, even on cropped / enlarged lines.
 - Tesseract: two passes (`--psm 3`, then `--psm 6` split at column gaps), best reading kept per line.
+- **A page is read more than once** (`ocrpage.page_words`, used by the scan, the anonymization of a scan page, the pixel
+  pass and the checks of the output; `ocr.ocr_words` stays the reading of one image, and of the small crops). On a coarse
+  scan (100 dpi, black and white, thick copier strokes) the 300 dpi reading misses words ('Clément'), garbles numbers
+  ('BE97 1430 9281 i6G4') and misses an e-mail altogether: a value the OCR does not read is never replaced. The same page
+  rescaled (2x, 1.5x, 0.5x: `ALT_READINGS`, each reading cached by pixels) is read differently, and the readings are put
+  together (`ocrpage.merge`): (1) where both have words on the same place, the reading with fewer implausible tokens
+  (`implausible`: symbols or letters mixed with digits inside a word, capitals inside a word, no vowel; no dictionary)
+  wins, on a tie the one two readings agree on, never one that holds less of the text ('1987' of '14/03/1987'); the first
+  reading's boxes stay when the words line up; (2) a word the first reading does not have is added in reading order, one
+  line of the other reading at a time ('03 11 1987' stays one line, the text is built from the list in order); a word
+  that mixes letters and digits needs two readings ('OFSTN6E129' is what the grain of a photograph looks like). The Windows
+  OCR straightens a page it finds turned and gives the boxes of the straightened page (30 px off at another scale): each
+  reading is brought back with a plane fitted on the words both readings give (`_align`), or left out when it does not
+  fit. Cost: 4 OCR runs a page instead of 1 (about +3 s a page). Test: `ocr_merge_tests`, `paragraph_scan_tests`.
 
 ## 10. Rendering
 
@@ -522,7 +552,9 @@ Order must never change a result (`order_tests`): a value written with several s
   with '\' or '|' (an OCR misreading, 'i\venue') is not measured.
 - Font of a value (`PageFonts.face_for`): its words count twice, the other words of its OCR line once (Windows OCR
   often gives label and value different line ids); the family wins over the words, then the weight is decided on the
-  value's words only (`bold_score`, bold above 0.5): the mean of two clues, the error of the bold rendering against
+  value's words only (`bold_score`, bold above `BOLD_AT` = 0.35: regular words stay under 0.31 and bold ones over 0.79 on
+  the clean and soft scans, the bold names of the pixelated page score 0.41 and 0.47; a score resting on fewer than 4
+  letters is pulled toward regular, `SHORT_EVIDENCE`): the mean of two clues, the error of the bold rendering against
   the regular one (degraded like the page; 1 -> 0, 0.4 -> 1) and the ink mass of the word against the regular
   rendering's (a blur keeps the total ink) relative to the page's regular text (30th percentile of its words: a page
   can be half bold). 233/234 words of Dossier Test 17 (228 and 231 with each clue alone). BoldMeter is the fallback.
@@ -582,8 +614,25 @@ Order must never change a result (`order_tests`): a value written with several s
   letter-count pick is untouched. `stats['width_error']` and the log say the gain: mean |ln width ratio| 11.0 % ->
   2.4 % on the 23 name words of Dossier Test 17 (`name_width_tests`). Cost: the scan of Dossier Test 17 takes
   ~9 s more (names in 16 fonts on 3 pages).
+- Coarse scans (Dossier Test 17, `paragraphes_scan.pdf`: pixelated 110 dpi, black and white 100 dpi, thick copy, faded):
+  - The fit is joint: every blur at every spread (`COARSE_SPREADS` -0.5 .. 2.0, then a quarter pixel), a spread kept only
+    with a 3 % gain. The coordinate search (blur, then spread) took a thick copy for a blurred one (blur 2.5, spread 0:
+    thin, light fakes); it now finds blur 1.4, spread +1.0 on the thick page.
+  - The candidates of the font comparison are thickened by the page's spread (`compare_many(thick=)`, `_thicken`): Verdana
+    and Tahoma, Roboto, Source Sans were mixed up on the thick copy (3 of 9 values right on the combined evidence, 8 of 9
+    now).
+  - MuPDF draws an image enlarged more than twice (native < 150 dpi on a 300 dpi page) with no interpolation: blocks of
+    1 / scale pixels. The fakes are blocks too (`quality._native` / `_blocks`: the native pixels are the mean of the
+    coverage under each, on the page's grid, aligned with the pixels around; the blur is applied to the native image,
+    `blur * scale`, so the pixels stay blocks). Up to twice, it is bilinear as before. `NEAREST_BELOW = 0.5`.
+  - Black and white scans (`quality.hardness`: share of mid-tones among the ink pixels, read on the native grid, < 0.12;
+    `Quality.hard`): every native pixel of the fake is ink or paper (threshold 0.5), no blur; without it the fake was grey
+    (ink 50 levels too light) and smooth.
 - Limits: close look-alikes are mixed up on soft copies (Arial / Roboto, Courier New / Courier Prime, DejaVu Sans
-  Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; ~0.1-0.3 s per value.
+  Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; ~0.1-0.3 s per value. A value in a
+  font other than its line's (an IBAN in Consolas inside a Garamond sentence) takes the line's family: the value's own
+  words are too weak a clue (digits; wrong in 16 of 36 single-word cases on the paragraph file). A fake cut short by its
+  box can leave a fragment of the last letter of the original ('Rossignol' -> a pale bar after 'Chevalier').
 
 ## 11. Identity documents: MRZ, photos, QR codes, signatures
 
@@ -670,7 +719,7 @@ Order must never change a result (`order_tests`): a value written with several s
 
 ## 12. Test suite: `python tools/check_all.py`
 
-Run it after every change (exit code 0 = all passed; about 8 min with 2 keys on 4 cores / 8 threads (1417 checks), it was 17 min
+Run it after every change (exit code 0 = all passed; about 8 min on an idle 4 cores / 8 threads, 20 min when the machine is busy, with 2 keys (1625 checks), it was 17 min
 one job after the other; `--quick` = 1 key and no option tests, `--fast` = also leaves out the long font / contract runs
 (`SLOW_GROUPS`), `--folder "Dossier Test 04"` to target, `--keep` to keep outputs, `--jobs N` processes at once, default 6,
 1 = one after the other with live output). It copies `sample_data/*` to a temp dir and uses
@@ -721,6 +770,15 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Text of scans in sentences (`scan_text_tests`, no OCR: punctuation, line cuts, filling, 'i\venue', a phone over a
   line break, 'Nlonsieur'; `contract_tests`, the insurance contract: no leftover / suspect, every word of every value
   in the weight of the word it replaced, letters of the line's size on the turned pages, ink as dark).
+- Reading and coarse scans (`ocr_merge_tests`: synthetic readings merged, aligned, left out; `native_blocks_tests`: blocks on
+  the page grid, MuPDF's no-interpolation rule above twice the size, black and white, joint fit of a thick copy;
+  `paragraph_scan_tests`: the paragraph file in three parts kept apart, so that a gap in one does not hide the others:
+  what the OCR reads, what is replaced (every value of the truth file but the dates that are not birth dates: pixel
+  correlation with the original, `find_hits` on the output, no leftover / suspect; the dates stay, by design), how it is
+  written (ink mass of each replaced word over the union of the word and its replacement's box: median 0.88-1.12, 10th
+  percentile >= 0.7; ink colour; stroke thickness on the thick page; no word in the wrong weight, word by word, through
+  a hook on `scanpaint.layout_value` and `_scan_page` that gives the page; the family; the fitted quality of each page;
+  blocks like the text around). The file is in SENSITIVE_17 / EXPECT too. `--fast` leaves `paragraph_scan_tests` out.
 - Fonts and quality (`font_unit_tests`, no OCR: synthetic pages written with a known face and quality are measured
   back, grain, seeded noise, config switches; `font_scan_tests`, Dossier Test 17: font / weight / blur of the
   original lines, the font each replacement was written in, the output measured again (font kind, blur of the

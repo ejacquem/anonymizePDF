@@ -97,7 +97,14 @@ SENSITIVE_17 = ["Héloïse", "Vandamme", "BE91 0682 4813 5729", "+32 471 58 23 9
                 "BE66 0016 4820 7391", "23/04/1986", "Élise", "FONTENOY", "Fontenoy", "+32 4 223 61 08",
                 "e.fontenoy@exemple.be", "Clara", "DELCOURT", "Delcourt", "11/09/1988", "Noah", "02/02/2015",
                 "+32 495 38 70 12", "86.04.23-157.17", "BE94 3631 7052 8846", "Julien", "MARCOTTY", "Closière",
-                "+32 4 341 27 90", "j.marcotty@exemple.be"]
+                "+32 4 341 27 90", "j.marcotty@exemple.be",
+                # the paragraph file (four coarse scans in four inks): the dates that are not birth dates stay
+                "Océane", "TASSIN", "BE65 0021 5647 3829", "Quentin", "Rossignol", "Dorian", "Lemaire", "+32 2 415 78 06",
+                "Avenue des Érables 214", "1050 Bruxelles", "BE97 1430 9281 5604", "Élodie", "Verstraeten", "Rue du Moulin 9",
+                "5000 Namur", "Clément", "Dessaint", "+32 81 22 40 17", "clement.dessaint@exemple.be", "BT 4471 0926 AX",
+                "Hugo", "VANDERSTRAETEN", "18/07/1975", "Chaussée de Mons 58", "7000 Mons", "BE46 0689 3174 0256",
+                "hugo.vanderstraeten@exemple.be", "+32 65 40 18 73", "REF 77 3094 2281", "Noémie", "DUBOIS",
+                "Boulevard Piercot 30", "4000 Liège", "BE70 0016 9028 4173", "Yannick", "Halleux"]
 SENSITIVE_15 = ["Ambre Lefèvre", "Clémence Roux", "Lucas Martin", "Théo Aurélien Morin", "Paul Durand", "Jean Petit"]
 # values that must stay readable in a digital output (no over-redaction): folder -> {file: [values]}
 # the headings of the statements that must stay readable: none of them is a name (Dossier Test 14)
@@ -227,6 +234,7 @@ EXPECT = {
         "polices_scan.pdf": ("scan", [], []),
         "polices_image_collee.pdf": ("mixed", [], []),
         "contrat_assurance_scan.pdf": ("scan", [], []),
+        "paragraphes_scan.pdf": ("scan", [], []),
     }),
     "Dossier Test 05": (STATEMENT_0, {
         "contrat_image_collee.pdf": ("mixed", [], []),
@@ -547,6 +555,52 @@ def detector_tests():
     check("identity by shape: surname, given name and document number", ("PERSON", "MARTINEAU") in shape
           and ("PERSON", "Julie") in shape and ("DOC_NUMBER", "X4RTBPFW4") in shape)
     check("identity by shape: no boilerplate", not any(v in ("SPECIMEN", "RÉPUBLIQUE", "FRA") for _, v in shape))
+    # what a coarse scan gives the OCR (Dossier Test 17, paragraph file): a space after the country code, a garbled digit,
+    # the lost '+', a label the OCR garbled, a name only a role word shows
+    check("IBAN with a space after the country code ('BE 70 0016 9028 4173')",
+          ("IBAN", "BE 70 0016 9028 4173") in found("le compte BE 70 0016 9028 4173 ouvert"))
+    check("IBAN of Belgium with a digit the OCR got wrong: covered, checksum or not",
+          any(t == "IBAN" for t, _ in found("sur le BE97 1430 9281 5604. Le")) and
+          any(t == "IBAN" for t, _ in found("sur le BE97 1430 9281 5664. Le")))
+    check("a number without the '+' of its country code ('32 81 22 40 17')",
+          ("PHONE", "32 81 22 40 17") in found("votre agence au 32 81 22 40 17 ou par"))
+    check("a date is no phone number without a plus ('32 12 25 2024')", not any(t == "PHONE" for t, _ in found("le 32 12 25 2024")))
+    check("a reference in groups after its label ('REF 77 3094 2281')",
+          ("CONTRACT_REF", "77 3094 2281") in found("la référence interne REF 77 3094 2281."))
+    check("a reference in groups with no label ('BT 4471 -0926 AX')",
+          ("CONTRACT_REF", "BT 4471 -0926 AX") in found("la r?t?rence BT 4471 -0926 AX figurant sur"))
+    check("a name after the word for its role ('le titulaire Clément Dessaint')",
+          ("PERSON", "Clément Dessaint") in found("accepté par le titulaire Clément Dessaint."))
+    check("a name after a role, a single word ('le titulaire Dessaint')", ("PERSON", "Dessaint") in found("par le titulaire Dessaint."))
+    check("no name after 'client' when a word of the sentence follows", not any(t == "PERSON" for t, _ in found("le client Nous avons")))
+    check("a role name is active unless one of its words is an ordinary word of the documents",
+          engine.accept_person("Clélnent Dessaint", False, False, frozenset(), True)
+          and not engine.accept_person("Clélnent Dessaint", False, False, frozenset({"dessaint"}), True)
+          and not engine.accept_person("Dessaint", False, False, frozenset(), False))
+    cfg_rb = {"terms": {"ANMS041313931": "OFST086550129"}}
+    read_back = verify._read_back("OFSTN6E129", [("x", verify._fold("OFST086550129"))],
+                                  [verify._fold("ANMS041313931")])
+    check("second check: a long fake identifier misread by the OCR is a replacement, not a leak", read_back)
+    check("second check: the end of a fake IBAN read with the next word ('4947 Le') is a replacement, not a postcode",
+          verify._read_back("4947 Le", [("x", verify._fold("BE46 4345 8814 4947"))],
+                            [verify._fold("BE97 1430 9281 5604")], ("1430", "9281", "5604")))
+    check("second check: the end of a fake IBAN with a digit misread ('4157 Le' for 4151) is a replacement too",
+          verify._read_back("4157 Le", [("x", verify._fold("BE65 6437 9828 4151"))], [verify._fold("BE97 1430 9281 5604"),
+                            verify._fold("+32 478 322 4157806")], ("1430", "9281", "5604")))
+    check("second check: a number that is in an original value is still a suspect",
+          not verify._read_back("5604 Le", [("x", verify._fold("BE46 4345 5604 4947"))],
+                                [verify._fold("BE97 1430 9281 5604")], ("1430", "9281", "5604")))
+    garbled = verify.remove_garbled_fakes("est Monsieur Marcel IIENI)RICKX, né le .fournicr@ykuj2to.he et Rossignol",
+                                          ["Marcel HENDRICKX", "edouard.fournier@ykujgfo.be"], ["Mathis VERHAEGEN", "Rossignol"])
+    check("second check: a fake read badly by the OCR is taken out of the text, an original value is not",
+          "IIENI" not in garbled and "fournicr" not in garbled and "Rossignol" in garbled and "Monsieur" in garbled, garbled)
+    long_id = verify.remove_garbled_fakes("carte OOHHW2N1754 valable", ["ODHH082001754"], ["ANMS041313931"])
+    check("second check: a long fake identifier that lost a third of its characters is taken out of the text",
+          "OOHHW2N1754" not in long_id and "carte" in long_id and verify._read_back(
+              "OOHHW2N1754", [("x", verify._fold("ODHH082001754"))], [verify._fold("ANMS041313931")]), long_id)
+    check("second check: a value that looks like an original is still a suspect",
+          not verify._read_back("ANMS04131393", [("x", verify._fold("OFST086550129"))],
+                                [verify._fold("ANMS041313931")]))
     # the passport of Dossier Test 03 as Windows OCR reads it: the label 'Surname' comes out as 'Sumame', which was
     # taken for the surname written after the label, and the real surname under it was never looked at
     lines = ["Nom I Sumame", "LEFÈVRE", "Prénoms I Given names", "Camille, Hélène", "Date de naissance I Date of birth",
@@ -2893,6 +2947,365 @@ def note_key_failures(key_file: Path, names: list[str], bad_keys: dict, given: b
 # folder of the run's temporary directory (ocr.ANON_OCR_CACHE_DIR): a test document is read once, not once per group
 # and per key.
 
+# ---------------------------------------------------------------------------
+# a page read more than once, and the paragraph file (Dossier Test 17): coarse scans in four inks
+# ---------------------------------------------------------------------------
+
+def ocr_merge_tests():
+    """The readings of a page put together (anonymizer/ocrpage.py), on words made by hand: no OCR engine needed."""
+    print("\n== a page read more than once (synthetic readings)")
+    from anonymizer import ocrpage
+
+    def word(text, x, y=100, w=None, line=("w", 0)):
+        w = w or 12 * len(text)
+        return {"text": text, "box": (x, y, x + w, y + 24), "line": line, "conf": 100.0}
+
+    def line_of(texts, y=100, tag="w", row=0):
+        out, x = [], 40
+        for t in texts:
+            out.append(word(t, x, y, line=(tag, row)))
+            x += 12 * len(t) + 14
+        return out
+
+    def text(ws):
+        return " ".join(w["text"] for w in ws)
+
+    imp = ocrpage.implausible
+    check("implausible: letters and digits mixed in a lower-case word, symbols, capitals inside a word",
+          all(imp(t) for t in ("tran5fert", "i6G4", "rei*te", "rtDLLITler", "dessaintfg...exemple-be")))
+    check("plausible: words, numbers, codes, e-mails, units, hyphenated names",
+          not any(imp(t) for t in ("transfert", "Dessaint,", "BE97", "5604", "03/09/2024", "450.00", "25kg", "1er",
+                                   "clement.dessaint@exemple.be", "Jean-Pierre", "d'adresse", "BT", "4471")))
+    base = line_of(["Le", "transfert", "du", "BE97", "1430", "9281", "i6G4", "sera"])
+    alt1 = line_of(["Le", "transfert", "du", "BE97", "1430", "9281", "5604", "sera"], tag="a1")
+    alt2 = line_of(["Le", "tran5fert", "du", "BE97", "1430", "9281", "5604", "sera"], tag="a2")
+    out = ocrpage.merge(base, [alt1, alt2])
+    check("merge: a garbled number is replaced by the reading that makes sense", "9281 5604" in text(out), text(out))
+    check("merge: the first reading's boxes and lines are kept", [w["box"] for w in out] == [w["box"] for w in base]
+          and {w["line"] for w in out} == {("w", 0)})
+    good = line_of(["Nous", "écrivons", "à", "Clément", "Dessaint"])
+    out = ocrpage.merge(good, [line_of(["Nous", "écrivons", "à", "Clément", "Dessaint"], tag="a"),
+                               line_of(["Nous", "ecrivons", "a", "Clement", "Dessaint"], tag="b")])
+    check("merge: a good first reading stays as it is", text(out) == text(good), text(out))
+    # a word the first reading does not have: added in its line, in reading order
+    xs = {"par": 40, "le": 100, "titulaire": 140, "Clément": 300, "Dessaint": 400}
+    first = [word(t, xs[t]) for t in ("par", "le", "titulaire", "Dessaint")]
+    other = [word(t, xs[t], line=("a", 0)) for t in ("par", "le", "titulaire", "Clément", "Dessaint")]
+    out = ocrpage.merge(first, [other])
+    check("merge: a word only another reading has is added, between its neighbours, on the same line",
+          text(out) == "par le titulaire Clément Dessaint" and len({w["line"] for w in out}) == 1, text(out))
+    # the words of a line another reading found stay one line: '03 11 1987'
+    date = [word("03", 400, 700, 24, ("a", 7)), word("11", 440, 700, 24, ("a", 7)), word("1987", 480, 700, 48, ("a", 7))]
+    out = ocrpage.merge(line_of(["Madame"]), [date])
+    check("merge: the words of a line another reading found stay one line", text(out) == "Madame 03 11 1987"
+          and len({w["line"] for w in out if w["text"] in ("03", "11", "1987")}) == 1, text(out))
+    # a reading holding less of the text is no repair: '1987' of '14/03/1987'
+    one = [word("14/03/1987", 300, 300, 130)]
+    out = ocrpage.merge(one, [[word("1987", 380, 300, 50, ("a", 0))], [word("1987", 380, 300, 50, ("b", 0))]])
+    check("merge: a reading that holds a part of the text does not replace it", text(out) == "14/03/1987", text(out))
+    # grain of a photograph read as a code: letters and digits mixed, from one reading only: not added
+    noise = [word("OFSTN6E129", 600, 900, 120, ("a", 0))]
+    check("merge: a code-like word only one reading has is not added",
+          text(ocrpage.merge(line_of(["Photo"]), [noise])) == "Photo")
+    check("merge: the same code read by two readings is added",
+          "OFSTN6E129" in text(ocrpage.merge(line_of(["Photo"]), [noise, [dict(noise[0], line=("b", 0))]])))
+    # the OCR straightens a page it finds turned: the boxes of that reading are shifted, more down the page
+    names = ["Madame", "Dessaint", "habitant", "Bruxelles", "contrat", "client", "adresse", "telephone"]
+    base = [word(t, 100 + 90 * i, 200 + 150 * i, 70, ("w", i)) for i, t in enumerate(names)]
+
+    def shift(b):
+        dx, dy = -30 + 0.02 * b[1], 20 - 0.03 * (b[1] - 200)
+        return (b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy)
+
+    shifted = [dict(w, line=("a", i), box=shift(w["box"])) for i, w in enumerate(base)]
+    back = ocrpage._align(base, shifted)
+    err = max(abs(a["box"][0] - b["box"][0]) + abs(a["box"][1] - b["box"][1]) for a, b in zip(back, base))
+    check(f"align: a reading shifted by the page straightening is brought back ({err:.1f} px off)", err <= 2.0)
+    scattered = [dict(w, box=(w["box"][0] + 40 * ((i * 7) % 5 - 2), w["box"][1] + 30 * ((i * 3) % 4 - 1.5),
+                              w["box"][2] + 40 * ((i * 7) % 5 - 2), w["box"][3] + 30 * ((i * 3) % 4 - 1.5)))
+                 for i, w in enumerate(shifted)]
+    check("align: a reading whose boxes are all over the place is left out", ocrpage._align(base, scattered) == [])
+
+
+def _fold_text(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if c.isalnum() and not unicodedata.combining(c))
+
+
+def _reading_hits(words, truth_words):
+    """The indexes of the truth words that a reading has: the same letters and digits, its box on the word."""
+    k = 300 / 72
+    got = set()
+    for i, w in enumerate(truth_words):
+        x0, y0, x1, y1 = (c * k for c in w["box"])
+        for o in words:
+            ix, iy = min(x1, o["box"][2]) - max(x0, o["box"][0]), min(y1, o["box"][3]) - max(y0, o["box"][1])
+            if ix > 0 and iy > 0 and _fold_text(o["text"]) == _fold_text(w["text"]):
+                got.add(i)
+                break
+    return got
+
+
+def _word_mass(arr, box):
+    """(ink mass per pixel, mean colour of the darkest 15 %, median stroke width in points) of a box of a page rendered
+    at 300 dpi: the ink is measured against the paper (90th percentile of the box and its surroundings)."""
+    k = 300 / 72
+    x0, y0, x1, y1 = [int(round(v * k)) for v in box]
+    crop = arr[max(y0, 0):y1, max(x0, 0):x1]
+    if crop.size == 0:
+        return None
+    gray = crop.mean(axis=2)
+    paper = np.percentile(arr[max(y0 - 12, 0):y1 + 12, max(x0 - 12, 0):x1 + 12].mean(axis=2), 90)
+    dark = np.clip(paper - gray, 0, None)
+    peak = np.percentile(dark, 99)
+    if peak < 8:
+        return None
+    runs = []
+    for row in dark >= 0.5 * peak:
+        n = 0
+        for v in row:
+            if v:
+                n += 1
+            elif n:
+                runs.append(n)
+                n = 0
+        if n:
+            runs.append(n)
+    return {"mass": dark.sum() / dark.size, "ink": crop[dark >= np.percentile(dark, 85)].mean(axis=0),
+            "stroke": float(np.median(runs)) / k if runs else 0.0}
+
+
+def paragraph_scan_tests():
+    """The paragraph file of Dossier Test 17 (tools/make_test_fonts.py --paragraphs: four pages of long paragraphs, each
+    with its own ink and its own coarse scan: pixelated blue Calibri at 110 dpi, black and white Times at 100 dpi, thick
+    grey Verdana / Tahoma at 200 dpi, faded Garamond at 200 dpi). Three parts, apart so that a gap in one does not hide
+    the others: what the OCR reads, what is replaced (privacy), how it is written (weight, ink, font, pixels)."""
+    print("\n== paragraph scans in four inks (Dossier Test 17)")
+    from anonymizer import ocrpage
+
+    src = ROOT / "sample_data" / "Dossier Test 17"
+    truth_all = json.loads((src / "fonts_truth.json").read_text(encoding="utf-8")) \
+        if (src / "fonts_truth.json").exists() else {}
+    if "paragraphes_scan.pdf" not in truth_all:
+        print("  (no paragraphes_scan.pdf in Dossier Test 17: skipped)")
+        return
+    truth = truth_all["paragraphes_scan.pdf"]["values"]
+    is_date = lambda v: re.fullmatch(r"\d\d/\d\d/\d{4}", v["value"]) is not None     # noqa: E731
+    # dates are replaced only when they are birth dates (the design): the others stay readable
+    kept = [v for v in truth if is_date(v) and v["value"] != "18/07/1975"]
+    replaced = [v for v in truth if v not in kept]
+    k = 300 / 72
+
+    # 1. what the OCR reads: the page read once, and the repaired reading (the page rescaled and read again)
+    doc = fitz.open(src / "paragraphes_scan.pdf")
+    once = more = total = 0
+    per_page = {}
+    for pno, page in enumerate(doc, 1):
+        img = ocr.render_page(page, 300)
+        words = [w for v in replaced if v["page"] == pno for w in v["words"]]
+        a = _reading_hits(ocr.ocr_words(img, "fra+eng"), words)
+        b = _reading_hits(ocrpage.page_words(img, "fra+eng"), words)
+        once, more, total = once + len(a), more + len(b), total + len(words)
+        per_page[pno] = (len(a), len(b), len(words))
+    check(f"reading: the words of the values are read ({once} by one reading, {more} by the repaired one, of {total})",
+          more >= total - 4 and more >= once + 5, str(per_page))
+    check("reading: no page is read worse after the repair", all(b >= a for a, b, _ in per_page.values()), str(per_page))
+
+    # 2. what is replaced: the file anonymized once, compared with the original pixel by pixel
+    tmp = Path(tempfile.mkdtemp(prefix="para_"))
+    layouts = []
+    page_now = {"p": 0}
+    run_scan_page, run_layout = scanpaint._scan_page, scanpaint.layout_value
+
+    def scan_hook(page, pno, *a, **kw):
+        page_now["p"] = pno
+        return run_scan_page(page, pno, *a, **kw)
+
+    def layout_hook(pf, original, part, b, face, is_bold):
+        runs = run_layout(pf, original, part, b, face, is_bold)
+        layouts.append((page_now["p"], tuple(b), part, [(t, f, bd) for t, f, bd, *_ in runs]))
+        return runs
+
+    scanpaint._scan_page, scanpaint.layout_value = scan_hook, layout_hook
+    engine._scan_page = scan_hook                   # engine took the function by name
+    try:
+        cfg, rep = run_folder("Dossier Test 17", tmp, _names_model(), files_only=["paragraphes_scan.pdf"])
+    finally:
+        scanpaint._scan_page, scanpaint.layout_value = run_scan_page, run_layout
+        engine._scan_page = run_scan_page
+    f = rep["files"][0]
+    out_path = tmp / "Dossier Test 17" / f["output"]
+    check("paragraphs: the file is anonymized without error, as a scan", f["error"] is None and f["mode"] == "scan",
+          str(f["error"]))
+    pix = {}
+
+    def page_px(path, p):
+        if (path, p) not in pix:
+            with fitz.open(path) as d:
+                pix[(path, p)] = np.asarray(ocr.render_page(d[p - 1], 300).convert("RGB")).astype(float)
+        return pix[(path, p)]
+
+    def corr(v):
+        """Mean correlation of the original and the output on the words of a value: 1 = untouched, low = replaced."""
+        cs = []
+        for w in v["words"]:
+            x0, y0, x1, y1 = [int(round(c * k)) for c in w["box"]]
+            a = page_px(src / "paragraphes_scan.pdf", v["page"])[y0:y1, x0:x1].mean(axis=2).ravel()
+            b = page_px(out_path, v["page"])[y0:y1, x0:x1].mean(axis=2).ravel()
+            cs.append(float(np.corrcoef(a, b)[0, 1]))
+        return float(np.mean(cs))
+
+    left = [f"p{v['page']} {v['value']}" for v in replaced if corr(v) >= 0.85]
+    check(f"detection: every value is replaced, none left readable on the page ({len(replaced) - len(left)}/{len(replaced)})",
+          not left, "; ".join(left))
+    readable = [v["value"] for v in replaced if verify.find_hits(out_path, v["value"], False, "fra+eng")]
+    check("detection: no value is found again in the output (text layer, then OCR)", not readable, "; ".join(readable))
+    check("detection: no leftover and no second-check suspect in the report", not f["leftovers"] and not f.get("suspects"),
+          f"{f['leftovers']} {f.get('suspects')}")
+    untouched = [f"p{v['page']} {v['value']}" for v in kept if corr(v) < 0.95]
+    check("detection: the dates that are not birth dates are not touched (design)", not untouched, "; ".join(untouched))
+
+    # 3. how it is written
+    by_page: dict = {}
+    for v in replaced:
+        for w in v["words"]:
+            box = list(w["box"])
+            for it in f["items"]:
+                for rb in it.get("boxes", []):             # the word and the box of its replacement together: a longer
+                    b = rb["box"]                           # fake spreads its ink over more area
+                    if rb["page"] == v["page"] and min(box[2], b[2]) > max(box[0], b[0]) and min(box[3], b[3]) > max(box[1], b[1]):
+                        box = [min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3])]
+            a = _word_mass(page_px(src / "paragraphes_scan.pdf", v["page"]), box)
+            o = _word_mass(page_px(out_path, v["page"]), box)
+            if a and o:
+                by_page.setdefault(v["page"], []).append((o["mass"] / a["mass"], o["stroke"] / max(a["stroke"], 1e-6),
+                                                          float(np.linalg.norm(o["ink"] - a["ink"]))))
+    for pno in sorted(by_page):
+        m, d = np.array([r[0] for r in by_page[pno]]), np.array([r[2] for r in by_page[pno]])
+        check(f"weight: page {pno}, ink mass of the replacements against the originals: median {np.median(m):.2f}, "
+              f"10th percentile {np.percentile(m, 10):.2f}, 90th {np.percentile(m, 90):.2f} (n={len(m)})",
+              0.88 <= np.median(m) <= 1.12 and np.percentile(m, 10) >= 0.70 and np.percentile(m, 90) <= 1.30)
+        check(f"ink: page {pno}, the colour of the replacements is the colour of the originals (median distance "
+              f"{np.median(d):.0f})", np.median(d) <= 20)
+    if 3 in by_page:
+        s3 = float(np.median([r[1] for r in by_page[3]]))
+        check(f"weight: page 3 (copier spread), the strokes of the replacements are as thick (ratio {s3:.2f})",
+              0.85 <= s3 <= 1.15)
+    # the face of every replacement: the weight word by word, the family
+    fam_ok = fam_n = 0
+    wrong_w = []
+    for p, b, part, runs in layouts:
+        x0, y0, x1, y1 = (c / k for c in b)
+        under = sorted((w for v in truth if v["page"] == p for w in v["words"]
+                        if min(x1, w["box"][2]) > max(x0, w["box"][0]) and min(y1, w["box"][3]) > max(y0, w["box"][1])),
+                       key=lambda w: w["box"][0])
+        written = [(fc, bd) for t, fc, bd in runs for _ in t.split()]
+        if not under:
+            continue
+        fam_n += 1
+        fam_ok += all(fc is not None and fc.family == under[0]["family"] for fc, _ in written)
+        if len(written) == len(under):
+            for (fc, bd), w in zip(written, under):
+                if bd != w["bold"]:
+                    wrong_w.append(f"p{p} '{w['text']}' is {'bold' if w['bold'] else 'regular'}")
+    check(f"face: no word is written in the wrong weight ({len(wrong_w)} wrong among the words that line up, "
+          f"{fam_n} replacements seen)", fam_n >= 25 and not wrong_w, "; ".join(wrong_w))
+    check(f"face: the family of the replacements ({fam_ok}/{fam_n})", fam_n >= 25 and fam_ok >= fam_n - 3)
+    # the quality fitted on each page
+    cfgp = {"style": {"mode": "replace", "font_match": True, "quality_match": True}}
+    fits = {}
+    for pno, page in enumerate(doc, 1):
+        img = ocr.render_page(page, 300)
+        pf = scanpaint.page_fonts(np.asarray(img.convert("L")), ocrpage.page_words(img, "fra+eng"), cfgp,
+                                  scanpaint.native_scale(page, 300), {})
+        fits[pno] = pf.page_quality()
+    check(f"quality: page 1 is a coarse scan in grey tones, page 2 black and white ({fits[1].describe()} / "
+          f"{fits[2].describe()})", not fits[1].hard and fits[2].hard and fits[2].blur == 0.0)
+    check(f"quality: page 3 (copier spread) is a thick copy, not a blurred one ({fits[3].describe()})",
+          fits[3].spread >= 0.5 and fits[3].blur <= 2.0)
+    check(f"quality: page 4 (a little blur, faded) keeps its blur ({fits[4].describe()})",
+          fits[4].blur <= 1.0 and abs(fits[4].spread) <= 0.5)
+    # the pixels: a coarse scan is drawn as blocks (no interpolation above twice its size): the replacements are blocks too,
+    # as the text of the same output that was not touched (the same JPEG of the output on both)
+    def flat(path, pno, words):
+        out = []
+        for w in words:
+            x0, y0, x1, y1 = [int(round(c * k)) for c in w["box"]]
+            g = page_px(path, pno)[y0:y1, x0:x1].mean(axis=2)
+            if g.shape[1] > 3:
+                out.append(float((np.abs(np.diff(g, axis=1)) < 1.5).mean()))
+        return float(np.mean(out)) if out else float("nan")
+
+    for pno in (1, 2):
+        mine = [w for v in replaced if v["page"] == pno for w in v["words"]]
+        around = [w for v in kept if v["page"] == pno for w in v["words"]]
+        got, ref = flat(out_path, pno, mine), flat(out_path, pno, around)
+        check(f"pixels: page {pno}, the replacements are blocks like the text around ({got:.2f} flat neighbours, "
+              f"{ref:.2f} for the text left as it is)", got >= 0.75 * ref)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+def native_blocks_tests():
+    """The pixels of a coarse scan (quality._native, hardness, the joint fit): no OCR, no file."""
+    print("\n== coarse scans: blocks, black and white, thick copies (synthetic)")
+    import io
+
+    from anonymizer import fontmatch, quality
+    from PIL import Image, ImageDraw, ImageFont
+
+    # blocks of 1 / scale pixels on the page's grid: two patches of one text cut at different places agree
+    rng = np.random.default_rng(3)
+    page = rng.random((120, 160))
+    full = quality._blocks(quality._native(page, 0.4, (0, 0)), 0.0)
+    part = quality._blocks(quality._native(page[17:90, 23:140], 0.4, (23, 17)), 0.0)
+    check("blocks: a patch cut anywhere shows the same native pixels as the whole page",
+          np.allclose(full[17:90, 23:140], part, atol=1e-9))
+    runs = np.diff(np.nonzero(np.diff(full[40]) != 0)[0])
+    check(f"blocks: the pixels of a 120 dpi scan are 2 or 3 pixels wide on a 300 dpi page ({runs.min()} .. {runs.max()})",
+          runs.min() >= 2 and runs.max() <= 3)
+    # a page drawn by MuPDF: above twice its size no interpolation, up to twice smooth
+    for dpi, flat_min, flat_max in ((100, 0.6, 0.72), (140, 0.5, 0.58), (150, 0.0, 0.05), (200, 0.0, 0.05)):
+        arr = (rng.random((200, int(8.27 * dpi))) * 255).astype(np.uint8)
+        buf = io.BytesIO()
+        Image.fromarray(arr).save(buf, "PNG")
+        doc = fitz.open()
+        pg = doc.new_page(width=595, height=200 * 72 / dpi)
+        pg.insert_image(pg.rect, stream=buf.getvalue())
+        pix = pg.get_pixmap(dpi=300)
+        g = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)[20:-20, :, 0].astype(int)
+        flat = float((g[:, 1:] == g[:, :-1]).mean())
+        check(f"viewer: a {dpi} dpi image drawn at 300 dpi is {'blocks' if dpi < 150 else 'smooth'} ({flat:.2f} flat neighbours)",
+              flat_min <= flat <= flat_max)
+
+    # black and white or not: read on the native grid
+    def scan_of(hard):
+        font = ImageFont.truetype(str(ROOT / "anonymizer" / "fonts" / "Roboto-Regular.ttf"), 120)
+        big = Image.new("L", (3000, 360), 255)
+        ImageDraw.Draw(big).text((20, 40), "Madame Héloïse Vandamme habite Namur", font=font, fill=0)
+        small = np.asarray(big.resize((int(3000 * 0.33), int(360 * 0.33)), Image.BOX)).astype(float)
+        if hard:
+            small = np.where(small < 140, 0.0, 255.0)
+        return np.kron(small, np.ones((3, 3)))
+
+    for hard in (True, False):
+        pg = scan_of(hard)
+        mid = quality.hardness(pg, [(0, 0, pg.shape[1], pg.shape[0])], 1 / 3)
+        check(f"hardness: a {'thresholded' if hard else 'anti-aliased'} scan reads as "
+              f"{'black and white' if hard else 'grey tones'} (mid-tones {mid})",
+              mid is not None and ((mid < quality.HARD_MID) == hard))
+    # the fit: a thick copy is a spread, not a blur
+    f = fontmatch.face("Verdana", False) or fontmatch.face("Arial", False)
+    lines = [("Titulaire", "Madame Héloïse Vandamme"), ("Adresse", "Rue des Tanneurs 47"),
+             ("Courriel", "heloise.vandamme@exemple.be"), ("Conseiller", "Monsieur Bastien Lambotte")]
+    for label, tq, ok in (("a copy thickened by 1.5 px and a little blurred is found thick, not blurred",
+                           quality.Quality(scale=2 / 3, blur=0.5, spread=1.5),
+                           lambda q: q.spread >= 0.75 and q.blur <= 1.5),
+                          ("a soft copy stays soft, with no spread invented", quality.Quality(scale=2 / 3, blur=1.4),
+                           lambda q: abs(q.spread) <= 0.25 and 0.7 <= q.blur <= 2.5)):
+        img, words = _synthetic_page(f, tq, lines, key=label)
+        q = fontmatch.PageFonts(np.asarray(img.convert("L")), words, tq.scale).page_quality()
+        check(f"fit: {label} ({q.describe()})", ok(q))
+
+
 GROUPS = [
     "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
@@ -2902,11 +3315,11 @@ GROUPS = [
     "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
     "speedup_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
-    "key_and_fake_tests",
+    "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests",
 ]
-SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests"}     # left out by --fast
+SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "paragraph_scan_tests"}     # left out by --fast
 # seconds a job took on a sequential run (group or folder name): the longest jobs are started first
-WEIGHT = {"font_scan_tests": 152, "config options": 105, "quality_offset_tests": 80, "Dossier Test 17": 71,
+WEIGHT = {"paragraph_scan_tests": 160, "font_scan_tests": 152, "config options": 105, "quality_offset_tests": 80, "Dossier Test 17": 71,
           "Dossier Test 05": 68, "Dossier Test 01": 46, "Dossier Test 00": 45, "contract_tests": 42,
           "Dossier Test 02": 32, "font_unit_tests": 30, "second_pass_tests": 23, "Dossier Test 06": 22,
           "Dossier Test 08": 21, "colon_tests": 15, "Dossier Test 16": 13, "Dossier Test 10": 12,

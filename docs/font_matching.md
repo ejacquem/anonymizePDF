@@ -112,3 +112,30 @@ a letter far outside the OCR box (the tail of a Garamond 'J') can leave a dot.
 
 Known limits: look-alike fonts on soft copies; a page entirely in bold reads as regular with ink spread; no italics;
 fonts outside the catalog get the closest candidate.
+
+## 9. Third round: coarse scans in four inks (`paragraphes_scan.pdf`, Dossier Test 17)
+
+Four pages of paragraphs, each with its own ink and scan: pixelated blue Calibri (110 dpi, point-sampled), black and white
+Times (100 dpi, threshold), thick grey Verdana / Tahoma (200 dpi, copier spread), faded Garamond (200 dpi). The user's
+real scans showed fakes darker or lighter than the text around them, smooth where the page is pixelated.
+
+Found and fixed (numbers: ink mass of the replacement / the original over the union of both boxes, median, 10th
+percentile, on the words that were replaced):
+- Privacy first: on the black and white page the OCR missed 'Clément', an e-mail and a phone number, garbled an IBAN and a
+  reference; names and a reference were not detected either. 11 values of 31 were left readable by eye in the output
+  (22 replaced); now 31 of 31 (a page is read four times: `ocrpage.page_words`, see CLAUDE.md section 9; detectors for
+  the shapes above).
+- The fit took a thick copy for a blurred one (blur 2.5, spread 0): p3 median 0.88 -> 0.92, 10th percentile 0.81 -> 0.85,
+  strokes 0.78 -> 0.89 of the original (10th percentile 0.67 -> 0.78). A joint search (every blur at every spread) and
+  candidates thickened by the fitted spread (family right on 8 of 9 values of that page instead of 3).
+- A scan enlarged more than twice is drawn by MuPDF as blocks: the fakes were smooth and heavier than the pixels around
+  them. They are blocks on the page's grid now (p1: mass median 1.13 -> 1.04, 90th percentile 1.20 -> 1.11; the jagged
+  steps are the page's).
+- A black and white scan: grey, smooth fakes (a quarter of the values only were replaced then, so the comparison is on 9
+  words: ink 23 levels away) -> black and white (25 words, ink 11 levels away, mass median 0.99, 10th percentile 0.79,
+  which is the threshold: a 1-pixel stroke is ink or nothing).
+- The weight threshold: the bold names of the pixelated page scored 0.41 and 0.47 (threshold 0.5): written regular. The
+  gap between regular and bold words is 0.31 .. 0.79 on the other scans: `BOLD_AT = 0.35`, and a score resting on fewer than
+  4 letters is shrunk toward regular (regular digits scored up to 0.58).
+Left: a value written in another family than its line (an IBAN in Consolas in a Garamond sentence) takes the line's;
+a fake narrower than the box of its original can leave a pale fragment of the last letter.

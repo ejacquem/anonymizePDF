@@ -25,6 +25,7 @@ from PIL import ImageDraw
 from . import faces, fields, fontmatch, quality, regions, render
 from .fake import match_case
 from .ocr import ocr_words, render_page
+from .ocrpage import page_words
 from .pii import Numberer, apply_config, invisible_chars, fitz, plan_page, visible_words, norm_value
 
 
@@ -208,7 +209,7 @@ def _pixel_words(page, visible: list[dict], ocr_lang: str, dpi: int = 300):
     k = 72 / dpi
     boxes = [(b[0] - 1.5, b[1] - 1.5, b[2] + 1.5, b[3] + 1.5) for b in (w["box"] for w in visible)]
     keep = []
-    for w in ocr_words(img, ocr_lang):
+    for w in page_words(img, ocr_lang):
         x0, y0, x1, y1 = w["box"]
         if not _inside((x0 * k, y0 * k, x1 * k, y1 * k), boxes):
             keep.append(w)
@@ -483,7 +484,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     t0 = time.time()
     img = render_page(page, 300)
     gray = np.asarray(img.convert("L"))                  # the page is not painted before the end: one grey copy
-    words = ocr_words(img, ocr_lang)
+    words = page_words(img, ocr_lang)
     skew = {}                                            # measures of the crops, shared by both passes
     angles = regions.line_angles(gray, words, skew)      # slant of each word, before painting
     words = _refine_slanted(img, words, angles, ocr_lang)                  # exact boxes of the slanted lines
