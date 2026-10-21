@@ -48,6 +48,7 @@ SPLIT_TYPES = {"ACCOUNT_NUMBER": 5, "BANK_CODE": 5, "CARD_NUMBER": 4}
 TYPE_ORDER = ["PERSON"] + ACTIVE_TYPES + ["DATE", "ORG", "LOCATION"]
 
 _STOP = set("""
+bonjour bonsoir salut cher chère chers chères hello dear hallo goedendag beste hoi
 janvier février fevrier mars avril mai juin juillet août aout septembre octobre novembre décembre
 january february march april may june july august september october november december jan feb apr jun jul aug sep sept oct nov dec
 bill payment payments interest interests capital income amount amounts rate rates gross net account accounts maturity

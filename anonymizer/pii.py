@@ -55,11 +55,11 @@ def _iban_ok(s: str) -> bool:
 
 
 def _v_iban(m):
-    tokens = m.group().split(" ")
+    tokens = [t.group() for t in re.finditer(r"\S+", m.group())]
+    ends = [t.end() for t in re.finditer(r"\S+", m.group())]
     for k in range(len(tokens), 0, -1):  # drop trailing groups until checksum is valid
-        cand = " ".join(tokens[:k])
-        if _iban_ok(cand):
-            return m.start(), m.start() + len(cand)
+        if _iban_ok(" ".join(tokens[:k])):
+            return m.start(), m.start() + ends[k - 1]
     return None
 
 
@@ -77,6 +77,11 @@ def _sepa_creditor_ok(s: str) -> bool:
 
 def _v_sepa_creditor(m):
     return (m.start(), m.end()) if _sepa_creditor_ok(m.group()) else None
+
+
+def _v_sepa_zzz(m):
+    """'XX kk ZZZ ...' with a digit after the business code: a SEPA creditor identifier as the OCR reads it."""
+    return (m.start(), m.end()) if re.search(r"\d", m.group()) else None
 
 
 def _luhn_ok(digits: str) -> bool:
@@ -330,7 +335,8 @@ _NL_STREET = (
 
 # Order = priority (earlier wins when matches overlap)
 DETECTORS = [
-    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban),
+    # the groups may be spaced widely ('FR76  3000  6000 ...': a layout with gaps between the groups)
+    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?:[ \t]{0,3}[A-Z0-9]{4}){2,7}(?:[ \t]{0,3}[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban),
     ("CREDIT_CARD", re.compile(r"(?<!\d)(?:\d[ \-]?){13,19}(?!\d)"), _v_card),
     # masked card number: '6703 **** **** 4471', '4975 XXXX XXXX 1234', 'Carte x4412'
     # the mask may be any run of stars or X ('495321XXXXXX7425' is a card as well as '6703 **** 4471')
@@ -343,6 +349,10 @@ DETECTORS = [
     # SEPA creditor identifier (direct debit): 'BE79ZZZ0404484654', 'FR12ZZZ123456'
     ("SEPA_CREDITOR_ID", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28}(?![A-Za-z0-9])"),
      _v_sepa_creditor),
+    # the business code ZZZ marks a creditor identifier ('FR16ZZZ001001M1200015436665'). The OCR may split it ('FRI 6ZZZ001001
+    # Ml 200015436665') and its check digits may not add up, so the shape is enough here (privacy first)
+    ("SEPA_CREDITOR_ID", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}(?:[ \t]?[0-9IlO]){2}[ \t]?ZZZ(?:[ \t]?[0-9A-Za-z]){6,30}(?![A-Za-z0-9])"),
+     _v_sepa_zzz),
     ("SEPA_CREDITOR_ID", re.compile(r"(?i:identifiant(?:\s+(?:du\s+)?cr[ée]ancier)?|identifiant\s+sepa|\bics\b|\bid\.?\s*cr[ée]ancier|"
                                     r"creditor\s+id(?:entifier)?|schuldeiser(?:s)?-?id(?:entificatie)?)\s*[:\-]?\s*"
                                     r"([A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28})(?![A-Za-z0-9])"), _v_group1),
@@ -363,7 +373,7 @@ DETECTORS = [
     # in front keeps other numbers out
     ("PHONE", re.compile(r"(?<![\w+])(?:\+|00)\d{1,3}[ .\-/\n]?(?:\(0\)[ .\-/]?)?\d(?:[ .\-/\n]?\d){6,10}(?!\d)"),
      _v_phone),
-    ("PHONE", re.compile(r"(?<![\w+])0[1-9]\d{0,2}(?:[ .\-/]?\d{2,3}){2,4}(?!\d)"), _v_phone),
+    ("PHONE", re.compile(r"(?<![\w+])0[1-9]\d{0,2}(?:[ .\-/]{0,3}\d{2,3}){2,4}(?!\d)"), _v_phone),
     # a North American number: '1 202 111-2222', '(202) 111-2222', '202.111.2222'
     ("PHONE", re.compile(r"(?<![\w+])(?:1[ .\-])?\(?\d{3}\)?[ .\-]\d{3}[ .\-]\d{4}(?!\d)"), None),
     # Street addresses (heuristic): "Kerkstraat 12", "Grote Markt 5", "Rue de la Loi 16"
