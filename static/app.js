@@ -652,13 +652,50 @@ function originalFiles() {
   return node ? (node.children || []).filter((c) => c.type === "file" && !c.anonymized).map((c) => c.path) : [];
 }
 
+// a field the arrows belong to (typing, a list): not a checkbox, a radio or a button, which keep the focus after a click
+function usesArrows(t) {
+  const el = t && t.closest ? t.closest("input, textarea, select, [contenteditable]") : null;
+  if (!el) return false;
+  return !(el.tagName === "INPUT" && ["checkbox", "radio", "button", "submit", "reset", "range", "color", "file"].includes(el.type));
+}
+
+// the folders that hold PDFs, in the order of the tree: Ctrl + up / down goes to the previous / next one (wraps around)
+function pdfFolders() {
+  const out = [];
+  const walk = (n) => {
+    if (n.type !== "dir") return;
+    if (n.pdf_count) out.push(n.path);
+    (n.children || []).forEach(walk);
+  };
+  if (state.tree) walk(state.tree);
+  return out;
+}
+
+async function stepFolder(dir) {
+  const list = pdfFolders();
+  if (!list.length) return;
+  const i = list.indexOf(state.folder);
+  const next = dir > 0 ? (i + 1) % list.length : (i <= 0 ? list.length - 1 : i - 1);
+  if (list[next] === state.folder) return;
+  if ((await selectFolder(list[next])) === false) return;
+  unfoldAbove(list[next]);
+  const first = originalFiles()[0];
+  if (first) await openFile(first);
+  else renderTree();
+  const row = document.querySelector("#tree .row.selected");
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+}
+
 document.addEventListener("keydown", (e) => {
   if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-  const t = e.target;
-  if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;   // typing keeps its arrows
-  const files = originalFiles();
-  if (!files.length || state.running) return;
+  if (e.altKey || e.shiftKey) return;
+  if (usesArrows(e.target)) return;                          // typing keeps its arrows
+  if (e.ctrlKey || e.metaKey) {                              // Ctrl + arrows: the previous / next folder
+    e.preventDefault();
+    return stepFolder(e.key === "ArrowDown" ? 1 : -1);
+  }
+  const files = originalFiles();                             // (also while a job runs: viewing a file changes nothing for it)
+  if (!files.length) return;
   e.preventDefault();
   const cur = currentOriginalNode();
   const i = cur ? files.indexOf(cur.path) : -1;
@@ -1703,8 +1740,9 @@ document.querySelectorAll(".cfgbar .seg button").forEach((b) => { b.onclick = ()
 function updateToolbar() {
   const node = state.folder !== null ? state.nodes[state.folder] : null;
   const n = node ? node.pdf_count : 0;
+  const here = originalFiles().indexOf(currentOriginalNode() ? currentOriginalNode().path : null) + 1;   // 0: no file open
   $("#folderInfo").innerHTML = node
-    ? `Working folder: <b>${esc(node.name)}</b> · ${n} PDF${n === 1 ? "" : "s"}${n ? "" : " (no PDF directly in this folder)"}`
+    ? `Working folder: <b>${esc(node.name)}</b> · ${here ? `<b>${here}</b>/` : ""}${n} PDF${n === 1 ? "" : "s"}${n ? "" : " (no PDF directly in this folder)"}`
     : "Select a folder in the tree (click a folder or a file).";
   const batch = !n && hasSubfolders(node);               // a folder of client folders: the buttons act on all of them
   state.batchMode = batch;
