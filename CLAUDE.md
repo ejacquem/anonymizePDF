@@ -761,6 +761,24 @@ Order must never change a result (`order_tests`): a value written with several s
   main process; each worker peaks near 0.5 GB). The first scan or anonymization of a run of the app also starts the
   workers (about 1 s for 3 workers started together). A one-page scan is not split (the passport: 7.9 s, fonts 3.2 s and
   face detection 2.0 s are the left).
+- Final state (face detection on threads, slot by load, files fed ahead; same method, 6 workers): contrat_assurance_scan
+  16.7 s, paragraphes_scan 15.0, releve_banque_mosane_scan 29.9, releve_banque_mosane (digital) 3.1, passeport_scan 7.7,
+  releve_scan_cherchable 22.7, releve_annexe_scannee 13.7, contrat_image_collee 5.0: total 113.8 s against 227.7 s for
+  step 0 (-50 %). A folder of 7 files (5 one-page scans, a digital invoice, a mixed statement): scan 13.0 -> 5.3 s,
+  anonymize 36.7 -> 18.6 s. Face detection: 300 dpi page 2.2 -> 1.5 s (PIL turns, no resize at full size, windows on
+  threads; the model's own run is only ~0.4 s, the page preparation was the rest).
+- Tried and NOT kept (accuracy gates of Dossier Test 17, `font_scan_tests`: family 47/48, written 47/48, output same
+  font 48/48, weights 48/48 / 233/234): (3a) comparing the words of a page with the families that explain its 20 longest
+  words only (K = 8, 12, 16 families, fallback to the whole catalog when a word's best score is 0.05 / 0 / -0.05 under
+  the sample's median): family 44-47/48 and output same font 42-47/48 - the calibration shows 54 % of the words falling
+  back at gap 0 and 4 % unflagged look-alike swaps; regular faces only: 45/48; no italics: 46/48. (3b) the mass
+  reference on the 20 quality-sample words instead of 40 (one raw scoring less): same accuracy but no measurable gain
+  (fonts 42.7 -> 40.0 s, within noise). (3c) not applicable here: `ocrpage.py` / `ALT_READINGS` (several OCR readings of
+  a page) exist only in the separate anonymizePDF_Fonts working copy; this code reads a page once. (3d) face windows:
+  skipping blank windows (pixel std < 4: 18 % of the windows, no detection lost in 150 on the test pages, the weakest
+  detecting window has std 16) saves ~0.07 s a page, as the model run is not the cost; the overlap and the quarter
+  turns are kept (privacy first). Exact alternatives examined and dropped: `getmask2` for the probe renderings (same
+  pixels, twice slower), pre-pruning faces by predicted width (the far faces' scores need their exact widths).
 - Every speed-up keeps the results identical. Check it with `tools/snapshot_results.py`: `save` before and after a
   change (`--code <root>` runs an exported older commit), then `compare` prints IDENTICAL (configs, reports, output
   hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs. The random ID is
