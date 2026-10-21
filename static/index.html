@@ -23,6 +23,8 @@
   <label class="chk"><input type="checkbox" id="appOcr"> OCR second pass when anonymizing (also on digital PDFs)</label>
   <label class="chk" title="Scans and pictures: the fake text gets the quality detected on the page (blur, grain, resolution). Below 0 it is made a little worse than detected, above 0 a little cleaner. 0 = as detected.">Fake text quality
     <input type="range" id="appQuality" min="-1" max="1" step="0.05"> <span id="appQualityVal" class="muted small"></span></label>
+  <label class="chk" title="The limit of the slider above: the fake text is never made worse than this, whatever the slider says (at -1 there is no limit). Blurry copies stay readable.">Lowest fake text quality
+    <input type="range" id="appQualityFloor" min="-1" max="0" step="0.05"> <span id="appQualityFloorVal" class="muted small"></span></label>
   <div class="appmenu-sub">OCR engine <select id="appOcrEngine"></select></div>
   <div class="appmenu-sub">Names models <div id="appModels" class="appmodels"></div></div>
 </div>

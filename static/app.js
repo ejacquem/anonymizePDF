@@ -55,6 +55,8 @@ function syncAppMenu() {
   $("#appAutoZoom").checked = !!state.app.autoZoom;
   $("#appQuality").value = state.app.qualityOffset || 0;
   $("#appQualityVal").textContent = qualityLabel(state.app.qualityOffset || 0);
+  $("#appQualityFloor").value = state.app.qualityFloor;
+  $("#appQualityFloorVal").textContent = floorLabel(state.app.qualityFloor);
   renderEngineChoices();
 }
 
@@ -122,6 +124,15 @@ $("#appQuality").ondblclick = (e) => {
   $("#appQualityVal").textContent = qualityLabel(0);
   saveApp();
 };
+// the lowest quality the fake text may get: the slider above never goes below it (-1 = no limit)
+function floorLabel(v) { return v <= -1 ? "no limit" : v.toFixed(2); }
+$("#appQualityFloor").oninput = (e) => {
+  state.app.qualityFloor = Math.round(+e.target.value * 100) / 100;
+  $("#appQualityFloorVal").textContent = floorLabel(state.app.qualityFloor);
+  saveApp();
+};
+// the quality sent with a run: the slider, not below the limit
+function sentQuality() { return Math.max(state.app.qualityOffset || 0, state.app.qualityFloor ?? -1); }
 $("#appOcrEngine").onchange = async (e) => {
   state.app.ocrEngine = e.target.value;
   saveApp();
@@ -887,7 +898,7 @@ function drawBoxes() {
         width: (h.box[2] - h.box[0]) * k + "px", height: (h.box[3] - h.box[1]) * k + "px" });
       el.appendChild(d);
     });
-    entries.filter((e) => e.page === i + 1 && (e.type !== "text" || boxes.textTool)).forEach((e) => {
+    entries.filter((e) => e.page === i + 1).forEach((e) => {          // the typed texts show with or without the Text tool
       const bx = boxes.preview && boxes.preview.key === e.key ? boxes.preview.box : e.box;
       const d = document.createElement("div");
       const resizing = boxes.drag && boxes.drag.ent && boxes.drag.ent.key === e.key && boxes.drag.mode !== "move";
@@ -1236,7 +1247,7 @@ async function applyBoxes() {
   const scroll = { x: box.scrollLeft, y: box.scrollTop };
   const r = await runJob("anonymize", "/api/anonymize",
     { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      quality_offset: state.app.qualityOffset || 0 },
+      quality_offset: sentQuality() },
     "Apply black boxes · " + cur.name, { quiet: true });
   await loadTree();
   await loadReport();
@@ -1268,6 +1279,7 @@ viewers.anon.list.addEventListener("pointerdown", (e) => {
   const handle = e.target.closest(".bhandle"), box = e.target.closest(".bbox");
   const page = +pageEl.dataset.page;
   if (e.target.closest(".btextinput")) return;                 // typing in a new text box: no pan, no new box
+  if (box && box.classList.contains("text") && !boxes.textTool) return;   // shown, not editable: the view pans (dblclick edits)
   if (box || boxes.tool || boxes.textTool) {
     e.preventDefault();
     e.stopPropagation();                                        // no pan while a box is drawn or edited
@@ -1544,7 +1556,7 @@ state.model = null;
 state.ocrVerify = (() => { try { return localStorage.getItem(OCR_KEY) === "1"; } catch (e) { return false; } })();
 // app settings (the menu ⚙ in the header): kept in this browser
 const APP_KEY = "anonymizePDF.app";
-const APP_DEFAULT = { popup: true, popupSeconds: 3, changesWidth: 2, autoZoom: false, qualityOffset: 0 };
+const APP_DEFAULT = { popup: true, popupSeconds: 3, changesWidth: 2, autoZoom: false, qualityOffset: 0, qualityFloor: -0.5 };
 state.app = (() => { try { return { ...APP_DEFAULT, ...JSON.parse(localStorage.getItem(APP_KEY) || "{}") }; } catch (e) { return { ...APP_DEFAULT }; } })();
 function saveApp() { try { localStorage.setItem(APP_KEY, JSON.stringify(state.app)); } catch (e) { /* no storage */ } }
 function applyAppSettings() {
@@ -1932,11 +1944,17 @@ $("#btnScan").onclick = async () => {
 };
 
 // anonymize every file of the working folder (the config is saved first when it has edits)
+// the originals of the working folder whose black boxes / typed texts / removed boxes are not applied yet
+function folderPendingFiles() {
+  const node = state.folder !== null ? state.nodes[state.folder] : null;
+  return node ? (node.children || []).filter((c) => c.type === "file" && !c.anonymized && isPending(c.name)).map((c) => c.name) : [];
+}
+
 async function anonymizeFolder() {
   if (state.dirty && !(await saveConfig())) return null;
   const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      quality_offset: state.app.qualityOffset || 0 }, "Anonymize");
+    { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(), include: folderPendingFiles(),
+      quality_offset: sentQuality() }, "Anonymize");
   await loadTree();
   await loadReport();
   await reloadConfigIfSuggested();
@@ -1972,7 +1990,7 @@ $("#btnRunFile").onclick = async () => {
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("anonymize", "/api/anonymize",
     { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      quality_offset: state.app.qualityOffset || 0 }, "Anonymize file");
+      quality_offset: sentQuality() }, "Anonymize file");
   await loadTree();
   await loadReport();
   await reloadConfigIfSuggested();
@@ -2043,7 +2061,7 @@ async function runBatch(action) {
   if (action === "scan_anonymize" && !confirm("Scan every client folder below and anonymize it right away, folder by folder, without reviewing the new configs? Your edits are kept, reviewed files are left alone.")) return;
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify,
-    quality_offset: state.app.qualityOffset || 0 },
+    quality_offset: sentQuality() },
     { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize",
       scan_anonymize: "Batch scan & anonymize" }[action], { keepsConfig: action === "anonymize" });
   if (r && r.status === "done" && action !== "scan") pendingBoxes.clear();      // every file of the batch is regenerated
