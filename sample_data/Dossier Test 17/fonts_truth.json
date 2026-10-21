@@ -2186,5 +2186,1804 @@
         ]
       }
     ]
+  },
+  "paragraphes_scan.pdf": {
+    "pages": [
+      {
+        "page": 1,
+        "dpi": 110,
+        "resample": "nearest",
+        "spread": 0,
+        "ink": [
+          25,
+          45,
+          110
+        ],
+        "blur": 0.0,
+        "grain": 5.0,
+        "jpeg": 45,
+        "paper": [
+          250,
+          250,
+          246
+        ]
+      },
+      {
+        "page": 2,
+        "dpi": 100,
+        "resample": "box",
+        "spread": 0,
+        "threshold": 0.55,
+        "ink": 15,
+        "blur": 0.0,
+        "grain": 4.0,
+        "jpeg": 50,
+        "paper": [
+          252,
+          252,
+          250
+        ]
+      },
+      {
+        "page": 3,
+        "dpi": 200,
+        "resample": "box",
+        "spread": 1,
+        "ink": [
+          70,
+          70,
+          70
+        ],
+        "blur": 0.5,
+        "grain": 6.0,
+        "jpeg": 60,
+        "paper": [
+          246,
+          243,
+          236
+        ]
+      },
+      {
+        "page": 4,
+        "dpi": 200,
+        "resample": "box",
+        "spread": 0,
+        "ink": 75,
+        "blur": 0.4,
+        "grain": 8.0,
+        "jpeg": 55,
+        "paper": [
+          244,
+          242,
+          236
+        ]
+      }
+    ],
+    "values": [
+      {
+        "page": 1,
+        "value": "Océane",
+        "words": [
+          {
+            "text": "Océane",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              261.0,
+              105.0,
+              296.5,
+              116.1
+            ]
+          }
+        ]
+      },
+      {
+        "page": 1,
+        "value": "TASSIN",
+        "words": [
+          {
+            "text": "TASSIN",
+            "family": "Calibri",
+            "bold": true,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              299.1,
+              105.0,
+              333.3,
+              116.1
+            ]
+          }
+        ]
+      },
+      {
+        "page": 1,
+        "value": "12/05/2024",
+        "words": [
+          {
+            "text": "12/05/2024",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              117.8,
+              121.7,
+              173.3,
+              132.8
+            ]
+          }
+        ]
+      },
+      {
+        "page": 1,
+        "value": "BE65 0021 5647 3829",
+        "words": [
+          {
+            "text": "BE65",
+            "family": "Calibri",
+            "bold": true,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              379.3,
+              121.7,
+              403.0,
+              132.8
+            ]
+          },
+          {
+            "text": "0021",
+            "family": "Calibri",
+            "bold": true,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              405.6,
+              121.7,
+              428.9,
+              132.8
+            ]
+          },
+          {
+            "text": "5647",
+            "family": "Calibri",
+            "bold": true,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              431.5,
+              121.7,
+              454.9,
+              132.8
+            ]
+          },
+          {
+            "text": "3829",
+            "family": "Calibri",
+            "bold": true,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              457.5,
+              121.7,
+              480.8,
+              132.8
+            ]
+          }
+        ]
+      },
+      {
+        "page": 1,
+        "value": "Quentin Rossignol",
+        "words": [
+          {
+            "text": "Quentin",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              98.3,
+              138.3,
+              136.3,
+              149.5
+            ]
+          },
+          {
+            "text": "Rossignol",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              138.9,
+              138.3,
+              183.0,
+              149.5
+            ]
+          }
+        ]
+      },
+      {
+        "page": 1,
+        "value": "Dorian",
+        "words": [
+          {
+            "text": "Dorian",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              224.3,
+              188.4,
+              255.7,
+              199.5
+            ]
+          }
+        ]
+      },
+      {
+        "page": 1,
+        "value": "Lemaire",
+        "words": [
+          {
+            "text": "Lemaire",
+            "family": "Calibri",
+            "bold": true,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              258.3,
+              188.4,
+              296.6,
+              199.5
+            ]
+          }
+        ]
+      },
+      {
+        "page": 1,
+        "value": "+32 2 415 78 06",
+        "words": [
+          {
+            "text": "+32",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              361.7,
+              188.4,
+              379.1,
+              199.5
+            ]
+          },
+          {
+            "text": "2",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              381.7,
+              188.4,
+              387.5,
+              199.5
+            ]
+          },
+          {
+            "text": "415",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              390.1,
+              188.4,
+              407.6,
+              199.5
+            ]
+          },
+          {
+            "text": "78",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              410.2,
+              188.4,
+              421.8,
+              199.5
+            ]
+          },
+          {
+            "text": "06",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              424.4,
+              188.4,
+              436.1,
+              199.5
+            ]
+          }
+        ]
+      },
+      {
+        "page": 1,
+        "value": "Avenue des Érables 214",
+        "words": [
+          {
+            "text": "Avenue",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              216.6,
+              249.9,
+              252.0,
+              261.0
+            ]
+          },
+          {
+            "text": "des",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              254.6,
+              249.9,
+              270.9,
+              261.0
+            ]
+          },
+          {
+            "text": "Érables",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              273.5,
+              249.9,
+              307.5,
+              261.0
+            ]
+          },
+          {
+            "text": "214",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              310.1,
+              249.9,
+              327.6,
+              261.0
+            ]
+          }
+        ]
+      },
+      {
+        "page": 1,
+        "value": "1050 Bruxelles",
+        "words": [
+          {
+            "text": "1050",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              333.1,
+              249.9,
+              356.4,
+              261.0
+            ]
+          },
+          {
+            "text": "Bruxelles",
+            "family": "Calibri",
+            "bold": false,
+            "size": 11.5,
+            "ink": [
+              25,
+              45,
+              110
+            ],
+            "box": [
+              359.0,
+              249.9,
+              401.5,
+              261.0
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "03/09/2024",
+        "words": [
+          {
+            "text": "03/09/2024",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              266.8,
+              105.2,
+              316.9,
+              115.8
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "BE97 1430 9281 5604",
+        "words": [
+          {
+            "text": "BE97",
+            "family": "Times New Roman",
+            "bold": true,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              105.8,
+              121.1,
+              131.5,
+              131.8
+            ]
+          },
+          {
+            "text": "1430",
+            "family": "Times New Roman",
+            "bold": true,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              134.2,
+              121.1,
+              156.2,
+              131.8
+            ]
+          },
+          {
+            "text": "9281",
+            "family": "Times New Roman",
+            "bold": true,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              159.0,
+              121.1,
+              181.0,
+              131.8
+            ]
+          },
+          {
+            "text": "5604",
+            "family": "Times New Roman",
+            "bold": true,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              183.7,
+              121.1,
+              205.7,
+              131.8
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "Madame Élodie Verstraeten",
+        "words": [
+          {
+            "text": "Madame",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              195.3,
+              137.0,
+              233.8,
+              147.7
+            ]
+          },
+          {
+            "text": "Élodie",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              236.6,
+              137.0,
+              265.3,
+              147.7
+            ]
+          },
+          {
+            "text": "Verstraeten",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              268.0,
+              137.0,
+              318.7,
+              147.7
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "Rue du Moulin 9",
+        "words": [
+          {
+            "text": "Rue",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              495.1,
+              137.0,
+              512.8,
+              147.7
+            ]
+          },
+          {
+            "text": "du",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              515.6,
+              137.0,
+              526.6,
+              147.7
+            ]
+          },
+          {
+            "text": "Moulin",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              60,
+              153.0,
+              92.4,
+              163.7
+            ]
+          },
+          {
+            "text": "9",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              95.1,
+              153.0,
+              100.6,
+              163.7
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "5000 Namur",
+        "words": [
+          {
+            "text": "5000",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              106.1,
+              153.0,
+              128.1,
+              163.7
+            ]
+          },
+          {
+            "text": "Namur",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              130.9,
+              153.0,
+              161.4,
+              163.7
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "Clément",
+        "words": [
+          {
+            "text": "Clément",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              295.8,
+              168.9,
+              333.0,
+              179.6
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "Dessaint",
+        "words": [
+          {
+            "text": "Dessaint",
+            "family": "Times New Roman",
+            "bold": true,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              335.8,
+              168.9,
+              375.5,
+              179.6
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "+32 81 22 40 17",
+        "words": [
+          {
+            "text": "+32",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              413.7,
+              195.9,
+              430.9,
+              206.6
+            ]
+          },
+          {
+            "text": "81",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              433.7,
+              195.9,
+              444.7,
+              206.6
+            ]
+          },
+          {
+            "text": "22",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              447.4,
+              195.9,
+              458.4,
+              206.6
+            ]
+          },
+          {
+            "text": "40",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              461.2,
+              195.9,
+              472.2,
+              206.6
+            ]
+          },
+          {
+            "text": "17",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              474.9,
+              195.9,
+              485.9,
+              206.6
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "clement.dessaint@exemple.be",
+        "words": [
+          {
+            "text": "clement.dessaint@exemple.be",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              104.6,
+              211.8,
+              238.1,
+              222.5
+            ]
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "value": "BT 4471 0926 AX",
+        "words": [
+          {
+            "text": "BT",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              368.8,
+              211.8,
+              382.9,
+              222.5
+            ]
+          },
+          {
+            "text": "4471",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              385.6,
+              211.8,
+              407.6,
+              222.5
+            ]
+          },
+          {
+            "text": "0926",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              410.4,
+              211.8,
+              432.4,
+              222.5
+            ]
+          },
+          {
+            "text": "AX",
+            "family": "Times New Roman",
+            "bold": false,
+            "size": 11,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              435.1,
+              211.8,
+              451.0,
+              222.5
+            ]
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "value": "Hugo",
+        "words": [
+          {
+            "text": "Hugo",
+            "family": "Verdana",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              310.1,
+              102.3,
+              337.6,
+              112.5
+            ]
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "value": "VANDERSTRAETEN",
+        "words": [
+          {
+            "text": "VANDERSTRAETEN",
+            "family": "Verdana",
+            "bold": true,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              341.1,
+              102.3,
+              451.7,
+              112.5
+            ]
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "value": "18/07/1975",
+        "words": [
+          {
+            "text": "18/07/1975",
+            "family": "Verdana",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              60,
+              117.5,
+              122.9,
+              127.7
+            ]
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "value": "Chaussée de Mons 58",
+        "words": [
+          {
+            "text": "Chaussée",
+            "family": "Verdana",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              481.1,
+              117.5,
+              531.5,
+              127.7
+            ]
+          },
+          {
+            "text": "de",
+            "family": "Verdana",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              60,
+              132.8,
+              72.8,
+              143.0
+            ]
+          },
+          {
+            "text": "Mons",
+            "family": "Verdana",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              76.5,
+              132.8,
+              103.8,
+              143.0
+            ]
+          },
+          {
+            "text": "58",
+            "family": "Verdana",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              107.5,
+              132.8,
+              120.9,
+              143.0
+            ]
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "value": "7000 Mons",
+        "words": [
+          {
+            "text": "7000",
+            "family": "Verdana",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              128.4,
+              132.8,
+              155.1,
+              143.0
+            ]
+          },
+          {
+            "text": "Mons",
+            "family": "Verdana",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              158.8,
+              132.8,
+              186.1,
+              143.0
+            ]
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "value": "BE46 0689 3174 0256",
+        "words": [
+          {
+            "text": "BE46",
+            "family": "Tahoma",
+            "bold": true,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              256.5,
+              188.9,
+              283.5,
+              199.1
+            ]
+          },
+          {
+            "text": "0689",
+            "family": "Tahoma",
+            "bold": true,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              286.6,
+              188.9,
+              313.3,
+              199.1
+            ]
+          },
+          {
+            "text": "3174",
+            "family": "Tahoma",
+            "bold": true,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              316.4,
+              188.9,
+              343.2,
+              199.1
+            ]
+          },
+          {
+            "text": "0256",
+            "family": "Tahoma",
+            "bold": true,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              346.2,
+              188.9,
+              373.0,
+              199.1
+            ]
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "value": "hugo.vanderstraeten@exemple.be",
+        "words": [
+          {
+            "text": "hugo.vanderstraeten@exemple.be",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              314.1,
+              204.2,
+              473.0,
+              214.4
+            ]
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "value": "+32 65 40 18 73",
+        "words": [
+          {
+            "text": "+32",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              127.4,
+              219.4,
+              146.5,
+              229.6
+            ]
+          },
+          {
+            "text": "65",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              149.8,
+              219.4,
+              161.3,
+              229.6
+            ]
+          },
+          {
+            "text": "40",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              164.5,
+              219.4,
+              176.0,
+              229.6
+            ]
+          },
+          {
+            "text": "18",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              179.3,
+              219.4,
+              190.8,
+              229.6
+            ]
+          },
+          {
+            "text": "73",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              194.0,
+              219.4,
+              205.5,
+              229.6
+            ]
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "value": "REF 77 3094 2281",
+        "words": [
+          {
+            "text": "REF",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              349.5,
+              219.4,
+              367.4,
+              229.6
+            ]
+          },
+          {
+            "text": "77",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              370.6,
+              219.4,
+              382.1,
+              229.6
+            ]
+          },
+          {
+            "text": "3094",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              385.4,
+              219.4,
+              408.3,
+              229.6
+            ]
+          },
+          {
+            "text": "2281",
+            "family": "Tahoma",
+            "bold": false,
+            "size": 10.5,
+            "ink": [
+              70,
+              70,
+              70
+            ],
+            "box": [
+              411.6,
+              219.4,
+              434.5,
+              229.6
+            ]
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "value": "Noémie",
+        "words": [
+          {
+            "text": "Noémie",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              103.0,
+              101.8,
+              140.4,
+              113.4
+            ]
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "value": "DUBOIS",
+        "words": [
+          {
+            "text": "DUBOIS",
+            "family": "Garamond",
+            "bold": true,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              143.4,
+              101.8,
+              190.4,
+              113.4
+            ]
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "value": "22/01/2025",
+        "words": [
+          {
+            "text": "22/01/2025",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              315.6,
+              101.8,
+              372.6,
+              113.4
+            ]
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "value": "Boulevard Piercot 30",
+        "words": [
+          {
+            "text": "Boulevard",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              235.1,
+              119.2,
+              282.7,
+              130.8
+            ]
+          },
+          {
+            "text": "Piercot",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              285.7,
+              119.2,
+              318.8,
+              130.8
+            ]
+          },
+          {
+            "text": "30",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              321.8,
+              119.2,
+              333.1,
+              130.8
+            ]
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "value": "4000 Liège",
+        "words": [
+          {
+            "text": "4000",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              338.7,
+              119.2,
+              361.2,
+              130.8
+            ]
+          },
+          {
+            "text": "Liège",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              364.2,
+              119.2,
+              389.2,
+              130.8
+            ]
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "value": "BE70 0016 9028 4173",
+        "words": [
+          {
+            "text": "BE70",
+            "family": "Consolas",
+            "bold": true,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              256.3,
+              183.4,
+              282.7,
+              195.0
+            ]
+          },
+          {
+            "text": "0016",
+            "family": "Consolas",
+            "bold": true,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              289.3,
+              183.4,
+              315.7,
+              195.0
+            ]
+          },
+          {
+            "text": "9028",
+            "family": "Consolas",
+            "bold": true,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              322.3,
+              183.4,
+              348.7,
+              195.0
+            ]
+          },
+          {
+            "text": "4173",
+            "family": "Consolas",
+            "bold": true,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              355.3,
+              183.4,
+              381.7,
+              195.0
+            ]
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "value": "Monsieur Yannick Halleux",
+        "words": [
+          {
+            "text": "Monsieur",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              470.0,
+              183.4,
+              514.3,
+              195.0
+            ]
+          },
+          {
+            "text": "Yannick",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              60,
+              200.8,
+              98.4,
+              212.4
+            ]
+          },
+          {
+            "text": "Halleux",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              101.4,
+              200.8,
+              137.2,
+              212.4
+            ]
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "value": "04/02/2019",
+        "words": [
+          {
+            "text": "04/02/2019",
+            "family": "Garamond",
+            "bold": false,
+            "size": 12,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              225.9,
+              200.8,
+              282.9,
+              212.4
+            ]
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "value": "22/01/2025",
+        "words": [
+          {
+            "text": "22/01/2025",
+            "family": "Segoe UI",
+            "bold": false,
+            "size": 10,
+            "ink": [
+              20,
+              20,
+              24
+            ],
+            "box": [
+              133.6,
+              230.9,
+              184.5,
+              240.6
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

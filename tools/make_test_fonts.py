@@ -114,14 +114,17 @@ def page_lines(doc, pno: int, truth: list):
 
 
 def degrade(pix_img: Image.Image, q: dict, seed: int) -> Image.Image:
-    """Print-and-scan look: ink faded to q['ink'], paper colour, soft focus, grain."""
+    """Print-and-scan look: ink faded to q['ink'] (a grey level or an RGB colour), paper colour, soft focus, grain.
+    q['threshold'] (optional) makes the page black and white first: the edges of the strokes become hard."""
     rng = np.random.default_rng(seed)
     a = np.asarray(pix_img.convert("L")).astype(float) / 255.0          # 1 = paper, 0 = ink
+    if q.get("threshold"):
+        a = (a > q["threshold"]).astype(float)
     if q["blur"]:
         a = np.asarray(Image.fromarray((a * 255).astype(np.uint8)).filter(
             ImageFilter.GaussianBlur(q["blur"]))).astype(float) / 255.0
     paper = np.array(q["paper"], dtype=float)
-    ink = np.array([q["ink"]] * 3, dtype=float)
+    ink = np.array(q["ink"], dtype=float) if isinstance(q["ink"], tuple) else np.array([q["ink"]] * 3, dtype=float)
     rgb = ink + a[..., None] * (paper - ink)
     rgb += rng.normal(0, q["grain"], size=a.shape)[..., None]
     return Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8))
@@ -283,7 +286,9 @@ def _layout(page, blocks, aliases, truth: list, pno: int):
     """Write the blocks (titles, label lines, justified-less paragraphs that wrap) and record every word of every
     value with its font, weight and box (PDF points, before the tilt)."""
     left, right, y = 60, 535, 70
-    for kind, runs, size in blocks:
+    for blk in blocks:
+        kind, runs, size = blk[:3]
+        colour = blk[3] if len(blk) > 3 else (0, 0, 0)                 # the ink, 0-255 per channel
         lead = size * (1.45 if kind == "para" else 1.6)
         y += size * (0.9 if kind == "title" else 0.4)
         x = left
@@ -302,9 +307,10 @@ def _layout(page, blocks, aliases, truth: list, pno: int):
                     x += sp
                 if x + ww > right and x > left:               # wrap
                     x, y = left, y + lead
-                page.insert_text((x, y), w, fontname=alias, fontsize=size)
+                page.insert_text((x, y), w, fontname=alias, fontsize=size,
+                                 color=tuple(c / 255 for c in colour))
                 if item is not None:
-                    item["words"].append({"text": w, "family": fam, "bold": bold, "size": size,
+                    item["words"].append({"text": w, "family": fam, "bold": bold, "size": size, "ink": list(colour),
                                           "box": [round(x, 1), round(y - size * 0.75, 1), round(x + ww, 1),
                                                   round(y + size * 0.22, 1)]})
                 x += ww
@@ -356,9 +362,157 @@ def make_insurance(out: Path, truth: list, pages: list):
     scan.save(out, garbage=4, deflate=True)
 
 
+# ---------------------------------------------------------------------------
+# paragraphs: long sentences with values inside them, bold runs in the middle of a line, four inks, and four scans
+# from a hard black and white copy to a faded one with thick or thin strokes. Some are pixelated: sampled at the scan
+# resolution without smoothing, so the strokes break up into pixels as on a real low-resolution scan.
+# ---------------------------------------------------------------------------
+
+BLUE, GREY, INK_BLACK = (25, 45, 110), (70, 70, 70), (20, 20, 24)
+IBAN_C = be_iban("0021", "56473829")
+IBAN_D = be_iban("1430", "92815604")
+IBAN_E = be_iban("0689", "31740256")
+IBAN_F = be_iban("0016", "90284173")
+TAH, CON = "Tahoma", "Consolas"
+PARAGRAPH_PAGES = [
+    {   # page 1: dark blue ink, Calibri body, sampled at 110 dpi without antialiasing (pixelated)
+        "q": {"dpi": 110, "resample": "nearest", "spread": 0, "ink": BLUE, "paper": (250, 250, 246), "blur": 0.0,
+              "grain": 5.0, "jpeg": 45},
+        "blocks": [
+            ("title", [T("Confirmation de transfert d'épargne", GEO, B)], 13, BLUE),
+            ("para", [T("Le présent courrier confirme que Madame", CAL), V("Océane", CAL), V("TASSIN", CAL, B),
+                      T(", cliente depuis de nombreuses années, a demandé le", CAL), V("12/05/2024", CAL),
+                      T(", le transfert de son épargne vers le compte", CAL), V(IBAN_C, CAL, B),
+                      T("ouvert au nom de", CAL), V("Quentin Rossignol", CAL),
+                      T(". Les instructions reçues par courrier recommandé ont été enregistrées telles quelles, sans "
+                        "modification ni complément, et le conseiller en a vérifié la conformité avec la cliente avant "
+                        "l'exécution. La somme sera disponible dans un délai de dix jours ouvrables, sous réserve de la "
+                        "validation finale de Monsieur", CAL),
+                      V("Dorian", CAL), V("Lemaire", CAL, B), T(", joignable au", CAL), V("+32 2 415 78 06", CAL),
+                      T("pendant les heures de bureau.", CAL)], 11.5, BLUE),
+            ("para", [T("Toute demande de modification doit être adressée par écrit, accompagnée d'une copie de la "
+                        "pièce d'identité du titulaire, à l'adresse", CAL),
+                      V("Avenue des Érables 214", CAL), T(",", CAL), V("1050 Bruxelles", CAL),
+                      T(". Les frais de dossier de", CAL), T("25,00 €", CAL, B),
+                      T("ne sont pas remboursables, même en cas de renonciation écrite de la cliente.", CAL)], 11.5,
+             BLUE),
+        ],
+    },
+    {   # page 2: black ink, Times New Roman, a hard black and white copy at 100 dpi (the strokes are all or nothing)
+        "q": {"dpi": 100, "resample": "box", "spread": 0, "threshold": 0.55, "ink": 15, "paper": (252, 252, 250),
+              "blur": 0.0, "grain": 4.0, "jpeg": 50},
+        "blocks": [
+            ("title", [T("Avis de prélèvement", TNR, B)], 13, INK_BLACK),
+            ("para", [T("Nous accusons réception de votre demande du", TNR), V("03/09/2024", TNR),
+                      T("concernant la domiciliation de vos revenus sur le compte", TNR), V(IBAN_D, TNR, B),
+                      T(". Le prélèvement mensuel de 450,00 € sera exécuté le premier jour ouvrable du mois, au profit "
+                        "de", TNR),
+                      V("Madame Élodie Verstraeten", TNR), T(", dont l'adresse de correspondance reste", TNR),
+                      V("Rue du Moulin 9", TNR), T(",", TNR), V("5000 Namur", TNR),
+                      T(". Toute contestation doit être signalée dans les huit semaines, faute de quoi le mandat sera "
+                        "considéré comme accepté par le titulaire", TNR),
+                      V("Clément", TNR), V("Dessaint", TNR, B), T(".", TNR)], 11, INK_BLACK),
+            ("para", [T("Pour toute question relative à ce dossier, vous pouvez contacter votre agence au", TNR),
+                      V("+32 81 22 40 17", TNR), T("ou par courriel à", TNR),
+                      V("clement.dessaint@exemple.be", TNR), T(", en mentionnant la référence", TNR),
+                      V("BT 4471 0926 AX", TNR), T("figurant sur ce courrier.", TNR)], 11, INK_BLACK),
+        ],
+    },
+    {   # page 3: grey ink, Verdana and Tahoma, thick strokes (copier spread), a medium scan
+        "q": {"dpi": 200, "resample": "box", "spread": 1, "ink": GREY, "paper": (246, 243, 236), "blur": 0.5,
+              "grain": 6.0, "jpeg": 60},
+        "blocks": [
+            ("title", [T("Attestation de domiciliation", TAH, B)], 12, GREY),
+            ("para", [T("La société administre les comptes de Monsieur", VER), V("Hugo", VER),
+                      V("VANDERSTRAETEN", VER, B), T(", né le", VER), V("18/07/1975", VER),
+                      T(", qui a choisi de faire parvenir désormais les extraits à son adresse", VER),
+                      V("Chaussée de Mons 58", VER), T(",", VER), V("7000 Mons", VER),
+                      T(". Les opérations enregistrées au cours du trimestre précédent restent consultables en ligne, "
+                        "à condition que le titulaire utilise le code personnel remis lors de son dernier passage en "
+                        "agence.", VER)], 10.5, GREY),
+            ("para", [T("Les virements permanents vers le compte", TAH), V(IBAN_E, TAH, B),
+                      T("prennent effet le dernier jour ouvrable de chaque mois. En cas de question, écrire à", TAH),
+                      V("hugo.vanderstraeten@exemple.be", TAH), T("ou téléphoner au", TAH), V("+32 65 40 18 73", TAH),
+                      T(", en citant la référence interne", TAH), V("REF 77 3094 2281", TAH), T(".", TAH)], 10.5, GREY),
+        ],
+    },
+    {   # page 4: black ink, Garamond and Consolas, thin strokes (faded copy, a little blur), a poor scan
+        "q": {"dpi": 200, "resample": "box", "spread": 0, "ink": 75, "paper": (244, 242, 236), "blur": 0.4,
+              "grain": 8.0, "jpeg": 55},
+        "blocks": [
+            ("title", [T("Récapitulatif des coordonnées", SEG, B)], 12, INK_BLACK),
+            ("para", [T("Madame", GAR), V("Noémie", GAR), V("DUBOIS", GAR, B),
+                      T("a signalé, par téléphone le", GAR), V("22/01/2025", GAR),
+                      T(", un changement d'adresse : le courrier doit désormais être envoyé à", GAR),
+                      V("Boulevard Piercot 30", GAR), T(",", GAR), V("4000 Liège", GAR),
+                      T(". L'ancienne adresse reste valable pendant un mois pour les avis déjà émis, puis elle sera "
+                        "supprimée du dossier sans autre formalité, conformément à la politique de conservation de la "
+                        "société.", GAR)], 12, INK_BLACK),
+            ("para", [T("Le compte de réception des salaires reste", GAR), V(IBAN_F, CON, B),
+                      T("ouvert au nom de", GAR), V("Monsieur Yannick Halleux", GAR),
+                      T(", la procuration du", GAR), V("04/02/2019", GAR),
+                      T("étant toujours en vigueur à la date de ce récapitulatif.", GAR)], 12, INK_BLACK),
+            ("label", [T("Établi à Liège, le", SEG), V("22/01/2025", SEG), T("Signature du conseiller :", SEG)], 10,
+             INK_BLACK),
+        ],
+    },
+]
+
+
+def scan_image(page, q: dict) -> Image.Image:
+    """The page as a scanner sees it. Sampled at q['dpi'] without antialiasing when q['resample'] is 'nearest' (the
+    strokes break up into pixels), else antialiased; the strokes thickened (q['spread'] > 0, copier spread) or thinned
+    (< 0, faded ink) by that many pixels."""
+    factor = 3 if q["resample"] == "nearest" else 1
+    pix = page.get_pixmap(dpi=q["dpi"] * factor, alpha=False)
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    if factor > 1:
+        size = (round(page.rect.width / 72 * q["dpi"]), round(page.rect.height / 72 * q["dpi"]))
+        img = img.resize(size, Image.NEAREST)
+    g = img.convert("L")
+    if q["spread"] > 0:
+        g = g.filter(ImageFilter.MinFilter(2 * q["spread"] + 1))
+    elif q["spread"] < 0:
+        g = g.filter(ImageFilter.MaxFilter(2 * -q["spread"] + 1))
+    return g
+
+
+def make_paragraphs(out: Path, truth: list, pages: list):
+    """Four pages of long paragraphs, each with its own ink, weight and quality (see PARAGRAPH_PAGES)."""
+    src = fitz.open()
+    for pno, spec in enumerate(PARAGRAPH_PAGES, 1):
+        page = src.new_page(width=595, height=842)
+        aliases = {}
+        for blk in spec["blocks"]:
+            for _, fam, bold, _ in blk[1]:
+                if (fam, bold) not in aliases:
+                    aliases[(fam, bold)] = f"F{len(aliases)}"
+                    page.insert_font(fontname=aliases[(fam, bold)], fontfile=str(FACES[fam][1 if bold else 0]))
+        _layout(page, spec["blocks"], aliases, truth, pno)
+    scan = fitz.open()
+    for pno, (page, spec) in enumerate(zip(src, PARAGRAPH_PAGES), 1):
+        q = spec["q"]
+        img = degrade(scan_image(page, q), q, seed=190 + pno)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=q["jpeg"])
+        p = scan.new_page(width=page.rect.width, height=page.rect.height)
+        p.insert_image(p.rect, stream=buf.getvalue())
+        pages.append({"page": pno, **{k: v for k, v in q.items() if k != "paper"}, "paper": list(q["paper"])})
+    scan.save(out, garbage=4, deflate=True)
+
+
 def main():
     folder = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_data/Dossier Test 17")
     folder.mkdir(parents=True, exist_ok=True)
+    if "--paragraphs" in sys.argv:          # only the paragraph file: the other files and their truth are kept as they are
+        truth_file = folder / "fonts_truth.json"
+        truth = json.loads(truth_file.read_text(encoding="utf-8")) if truth_file.exists() else {}
+        para_lines, para_pages = [], []
+        make_paragraphs(folder / "paragraphes_scan.pdf", para_lines, para_pages)
+        truth["paragraphes_scan.pdf"] = {"pages": para_pages, "values": para_lines}
+        truth_file.write_text(json.dumps(truth, indent=2, ensure_ascii=False), encoding="utf-8")
+        print("written:", folder / "paragraphes_scan.pdf")
+        return
     random.seed(17)
     scan_lines, pasted_lines, pages = [], [], []
     make_scan(folder / "polices_scan.pdf", scan_lines, pages)
