@@ -165,13 +165,18 @@ button.lfind { font: inherit; font-size: 12px; text-align: left; padding: 1px 4p
 .row .badges { display: flex; gap: 3px; overflow: hidden; flex: 0 100 auto; min-width: 0; }
 .row .badge { flex: none; }
 .row .caret { width: 8px; flex: none; color: var(--muted); font-size: 10px; transform: scale(1.8); }
-.row.anon .name { color: var(--ok); }
+/* the dot at the left of a file: red = leak / error, orange = warning, yellow = config changed, green = reviewed */
+.row .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-right: 2px; }
+.row .dot.red { background: #e5484d; }
+.row .dot.orange { background: #f08c00; }
+.row .dot.yellow { background: #f5d90a; }
+.row .dot.green { background: var(--ok); }
+.row .fico { flex: none; }
 .badge { font-size: 10px; padding: 0 4px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
 .badge.cfg { color: var(--accent); border-color: var(--accent); }
 .badge.done { color: var(--ok); border-color: var(--ok); font-weight: 700; padding: 0 5px; }
 .badge.rev { color: var(--muted); }
 .badge.rev.all { color: var(--ok); border-color: var(--ok); }
-.row .rev-mark { color: var(--ok); font-weight: 700; }
 button.review { margin-left: auto; flex: none; }
 button.review.on { color: var(--ok); border-color: var(--ok); font-weight: 600; }
 /* batch overview */

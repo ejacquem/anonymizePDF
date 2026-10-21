@@ -116,6 +116,36 @@ def save_settings():
     return info()
 
 
+def file_states(d: Path, own: list[dict]) -> None:
+    """The dot of each original in the tree (`status`): 'red' = a leftover, a second-check suspect or an error (data may
+    still be readable), 'orange' = a warning of the last run, 'yellow' = the config was saved after the output (or
+    there is no output yet): anonymize, 'green' = reviewed by hand, None = nothing to say."""
+    files = {}
+    rep = d / eng.REPORT_NAME
+    if rep.exists():
+        try:
+            files = {f.get("file"): f for f in json.loads(rep.read_text(encoding="utf-8")).get("files", [])}
+        except (OSError, ValueError):
+            files = {}
+    cfg = d / eng.CONFIG_NAME
+    cfg_time = cfg.stat().st_mtime if cfg.exists() else None
+    for c in own:
+        if c["anonymized"]:
+            continue
+        f = files.get(c["name"]) or {}
+        out = eng.output_of(d / c["name"])
+        if f.get("error") or f.get("leftovers") or f.get("suspects"):
+            c["status"] = "red"
+        elif f.get("warnings"):
+            c["status"] = "orange"
+        elif cfg_time is not None and (not out.exists() or cfg_time > out.stat().st_mtime):
+            c["status"] = "yellow"
+        elif c["reviewed"]:
+            c["status"] = "green"
+        else:
+            c["status"] = None
+
+
 def build_tree(d: Path) -> dict | None:
     children = []
     for p in sorted(d.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
@@ -140,6 +170,7 @@ def build_tree(d: Path) -> dict | None:
         c["reviewed"] = not c["anonymized"] and c["name"] in reviewed
         if c["anonymized"] and c["original"]:
             c["reviewed"] = Path(c["original"]).name in reviewed
+    file_states(d, own_pdfs)
     if not children and d != STATE["root"]:
         return None
     return {"type": "dir", "name": d.name if d != STATE["root"] else (d.name or str(d)), "path": rel_of(d),
