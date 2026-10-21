@@ -93,11 +93,15 @@ def blur(a: np.ndarray, sigma: float) -> np.ndarray:
         return sum(k[i] * rows[i:i + h, :] for i in range(2 * r + 1))
     # the same additions in the same order (the result is bit for bit the same), in place: no temporary per tap
     rows = k[0] * p[:, 0:w]
+    tap = np.empty_like(rows)
     for i in range(1, 2 * r + 1):
-        rows += k[i] * p[:, i:i + w]
+        np.multiply(p[:, i:i + w], k[i], out=tap)
+        rows += tap
     out = k[0] * rows[0:h, :]
+    tap = np.empty_like(out)
     for i in range(1, 2 * r + 1):
-        out += k[i] * rows[i:i + h, :]
+        np.multiply(rows[i:i + h, :], k[i], out=tap)
+        out += tap
     return out
 
 
@@ -113,11 +117,15 @@ def blur_stack(a: np.ndarray, sigma: float) -> np.ndarray:
     p = np.pad(a.astype(float), ((0, 0), (r, r), (r, r)), mode="edge")
     n, h, w = a.shape
     rows = k[0] * p[:, :, 0:w]
+    tap = np.empty_like(rows)
     for i in range(1, 2 * r + 1):
-        rows += k[i] * p[:, :, i:i + w]
+        np.multiply(p[:, :, i:i + w], k[i], out=tap)
+        rows += tap
     out = k[0] * rows[:, 0:h, :]
+    tap = np.empty_like(out)
     for i in range(1, 2 * r + 1):
-        out += k[i] * rows[:, i:i + h, :]
+        np.multiply(rows[:, i:i + h, :], k[i], out=tap)
+        out += tap
     return out
 
 

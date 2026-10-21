@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from collections import OrderedDict
+from functools import wraps
 
 import numpy as np
 
@@ -84,6 +85,23 @@ def image_key(img) -> str:
     h.update(f"{img.mode}|{img.size}".encode())
     h.update(np.ascontiguousarray(img))
     return h.hexdigest()
+
+
+def by_image(name: str, limit: int = 24):
+    """Decorator for `finder(img, *args) -> list of tuples` that reads the pixels of the image and nothing else: the
+    boxes found on an image are remembered by its pixels (and the other arguments)."""
+    def deco(fn):
+        cache = lru(name, limit)
+
+        @wraps(fn)
+        def run(img, *args):
+            key = (image_key(img), args)
+            got = cache.get(key)
+            if got is None:
+                got = cache.put(key, tuple(fn(img, *args)))
+            return list(got)
+        return run
+    return deco
 
 
 def words_key(words: list[dict]) -> str:

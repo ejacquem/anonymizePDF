@@ -22,7 +22,7 @@ from dataclasses import replace
 import numpy as np
 from PIL import ImageDraw
 
-from . import faces, fields, fontmatch, quality, regions, render, timing
+from . import faces, fields, fontmatch, memo, quality, regions, render, timing
 from .fake import match_case
 from .ocr import ocr_words, render_page
 from .pii import Numberer, apply_config, invisible_chars, fitz, plan_page, visible_words, norm_value
@@ -101,7 +101,27 @@ def page_fonts(gray, words, cfg: dict, scale: float, angles: dict | None = None)
     if style["mode"] == "blackbox" or not (style["font_match"] or style["quality_match"]):
         return None
     slanted = [i for i, w in enumerate(words) if abs((angles or {}).get(tuple(w["box"]), 0.0)) >= TILT_MIN]
-    return fontmatch.PageFonts(gray, words, scale, skip=slanted)
+    # the measures of a page (scores of its words, its quality...) are functions of its pixels and its words: the same
+    # page read again (the scan, then the anonymization, then an anonymization run again) keeps them
+    key = (memo.array_key(gray), memo.words_key(words), scale, tuple(slanted))
+    pf = _PAGE_FONTS.get(key)
+    if pf is None:
+        pf = _PAGE_FONTS.put(key, fontmatch.PageFonts(gray, [dict(w) for w in words], scale, skip=slanted))
+    return pf
+
+
+_PAGE_FONTS = memo.lru("page_fonts", 8)         # each holds its grey page (~9 MB at 300 dpi) and the scores measured
+_ANGLES = memo.lru("angles", 16)
+
+
+def word_angles(img_key: str, gray, words: list[dict], skew: dict) -> dict:
+    """regions.line_angles, remembered by the pixels of the page and its words (`skew`: the measures of the crops, shared
+    by the two calls of a page)."""
+    key = (img_key, memo.words_key(words))
+    got = _ANGLES.get(key)
+    if got is None:
+        got = _ANGLES.put(key, regions.line_angles(gray, words, skew))
+    return dict(got)
 
 
 def font_advance(pf, cfg: dict):
@@ -489,12 +509,13 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     with timing.stage("render"):
         img = render_page(page, 300)
         gray = np.asarray(img.convert("L"))              # the page is not painted before the end: one grey copy
+        img_key = memo.image_key(img)                    # the pixels before anything is painted
     words = ocr_words(img, ocr_lang)
     skew = {}                                            # measures of the crops, shared by both passes
     with timing.stage("angles"):
-        angles = regions.line_angles(gray, words, skew)  # slant of each word, before painting
+        angles = word_angles(img_key, gray, words, skew)  # slant of each word, before painting
         words = _refine_slanted(img, words, angles, ocr_lang)              # exact boxes of the slanted lines
-        angles = regions.line_angles(gray, words, skew)
+        angles = word_angles(img_key, gray, words, skew)
     pf = page_fonts(gray, words, cfg, native_scale(page, 300), angles)
     with timing.stage("text"):
         plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))

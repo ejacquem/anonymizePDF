@@ -111,8 +111,9 @@ def save_settings():
         ocr.set_engine(engine_id)
     except ValueError as e:
         return bad(str(e))
-    STATE["spacy_models"] = models
-    STATE["ner"] = None                    # loaded again with the new choice, on the next scan
+    if models != STATE["spacy_models"]:    # the browser sends its settings again at each start: same choice, same model
+        STATE["spacy_models"] = models
+        STATE["ner"] = None                # loaded again with the new choice, on the next scan
     return info()
 
 
@@ -491,16 +492,32 @@ def job_progress(job) -> dict:
     return {**p, "elapsed": round(elapsed, 1), "eta": None if eta is None else round(eta, 1)}
 
 
+NER_LOCK = threading.Lock()
+
+
 def get_ner(log):
+    """The names model, loaded once per app process (5-20 s) and kept; a scan that starts while the start-up load is
+    still running waits for it."""
     if STATE["spacy_models"] == []:        # the user chose no names model: rules only
         return []
-    if STATE["ner"] is None:
-        log("Loading name-detection model (first time only)...")
-        STATE["ner"] = load_ner(STATE["spacy_models"], quiet=True)
-        if not STATE["ner"]:
-            log("No spaCy model installed: names will only be found by the rule-based detectors. "
-                "Install one, e.g.: python -m spacy download fr_core_news_md")
+    with NER_LOCK:
+        if STATE["ner"] is None:
+            log("Loading name-detection model (first time only)...")
+            STATE["ner"] = load_ner(STATE["spacy_models"], quiet=True)
+            if not STATE["ner"]:
+                log("No spaCy model installed: names will only be found by the rule-based detectors. "
+                    "Install one, e.g.: python -m spacy download fr_core_news_md")
     return STATE["ner"]
+
+
+def preload_ner():
+    """Load the names model in the background at start-up: the first scan does not wait for it."""
+    def run():
+        try:
+            get_ner(lambda m: None)
+        except Exception as e:  # noqa: BLE001  (the scan loads it again and reports the error itself)
+            print(f"Names model not preloaded: {e}", file=sys.stderr, flush=True)
+    threading.Thread(target=run, daemon=True, name="ner-preload").start()
 
 
 @app.post("/api/scan")
@@ -679,6 +696,7 @@ def main():
         raise SystemExit(str(e))
     print(f"Root: {root}\nOCR: {ocr.describe(args.ocr_lang) or 'none (scanned PDFs cannot be processed)'}")
     print(f"Secret key for fake values: {secret.key_path()}  (keep it private, back it up, never commit it)")
+    preload_ner()
     url = f"http://127.0.0.1:{args.port}"
     print(f"Open {url}  (Ctrl+C to stop)")
     if args.open:

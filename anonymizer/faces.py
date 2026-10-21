@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import memo
 from .ocr import DIGITAL_DPI
 
 MODEL = Path(__file__).resolve().parent / "models" / "face_detection_yunet_2023mar.onnx"
@@ -157,6 +158,7 @@ def _widen(box, w_img: int, h_img: int) -> tuple:
             min(x1 + 0.2 * fw, w_img), min(y1 + 0.15 * fh, h_img))
 
 
+@memo.by_image("faces")
 def find_faces(img, dpi: int = 300) -> list[tuple]:
     """Boxes (image pixels) covering the faces of people on a page image (PIL image)."""
     rgb = np.asarray(img.convert("RGB"))

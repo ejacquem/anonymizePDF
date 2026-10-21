@@ -63,6 +63,8 @@ anonymizer/
   regions.py           find_codes, find_signatures (+ *_digital variants), is_signature_label, line_angles (skew)
   morph.py             square max / min / closing on arrays, two 1-D passes (same result as PIL's rank filters)
   timing.py            stage timers (ocr, fonts, paint, ocr_check...): exclusive time per stage, one collector per file
+  memo.py              in-memory memos keyed by the pixels of a page (bounded LRU, never on disk): faces, codes, line
+                       angles, the PageFonts of a page; image_key / array_key / words_key, by_image, clear_all
   faces.py             faces of people (YuNet, ONNX Runtime, offline): detect, find_faces, find_faces_digital
   models/              face_detection_yunet_2023mar.onnx (OpenCV zoo, MIT; sha256 checked at load)
   configmodel.py       anon_config.yaml <-> review-table model (settings, entries incl. the commented suggestions)
@@ -684,6 +686,24 @@ Order must never change a result (`order_tests`): a value written with several s
   Per document and phase: wall time, CPU time, time by stage, the share of the machine other programs used, the peak
   memory of the process. A number taken on a busy machine is good for proportions only: run it when nothing else heavy
   runs. `--code` benchmarks an exported commit.
+- Memos (`anonymizer/memo.py`, all in memory, bounded, emptied by `memo.clear_all()`, never written next to the
+  documents): what is measured on a page is a function of its pixels (and of its OCR words), so it is remembered by
+  them and the next job on the same page reads it back: the faces (`faces.find_faces`) and the codes
+  (`regions.find_codes`) found on an image, the slant of the words (`scanpaint.word_angles`), and the whole `PageFonts`
+  of a page (`scanpaint.page_fonts`: key = sha1 of the grey page, of the words, the native scale, the skipped words; the
+  scores of its words, its quality fit, its bold scores, its colours: `_page_cols` is keyed by the pixels of the page
+  image). The scan of a folder (`_name_faces`) and the anonymization read the same `PageFonts`, and so does an
+  anonymization run again (Apply, a changed config). `PageFonts.advance` is keyed by the box and text of the word, not
+  by `id()` (a reused instance meets new dicts). A hit is never different from the computation (`memo_tests`).
+- Lean data: the probe renderings of `fontmatch._rendered_u8` are kept as 8-bit coverage (8 times smaller; the float
+  coverage is `u / 255.0` as before, and `(u / 255.0 * 255)` gives back `u` for the 256 values, so the resize reads `u`
+  itself); a candidate brought to a word's width is remembered (`_resized`, keyed by the identity of the rendering it
+  keeps alive); `blur` / `blur_stack` add their taps in place (`np.multiply(..., out=)`: the same products added in the
+  same order, bit for bit). The peak memory of the benchmark process was 5.8 GB before (the float renderings), see
+  tools/bench.py.
+- The names model is loaded once per app process (a background thread at start-up, `app.preload_ner`, and `NER_LOCK`);
+  the settings the browser sends again at every start no longer drop it (`save_settings` drops it only when the choice
+  of models changes).
 - Every speed-up keeps the results identical. Check it with `tools/snapshot_results.py`: `save` before and after a
   change (`--code <root>` runs an exported older commit), then `compare` prints IDENTICAL (configs, reports, output
   hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs. The random ID is
@@ -730,6 +750,9 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Towns and postcodes (`town_tests`): one fake town per name, the postcode belongs to the fake town, a Swiss postcode
   keeps its length. Detector tests: a BIC of any country after its label, an account with a slash, an address on two
   lines, a postcode that is not the street number.
+- Memos and lean data (`memo_tests`): the blur with its taps added in place = the plain form, the 8-bit renderings =
+  the float ones, a remembered PageFonts / faces / codes = a fresh computation, `clear_all`, the names model kept when the
+  same settings are sent again.
 - Secret key and fake values: key creation / reuse / corrupt file, determinism, gender, initials, e-mails, OCR
   misreadings, never the original without accents, a wrong key does not single out the true name.
 - Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements,

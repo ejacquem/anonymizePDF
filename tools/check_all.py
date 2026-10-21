@@ -2137,6 +2137,115 @@ def speedup_tests():
     check("faces of a word compared as a stack = one by one, bit for bit", one == many)
 
 
+def memo_tests():
+    """What the app remembers between two measures of a page (anonymizer/memo.py) is what the measure gives: a hit is
+    never different from a fresh computation, and the lean forms of the cached data give the same numbers."""
+    print("\n== memos and lean data")
+    import math
+    from PIL import Image, ImageDraw
+    from anonymizer import faces, fontmatch, memo, quality, regions, scanpaint
+
+    # the Gaussian blur adds its taps in place: the same products added in the same order as the plain form
+    def blur_plain(a, sigma):
+        r = max(int(math.ceil(3 * sigma)), 1)
+        x = np.arange(-r, r + 1)
+        k = np.exp(-x * x / (2 * sigma * sigma))
+        k /= k.sum()
+        pad = np.pad(a.astype(float), ((0, 0), (r, r), (r, r)), mode="edge")
+        n, h, w = a.shape
+        rows = k[0] * pad[:, :, 0:w]
+        for i in range(1, 2 * r + 1):
+            rows += k[i] * pad[:, :, i:i + w]
+        out = k[0] * rows[:, 0:h, :]
+        for i in range(1, 2 * r + 1):
+            out += k[i] * rows[:, i:i + h, :]
+        return out
+
+    rng = np.random.default_rng(5)
+    stack = rng.random((9, 24, 61)) ** 2
+    same = all(np.array_equal(quality.blur_stack(stack, sg), blur_plain(stack, sg)) for sg in (0.4, 1.0, 1.7, 3.1))
+    big = rng.random((60, 90)) ** 2
+    same_2d = all(np.array_equal(quality.blur(big, sg), blur_plain(big[None], sg)[0]) for sg in (0.5, 1.0, 2.2))
+    check("blur and blur_stack with the taps added in place = the plain form, bit for bit", same and same_2d)
+
+    # the probe renderings are kept as 8-bit coverage: the float coverage made from them, and the resize that reads
+    # them, are what the float arrays gave
+    ok = n = 0
+    for fc in fontmatch.faces()[:12]:
+        for text in ("Jacquemin", "Élodie 12", "IBAN"):
+            u, a = fontmatch.template_u8(fc, text), fontmatch.template(fc, text)
+            if u is None:
+                continue
+            n += 1
+            ok += (u.dtype == np.uint8 and np.array_equal(a, u.astype(float) / 255.0)
+                   and np.array_equal((a * 255).astype(np.uint8), u)
+                   and np.array_equal(fontmatch._resize(a, 57, 24), fontmatch._resize(u, 57, 24)))
+    check(f"probe renderings kept as 8-bit coverage: the float coverage and the resize are unchanged ({ok}/{n})",
+          n >= 20 and ok == n)
+
+    # a candidate brought to a width is remembered: the second ask gives the same array (read-only), not a new one
+    fc = fontmatch.face("Arial")
+    u = fontmatch.template_u8(fc, "Jacquemin")
+    one, two = fontmatch._resized(u, 70), fontmatch._resized(u, 70)
+    check("a candidate resized to a width is remembered", one is two and np.array_equal(one, fontmatch._resize(u, 70, 24)))
+
+    # PageFonts of a page: the same page and words give the remembered one, and it measures what a fresh one does
+    memo.clear_all()
+    fc = fontmatch.face("Verdana") or fontmatch.face("Arial")
+    page = Image.new("L", (900, 160), 240)
+    draw = ImageDraw.Draw(page)
+    words, x = [], 30
+    for text in ("Jacquemin", "Lucas", "Avenue", "Closiere"):
+        draw.text((x, 100), text, font=fc.font(48), anchor="ls", fill=40)
+        l, t, r, b = fc.font(48).getbbox(text, anchor="ls")
+        words.append({"text": text, "box": (x + l, 100 + t, x + r, 100 + b), "line": ("w", 0), "conf": 100.0})
+        x += int(r) + 40
+    gray = np.asarray(page)
+    cfg = {"style": {"mode": "replace", "font_match": True, "quality_match": True}}
+    first = scanpaint.page_fonts(gray, words, cfg, 1.0)
+    again = scanpaint.page_fonts(gray.copy(), [dict(w) for w in words], cfg, 1.0)
+    fresh = fontmatch.PageFonts(gray, words, 1.0)
+    same_scores = all(first.scores(i) == fresh.scores(i) and first.raw_scores(i) == fresh.raw_scores(i)
+                      for i in range(len(words)))
+    check("the PageFonts of a page is remembered by its pixels and words, and measures what a fresh one does",
+          first is again and same_scores and first.page_quality() == fresh.page_quality())
+    moved = [dict(w, box=(w["box"][0] + 1, *w["box"][1:])) for w in words]
+    check("another box, another PageFonts", scanpaint.page_fonts(gray, moved, cfg, 1.0) is not first)
+    memo.clear_all()
+    check("clear_all forgets the pages", scanpaint.page_fonts(gray, words, cfg, 1.0) is not first)
+
+    # faces and codes are remembered by the pixels of the image, and the caller may change what it gets back
+    img = Image.new("RGB", (640, 480), (235, 235, 235))
+    ImageDraw.Draw(img).rectangle((200, 150, 420, 330), fill=(20, 20, 20))
+    for finder, name in ((faces.find_faces, "faces"), (lambda i, d: regions.find_codes(i, d), "codes")):
+        memo.clear_all()
+        a = finder(img, 300)
+        b = finder(img, 300)
+        a.append("changed by the caller")
+        c = finder(img, 300)
+        hits = memo.stats()[name][1]
+        check(f"{name} found on an image are remembered by its pixels (a hit, and a caller's change does not reach it)",
+              b == c and "changed by the caller" not in c and hits >= 2)
+    other = img.copy()
+    other.putpixel((3, 3), (0, 0, 0))
+    check("another image, another key", memo.image_key(other) != memo.image_key(img))
+
+    # the names model is kept when the browser sends the same settings again (it did reload it at every page load)
+    import app as app_module
+    saved = dict(app_module.STATE)
+    try:
+        client = app_module.app.test_client()
+        app_module.STATE.update(spacy_models=None, ner="the loaded model")
+        client.post("/api/settings", json={"ocr_engine": "auto", "ner_models": None})
+        kept = app_module.STATE["ner"] == "the loaded model"
+        client.post("/api/settings", json={"ocr_engine": "auto", "ner_models": []})
+        dropped = app_module.STATE["ner"] is None and app_module.STATE["spacy_models"] == []
+        check("the same settings sent again keep the names model, a new choice drops it", kept and dropped)
+    finally:
+        app_module.STATE.update(saved)
+        ocr.set_engine("auto")
+
+
 def _synthetic_page(f, q, lines, size=42, ink=(40, 40, 40), paper=(240, 238, 230), key=0):
     """A page image written with quality.paint and quality q: every line 'label : value', the label in the regular
     weight of f's family, the value in face f (a bold value after a regular label, as on real documents). Returns the
@@ -2900,7 +3009,7 @@ GROUPS = [
     "incremental_report_tests", "scan_anonymize_batch_tests",
     "first_letter_tests", "account_and_street_names_tests", "client_identifier_tests", "manual_text_tests", "rotated_tests", "town_tests",
     "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
-    "speedup_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
+    "speedup_tests", "memo_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests",
 ]
