@@ -1317,6 +1317,16 @@ def account_and_street_names_tests():
                         ("Compte : 0012345Y", "0012345Y"), ("Compte n° 12345 Y", "12345 Y"), ("RIB 0012345Y", "0012345Y"),
                         ("0012345Y", "0012345Y"), ("12345 Y", "12345 Y"), ("Compte courant 0012345Y", "0012345Y")]:
         check(f"an account number is found: {text!r}", value in found(text), repr(found(text)))
+    # the letter glued to the digits is an account number also in the middle of a sentence ('N° 000012345Y du client')
+    for text, value in [("Contrat n° 000012345Y du client", "000012345Y"), ("x 000012345Y x", "000012345Y"),
+                        ("au 12345Y, merci", "12345Y"), ("Compte 12345 Y et", "12345 Y")]:
+        check(f"an account number is found in a sentence: {text!r}", value in found(text), repr(found(text)))
+    check("a spaced letter that starts a word is still no account number", not found("Le dossier 12345 Y compris sera clos"))
+    # the same account written '000012345Y' and '12345 Y': the same new digits (the zeros stay, they do not count)
+    fk0 = Faker(b"n" * 32)
+    long_fake, short_fake = fk0.suggest("ACCOUNT_NUMBER", "000012345Y"), fk0.suggest("ACCOUNT_NUMBER", "12345 Y")
+    check(f"'000012345Y' and '12345 Y' are replaced by the same digits ({long_fake!r}, {short_fake!r})",
+          long_fake.startswith("0000") and long_fake[4:9] == short_fake[:5] and long_fake[4:9] != "12345", f"{long_fake} {short_fake}")
     for text in ["Le 12345 E est dû", "Compte rendu 2024", "75001 Paris", "Montant 12345 EUR"]:
         check(f"running text gives no account number: {text!r}", not found(text), repr(found(text)))
     for value in ["0012345Y", "12345 Y", "000012345Y"]:
@@ -1332,6 +1342,54 @@ def account_and_street_names_tests():
         out = f.street(value)
         check(f"the street {value!r} gets a real street name (no random letters): {out!r}",
               any(k in out for k in known), repr(out))
+
+
+def client_identifier_tests():
+    """Identifiers of letters and digits that no detector knew: a client / mandate / contract reference after its label
+    (also in groups of digits), a long mix of letters and digits of any length, a long run of digits, the creditor
+    identifier after 'ID.CREANCIER'. Reported on real statements."""
+    print("\n== client identifiers (letters and digits)")
+    cases = [("REF.MANDAT: ++123456789CFEECFTE123456789", "CONTRACT_REF", "123456789CFEECFTE123456789"),
+             ("ID.CREANCIER:FR76ZZZ185574", "SEPA_CREDITOR_ID", "FR76ZZZ185574"),
+             ("REF.CLIENT: 123456789123456E123456789123456789", "CONTRACT_REF", "123456789123456E123456789123456789"),
+             ("Avec votre identifiant client 12 1234 5678 et votre", "CONTRACT_REF", "12 1234 5678"),
+             ("LIBELLE: 123456789123456789123456789", "CONTRACT_REF", "123456789123456789123456789"),
+             ("Référence client : AB1234567", "CONTRACT_REF", "AB1234567"),
+             ("Id client 987 654 321 X", "CONTRACT_REF", "987 654 321 X"),
+             ("Numéro de contrat : 7654321-AB", "CONTRACT_REF", "7654321-AB"),
+             ("Communication : 202400123456 merci", "CONTRACT_REF", "202400123456"),
+             ("123456789123456789123456789", "ACCOUNT_NUMBER", "123456789123456789123456789"),
+             ("ref 123456789CFEECFTE123456789 fin", "CONTRACT_REF", "123456789CFEECFTE123456789")]
+    for text, typ, value in cases:
+        got = [(m.type, m.value) for m in pii.detect_all(text)]
+        check(f"found {value!r} as {typ} in {text!r}", (typ, value) in got, repr(got))
+    for text in ["Libellé : 12/03/2024", "Numéro de mandat 000000", "LIBELLE: VIR SEPA", "Référence client : 12", "Page 12 sur 45",
+                 "Total ACHATS DU MOIS 2024"]:
+        got = [(m.type, m.value) for m in pii.detect_all(text) if m.type in ("CONTRACT_REF", "ACCOUNT_NUMBER")]
+        check(f"no identifier in {text!r}", not got, repr(got))
+    # a whole page: each identifier is replaced, none stays readable, the words around stay
+    tmp = Path(tempfile.mkdtemp(prefix="anon_ids_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        lines = ["REF.MANDAT: ++123456789CFEECFTE123456789", "ID.CREANCIER:FR76ZZZ185574",
+                 "REF.CLIENT: 123456789123456E123456789123456789", "Avec votre identifiant client 12 1234 5678 et votre contrat",
+                 "LIBELLE: 123456789123456789123456789", "Solde en fin de mois"]
+        for i, t in enumerate(lines):
+            page.insert_text((50, 100 + 22 * i), t, fontsize=9, fontname="helv")
+        doc.save(tmp / "releve.pdf")
+        cfg = engine.scan_folder(tmp, "ids", None, "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(tmp, "ids", cfg, "fra+eng", False, lambda m: None)
+        out = " ".join(fitz.open(tmp / "releve_anonymized.pdf")[0].get_text().split())
+        flat = re.sub(r"\s+", "", out)
+        for secret_value in ["123456789CFEECFTE123456789", "FR76ZZZ185574", "123456789123456E123456789123456789",
+                             "121234" + "5678", "123456789123456789123456789"]:
+            check(f"{secret_value!r} is not left in the output", secret_value not in flat, out[:200])
+        check("the words around the identifiers stay", "Solde en fin de mois" in out and "identifiant client" in out, out[:200])
+        check("the second check finds nothing readable", not rep["files"][0].get("suspects") and not rep["files"][0]["leftovers"],
+              str(rep["files"][0].get("suspects")))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def bank_identifier_tests():
@@ -2770,7 +2828,7 @@ GROUPS = [
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
     "split_word_tests", "colon_tests", "street_name_tests", "second_pass_tests", "suspect_suggestion_tests",
     "incremental_report_tests", "scan_anonymize_batch_tests",
-    "first_letter_tests", "account_and_street_names_tests", "manual_text_tests", "rotated_tests", "town_tests",
+    "first_letter_tests", "account_and_street_names_tests", "client_identifier_tests", "manual_text_tests", "rotated_tests", "town_tests",
     "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
     "speedup_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",

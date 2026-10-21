@@ -145,7 +145,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Scan & anonymize** (scan, then anonymize, with no
   review in between: `btnBoth`, `anonymizeFolder()` is the second half; in batch mode the action `scan_anonymize` of
   `/api/batch` does each folder's scan then its anonymization before the next folder), **Anonymize file** (either file of the pair; the
-  report keeps the other entries). ↑ / ↓ switch file (wraps). **Save** (Ctrl+S) is in the Config tab; the "OCR check
+  report keeps the other entries). ↑ / ↓ switch file (wraps, also while a job runs; not while typing in a text field, a checkbox
+  does not keep the arrows), Ctrl+↑ / Ctrl+↓ the previous / next folder that holds PDFs (`pdfFolders`, wraps, opens its first
+  file). The header counts the file: 'Working folder: x · 2/3 PDFs'. **Save** (Ctrl+S) is in the Config tab; the "OCR check
   for digital PDFs" option is in Config › Settings (persisted in localStorage).
 - Black boxes by hand: **▭ Black box** in the Anonymized pane (drag to draw, drag / handles to move and resize,
   Delete to remove; the box is see-through while a handle is dragged, class `resizing`). Each change is saved at once
@@ -336,7 +338,10 @@ Order must never change a result (`order_tests`): a value written with several s
   label when it is five or more digits and one capital letter ('0012345Y', '12345 Y', not running text), with spaces, '-', '.' or '/' as separators, French RIB, long digit runs, apostrophe-grouped digits
   `86'123'456'789'012` with masks, at least 3 groups so amounts `1'240.00` are not caught),
   BANK_CODE ("Code banque / guichet", "Clé RIB"), CONTRACT_REF ("police", "contrat", "dossier", "REF" with letters and
-  digits, and an identifier written alone 'BT187536HE8O43': lowest priority), DOC_NUMBER,
+  digits, and an identifier written alone 'BT187536HE8O43': lowest priority; from 10 to 79 characters of capitals and
+  digits, a long one (16+) needs only a letter and 8 digits: '123456789CFEECFTE123456789'; an identifier after its label
+  `_ID_LABEL`: 'REF.MANDAT', 'REF.CLIENT', 'identifiant client 12 1234 5678', 'Id client', 'N° de contrat', 'LIBELLE:',
+  'Communication:', one block or groups, at least 6 digits, `_v_id_labeled`; test `client_identifier_tests`), DOC_NUMBER,
   BIRTH_PLACE, DATE (`/ . -` or spaces `14 05 1992`), PERSON, NER ORG / LOCATION (always commented out).
 - Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid.
 - A word cut across two lines ('JACQUEM' / 'IN LUCAS') is joined in the page text (`pii._cut_words`, used by
@@ -344,7 +349,7 @@ Order must never change a result (`order_tests`): a value written with several s
   ('JACQUEMIN LUCAS'). Without that evidence the lines stay apart. Tests: `split_word_tests`. A real
   PDF used U+2010 inside a national number and hid it from every detector.
 - Split types: groups of ≥ 5 digits of ACCOUNT_NUMBER / BANK_CODE and ≥ 4 digits of masked CARD_NUMBER are also
-  separate entries (OCR may drop the stars); digit groups get the same fake everywhere (`Faker.digit_groups`).
+  separate entries (OCR may drop the stars); digit groups get the same fake everywhere (`Faker.digit_groups`; leading zeros stay and do not count: `000012345Y` and `12345 Y` get the same digits, an account glued to its letter is found also in a sentence).
 - Dates are active only for birth dates (`_BIRTH_RX` within 35 chars before / 8 after, or a birth-date label).
 - Bank operation labels (`pii.OPERATION_WORDS`: VIRT, RECU, PRLV, SEPA, REF, RET, DAB, FR, ACHAT-DEBIT, ...) are taken
   out of PERSON / ORG / LOCATION candidates (`strip_operations`, in `_detect_words` and the second check): 'VIRT RECU
