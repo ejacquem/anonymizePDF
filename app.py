@@ -558,7 +558,10 @@ def anonymize():
     quality_offset = _quality_offset(data)
     only = [Path(str(data["file"])).name] if data.get("file") else None     # one file, or the whole folder
     if only is None:
-        only = files_to_anonymize(folder)                 # a folder run leaves the reviewed files alone
+        # a folder run leaves the reviewed files alone, except those whose black boxes / typed texts changed and are not
+        # applied yet (the client names them in `include`): their new boxes must reach the anonymized file
+        wanted = set(files_to_anonymize(folder)) | {Path(str(n)).name for n in (data.get("include") or [])}
+        only = [p.name for p in eng.list_sources(folder) if p.name in wanted]
         if not only:
             return bad("Every file of this folder is reviewed: nothing to anonymize. Anonymize one file to redo it.")
     removed = data.get("removed") if isinstance(data.get("removed"), list) else []   # automatic boxes removed: this run only
