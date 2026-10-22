@@ -994,8 +994,10 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   unreplaced words of its block, same normalisation; the share beyond the Student t threshold for n-1 others: outT, and
   the same for the original values, the null orgT, and the identity run idnT); detection (family, weight, size) on the
   original page.
-- The null (orgT, about 5 % when the ruler is right) is 15 % on current main: the ruler is NOT validated yet (docs/
-  font_matching.md section 10.6). Do not tune the rendering on these numbers alone.
+- The null (orgT, the original values with nothing replaced) is 6 % on current main, the target 5 %: the ruler is
+  validated for the null. Values are measured on the OCR words that cover them, not on the truth box (docs/
+  font_matching.md section 10.6). The fakes are at 15 %: above the null, mostly on contrat p2 and paragraphes p3/p4.
+  The block style shows no measurable consistency gain on this ruler (10.6).
 - `--code <checkout>` runs the pipeline of another checkout (a worktree of an older commit) in a subprocess; the
   measures and the predictions stay those of this checkout. `--ablation own_ink`: the replacements take their own
   paper and ink (only the pipeline runs; see 10.6).

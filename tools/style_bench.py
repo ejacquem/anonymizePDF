@@ -62,6 +62,8 @@ MIN_OTHERS = 3                  # other words of a block needed to judge a value
 FLOOR = {"thick": 0.03, "dark5": 3.0, "sharp": 0.03}
 MEASURES = ("thick", "dark5", "sharp")
 PAD = 12                        # pixels around a predicted rendering (the value's box is cut out of it)
+# the outlier of a value is thickness OR darkness beyond its threshold: each of the two gets half of the 5 %
+ALPHA_MEASURE = 0.025
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -315,12 +317,18 @@ def process_file(file: str, work: Path, ner, log, code: Path | None = None, abla
                         n = normalized(measure(crop(img, words[i]["box"])), pred)
                         if n:
                             dest[key].append(n)
-        for t, box in zip(items, boxes):
+        for t, truth_box in zip(items, boxes):
+            # the block of the value: that of the OCR word it overlaps most (None when OCR missed it)
+            hits = [(_covered(truth_box, w["box"]), i) for i, w in enumerate(words) if _covered(truth_box, w["box"]) > 0.3]
+            bid = block_of[max(hits)[1]] if hits else None
+            # the value is measured where the OCR sees its ink: the union of the words it covers. The ground-truth box
+            # is not the ink's box (its thickness reads 2x as often as a word's: the null of 15 %, docs 10.6); the fake
+            # sits in the same place, so the same box serves the original, the identity run and the fake
+            cover = [w["box"] for w in words if _covered(truth_box, w["box"]) > 0.3]
+            box = (min(b[0] for b in cover), min(b[1] for b in cover), max(b[2] for b in cover),
+                   max(b[3] for b in cover)) if cover else truth_box
             face, _ = pf.face_for(box)
             size = pf.metrics(box, face, t["bold"]) if face is not None else None
-            # the block of the value: that of the OCR word it overlaps most (None when OCR missed it)
-            hits = [(_covered(box, w["box"]), i) for i, w in enumerate(words) if _covered(box, w["box"]) > 0.3]
-            bid = block_of[max(hits)[1]] if hits else None
             own = pf.value_words(box)
             m0 = measure(crop(gray, box))           # the original value (nothing replaced)
             m1 = measure(crop(igray, box))          # the value replaced by itself (identity run)
@@ -363,7 +371,7 @@ def judge(records: list[dict], others: dict, kind: str = "fake") -> None:
         if not r[norm] or len(ref) < MIN_OTHERS:
             continue
         n = len(ref)
-        r[name] = {"crit": t_critical(n - 1)}
+        r[name] = {"crit": t_critical(n - 1, ALPHA_MEASURE)}
         for m in MEASURES:
             vals = [o[m] for o in ref]
             # predictive z of a new value against n others: the sample spread, inflated by sqrt(1 + 1/n) (the
@@ -372,14 +380,58 @@ def judge(records: list[dict], others: dict, kind: str = "fake") -> None:
             r[name][m] = (r[norm][m] - statistics.fmean(vals)) / max(spread_, FLOOR[m])
 
 
-# two-sided 95 % Student t quantiles for 1..30 degrees of freedom (the outlier threshold of a value against n others:
-# under the null 5 % of the values pass it, whatever n is); from 30 on, the normal 1.96 is used
-_T975 = [12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
-         2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042]
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction of the incomplete beta function (Lentz's method, Numerical Recipes 6.4)."""
+    tiny, c, d = 1e-300, 1.0, 1.0 - (a + b) * x / (a + 1)
+    d = 1 / (tiny if abs(d) < tiny else d)
+    h = d
+    for m in range(1, 300):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((a - 1 + m2) * (a + m2))
+        d = 1 + aa * d
+        d = 1 / (tiny if abs(d) < tiny else d)
+        c = 1 + aa / c
+        c = tiny if abs(c) < tiny else c
+        h *= d * c
+        aa = -(a + m) * (a + b + m) * x / ((a + m2) * (a + 1 + m2))
+        d = 1 + aa * d
+        d = 1 / (tiny if abs(d) < tiny else d)
+        c = 1 + aa / c
+        c = tiny if abs(c) < tiny else c
+        de = d * c
+        h *= de
+        if abs(de - 1) < 3e-12:
+            break
+    return h
 
 
-def t_critical(df: int) -> float:
-    return _T975[df - 1] if 1 <= df <= len(_T975) else 1.96
+def _betai(a: float, b: float, x: float) -> float:
+    """Regularised incomplete beta I_x(a, b)."""
+    if x <= 0:
+        return 0.0
+    if x >= 1:
+        return 1.0
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log(1 - x))
+    if x < (a + 1) / (a + b + 2):
+        return front * _betacf(a, b, x) / a
+    return 1 - front * _betacf(b, a, 1 - x) / b
+
+
+def t_tail(t: float, df: int) -> float:
+    """Two-sided tail probability P(|T| > t) of a Student t with df degrees of freedom."""
+    return _betai(df / 2, 0.5, df / (df + t * t))
+
+
+def t_critical(df: int, alpha: float = 0.05) -> float:
+    """The two-sided critical value of a Student t: P(|T| > value) = alpha (bisection on t_tail)."""
+    lo, hi = 0.0, 1000.0
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if t_tail(mid, df) > alpha:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
 
 
 def _outlier_share(rs: list[dict], name: str):

@@ -210,33 +210,41 @@ per block (bold scores of up to 24 words, grain, size), cached per page.
 - Family per block only as a vote: a value in another font than its block (an IBAN in Consolas) is still read as its line
   says, as before.
 
-### 10.6 Checking the ruler (round five, 2026-10-22): the consistency measure is not validated yet
+### 10.6 Checking the ruler (round five, 2026-10-22)
 
-The consistency rows of 10.2 are not trustworthy. The null test (the same measure on the ORIGINAL values, nothing replaced,
-against their block) gave 31 % outliers with the first ruler: the untouched words are as 'inconsistent' as the fakes, so the
-measure followed the letters of each word, not the rendering. Three changes to the ruler, measured on the current `main`:
+The consistency measure of the first ruler was wrong: on the ORIGINAL values with nothing replaced it gave 31 % outliers,
+so it followed the letters of each word, not the rendering. Three fixes, each checked:
 
-| consistency, all pages (n = 229) | first ruler (raw, z vs the block, |z| > 2) | each measure divided by its prediction (|z| > 2) | + Student t threshold for n-1 others |
+1. Each measure is divided by its PREDICTION for the same text in the block's style (`style_bench.predict`: the block's
+   family, size, page quality, paper and ink, painted by `quality.erase` / `quality.paint`, measured the same way).
+   Thickness and sharpness as ratios, darkness as a difference of levels.
+2. The threshold is the Student t quantile for n-1 other words of the block (the sample spread times sqrt(1 + 1/n)), per
+   measure at 2.5 % two-sided, so 'thickness or darkness' is 5 % under the null. The quantile is computed (`t_critical`).
+   The first try (population spread, threshold 2) understated the spread for small n.
+3. A value is measured on the union of the OCR words that cover it, not on its ground-truth box. With the truth box the
+   thickness reads beyond its threshold 11 % of the time, with the OCR words 5 % (`null_diag2`: the same values, the same
+   words). The weight decision is not the cause: the measured weight matches the truth on 175 of 176 values.
+
+Why 5 %, not 15 %: the first null diagnostic showed 9 % for word vs word (thickness 5.5 %, darkness 4.8 %: the OR of two
+tests at 5 % is about 10 %, so the combined target was wrong) and 15 % for value vs word, with the excess all in thickness.
+
+Results (Dossier Test 17, 229 values; outlier = thickness or darkness beyond the threshold):
+
+| | `b449308` (no block style) | current `main` (block style) | own-ink ablation |
 |---|---:|---:|---:|
-| fakes, share outside the threshold | 36 % | 23 % | 19 % |
-| original values (null, should be about 5 %) | 31 % | 24 % | 15 % |
-| identity replacements | 38 % | 22 % | 15 % |
-| |z| darkness, 90th percentile (null: about 1.9) | 9.1 | 1.95 | 1.92 |
+| fakes, share outside the threshold | 12 % | 15 % | 15 % (identical to main) |
+| original values, nothing replaced (null, target 5 %) | 6 % | 6 % | 6 % |
+| identity replacements | 9 % | 5 % | 5 % |
+| spread of values / their block: thickness, darkness, sharpness | 0.78 / 0.62 / 0.69 | 0.74 / 0.52 / 0.64 | 0.74 / 0.52 / 0.64 |
+| |z| darkness, 90th percentile (null about 1.9) | 2.22 | 1.72 | 1.72 |
 
-- The prediction (`style_bench.predict`): the text of each word (or value) written in the block's family, size, page
-  quality, paper and ink by `quality.erase` / `quality.paint`, then measured the same way; each measure is divided by it
-  (thickness, sharpness: ratio; darkness: difference of levels). The letters cancel out, as intended.
-- The threshold: the block has only a few other words, and the population spread understated the spread. The predictive
-  z (sample spread times sqrt(1 + 1/n)) against the Student t quantile for n-1 degrees of freedom gives the right null for
-  small n. The null is still 15 %, not 5 %: this is NOT explained yet. Suspected: a value box spans several words (its
-  thickness and geometry differ from one word's), and OCR boxes of single words vary in tightness. Not checked.
-- Comparison with the same ruler (Student t): baseline `b449308` (no block style, run as a subprocess of the worktree):
-  fakes 28 % outside, null 15 %, identity 21 %; spreads thickness 0.83, darkness 0.57, sharpness 0.50. Current `main`
-  (block style): fakes 19 %, null 15 %, identity 15 %; spreads 0.60 / 0.51 / 0.47. The direction is the same as before
-  (fewer outliers with the block style), but the gap to the null is small and the null itself is not at 5 %.
-- Ablation 'block style with each value's own ink': the numbers are identical to the block style, to two decimals on
-  every row. The patch of `PageFonts.block_colours` was checked to take effect; the cause is that the colours of a block
-  and of its words are the same on these generated files (uniform ink and paper), so this ablation says nothing yet. A
-  test file with uneven ink is needed before the ink of a block can be judged.
-- Not done: the visual review sheet (step 4 of the round); the null test is not at its target, so no rendering change is
-  justified from these numbers yet.
+- The null is at target. The fakes are above it: 15 % on current main, the gap concentrated on contrat p2 (30 % vs 4 %
+  null) and paragraphes p3/p4 (18 % vs 0 to 5 %).
+- The block style does NOT measurably improve consistency on this ruler. The earlier 'block style 36 % vs baseline 44 %'
+  of 10.2 came from the first, invalid ruler and is superseded. The difference to `b449308` (12 vs 15 %) is within noise
+  for 229 values; darkness spread and darkness z favour the block style, thickness does not. Kept as the design (the
+  spec puts the look on the block), but the claim of a gain is withdrawn.
+- The own-ink ablation is identical to the block style on every row: the patch of `PageFonts.block_colours` takes effect
+  (checked), so on these generated files the block's ink and each word's own ink are the same. A file with uneven ink is
+  needed before the block ink can be judged.
+- Not done here: rendering changes. No change to the fakes is justified by these numbers beyond the gap to the null.
