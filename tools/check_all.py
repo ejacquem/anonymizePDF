@@ -3651,6 +3651,42 @@ def layout_tests():
           and all(i in blocks[of[i]]["words"] for i in range(len(row))))
 
 
+def review_summary_tests():
+    """tools/review_summary.py: the summary of a review sheet keeps the fonts and the measures and none of the client
+    data (values, fakes, file names, folder name); its guard refuses a summary that would hold one."""
+    print("\n== review sheet summary (no client data)")
+    sys.path.insert(0, str(ROOT / "tools"))
+    import review_summary as rs
+
+    def section(file, value, fake, look, flag):
+        rows = "".join(f'<tr><td>{name}: x</td><td>0.90</td><td>+0.50</td><td>0.95</td><td>+1.00</td></tr>'
+                       for name in ("thickness", "darkness", "sharpness"))
+        return (f'<section class="row{" flag" if flag else ""}" data-file="{file}" data-page="2" data-flag="{int(flag)}">'
+                f'<h3>{value} <span class="arrow">→</span> {fake}</h3>'
+                f'<p class="meta">{file} · page 2 · {file} · block 3 · {look} · weight as measured</p>'
+                f'<table class="m"><tbody>{rows}</tbody></table>'
+                f'<p class="note">z against the other words of the block; red = beyond its threshold (2.50, from</p>'
+                f'</section>')
+
+    page = ("<html><head><title>Style review: folder Dossier Dupontel</title></head><body>"
+            + section("releve_Dupontel_2024.pdf", "Marguerite DUPONTEL", "Rachid BEAUMONT",
+                      "Calibri Bold, 200 dpi, blur 1.4px, spread +0.00px, grain 4, block 3", True)
+            + section("releve_Dupontel_2024.pdf", "BE68 5390 0754 7034", "BE12 7358 3951 6198",
+                      "Source Sans 3, blur 0.4px, spread +0.25px, grain 1, black and white, block 1", False)
+            + "</body></html>")
+    rows, secrets = rs.parse(page)
+    text = rs.summary(rows, 10)
+    check("summary: the fonts, qualities and flags are read from the sheet",
+          [r["face"] for r in rows] == ["Calibri Bold", "Source Sans 3"] and rows[0]["dpi"] == 200 and rows[1]["bw"]
+          and rows[0]["flag"] and rows[0]["m"]["thick"] == [0.9, 0.5, 0.95, 1.0], str(rows[:1]))
+    check("summary: no value, fake, file name or folder name in the text",
+          not rs.leaks(text, secrets) and not any(w in text for w in ("DUPONTEL", "Dupontel", "Marguerite", "BEAUMONT",
+                                                                       "5390", "7358", "releve")), text[:300])
+    check("summary: the file is a number (F1), the kind of text is kept (Title+CAPS / digits)",
+          "F1 p2" in text and "Title+CAPS" in text and "digits" in text)
+    check("summary: the guard finds a value written into the text", rs.leaks(text + " marguerite", secrets) != [])
+
+
 def colour_tests():
     """Dossier Test 19: white and coloured text on coloured backgrounds, digital and scan (tools/make_test_colours.py).
     No value left in its box; each replacement on the contrast side of its background; the family and the weight the
@@ -3761,6 +3797,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
+    "review_summary_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

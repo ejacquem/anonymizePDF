@@ -114,6 +114,7 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12); key_hunt.py (many random keys on one file);
                        snapshot_results.py (before / after comparison of the results, section 11b);
                        style_bench.py (scoreboard of the replaced text against its block, section 12c);
+                       review_summary.py (a review sheet summed up with no client data, to share; section 12c);
                        bench.py (time by document and by stage, before / after, section 11b);
                        check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
                        section 12b: the PDFs are downloaded, never committed)
@@ -1007,6 +1008,13 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   and z-scores; outliers in red; filters by file and page, 'flagged only'. `--folder` anonymizes a COPY of the PDFs (not
   the `_anonymized` outputs) with the scratch key and reads the values from the report. Pictures are JPEG (about 8 MB for
   Dossier Test 17). Never run it on Dossier Test Reel into the repo.
+- `python tools/review_summary.py review.html [--out summary.txt] [--worst 30]`: the sheet summed up WITHOUT client
+  data, to copy and share for an analysis: per face, per page and its quality, per face on each page, per kind of text
+  ('Title+CAPS', 'digits', length bucket), the medians of the normalised measures (original and fake) and of their
+  z-scores, the share flagged, and the worst values (face, quality, kind, measures). Left out: the values, the fakes,
+  the pictures, the file names (F1, F2...) and the folder name. A guard checks the text against every value, fake word,
+  file name and the title (4 characters or more, the words of the catalog's font names excepted) and prints nothing if
+  one is found. `review_summary_tests`.
 - `compare <before.json> <after.json>` prints the measures side by side. Takes about 5 minutes (the pipeline runs twice
   per file). Not part of check_all. Results: docs/font_matching.md section 10.
 - Not built: a synthetic paragraph generator of its own (the Test 17 paragraph file is the set), and the public-domain
