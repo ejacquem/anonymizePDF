@@ -78,12 +78,13 @@ def load_truth(file: str) -> tuple[list[dict], dict[int, str]]:
     if "lines" in truth:                                   # one value box per line (polices_scan)
         for ln in truth["lines"]:
             items.append({"page": ln["page"], "box": ln["value_box"], "text": ln["value"], "family": ln["family"],
-                          "bold": bool(ln["bold"]), "size": ln["size"]})
+                          "bold": bool(ln["bold"]), "size": ln["size"], "value": ln["value"], "k": 0, "n": 1})
     else:                                                  # one box per word of the value (contrat, paragraphs)
         for v in truth["values"]:
-            for w in v["words"]:
+            for k, w in enumerate(v["words"]):
                 items.append({"page": v["page"], "box": w["box"], "text": w["text"], "family": w["family"],
-                              "bold": bool(w["bold"]), "size": w["size"]})
+                              "bold": bool(w["bold"]), "size": w["size"], "value": v["value"], "k": k,
+                              "n": len(v["words"])})
     return items, labels
 
 
@@ -124,7 +125,7 @@ def measure(c):
             "contrast": contrast, "sharp": float(np.percentile(mag, 95)) / contrast, "h": float(h), "grain": grain}
 
 
-def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int]):
+def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int], face=None):
     """The measure of `text` written in `box` in the style of block bid: the block's family and size, the page quality,
     the block's paper and ink, painted by the functions a replacement uses (quality.erase, quality.paint). None when the
     block has no style. The measure of the page is divided by this one, so the content of the text (its capitals,
@@ -134,16 +135,25 @@ def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int]):
     from anonymizer import fontmatch, quality
 
     style = pf.block_style(bid)
-    if style is None or style.family is None or style.size is None:
+    if style is None or style.size is None:
         return None
-    face = fontmatch.face(style.family, bool(own and pf.is_bold(own, style.family)))
+    if face is None:                 # the block's family, with the weight of the words (when no face is given)
+        if style.family is None:
+            return None
+        face = fontmatch.face(style.family, bool(own and pf.is_bold(own, style.family)))
     if face is None:
         return None
     x0, y0, x1, y1 = box
     w, h = max(int(round(x1 - x0)), 2), max(int(round(y1 - y0)), 2)
-    cols = pf.block_colours(Image.fromarray(gray).convert("RGB"), bid)
+    img = Image.fromarray(gray).convert("RGB")
+    # the block's paper and ink; without them (a block whose words are too few to measure) the page's: a constant ink
+    # would be a wrong reference (the pipeline's own colours made fakes lighter than their prediction, docs 10.6)
+    cols = pf.block_colours(img, bid) or pf.page_colours(img)
     paper, ink = cols if cols else ((235, 235, 235), (25, 25, 25))
     q = pf.page_quality()
+    # the grain of the block, as look() gives a replacement (the page's grain is the fallback)
+    q = quality.Quality(**{**q.__dict__, "grain": style.grain if style.grain is not None
+                           else quality.grain(gray, box)})
     font = face.font(round(style.size))
     natural = font.getlength(text)
     sx = max(min(1.0, w / natural), 0.9) if natural > 0 else 1.0       # squeezed to the box, as a replacement is
@@ -302,6 +312,14 @@ def _png(gray: np.ndarray, box, grow: tuple[float, float], scale: int, outline) 
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _shown_text(words: list[dict], box) -> str | None:
+    """The text the output shows under box: the OCR words of the output that cover it, left to right (None: nothing).
+    The fake is read from the output, not from the configured replacement: a word of a multi-word value is replaced
+    as part of its value, so its own text is not a term of the config (docs 10.6)."""
+    got = sorted((w for w in words if _covered(box, w["box"]) > 0.3), key=lambda w: w["box"][0])
+    return " ".join(w["text"] for w in got) or None
+
+
 def _crops(gray: np.ndarray, fgray: np.ndarray, box) -> dict:
     """The sheet's pictures of a value: the value x2 and its line (about two heights on each side), as the original
     (blue box) and as the fake (orange box). The two images of a pair have the same grid."""
@@ -335,6 +353,7 @@ def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[
         gray, fgray = orig[pno - 1], fake[pno - 1]
         igray = ident[pno - 1] if ident is not None else None
         words = ocr.ocr_words(ocr.render_page(page, DPI), LANG)
+        fwords = ocr.ocr_words(ocr.render_page(fake_doc[pno - 1], DPI), LANG)
         blocks, block_of = layout.blocks(words)
         pf = fontmatch.PageFonts(gray, words, scanpaint.native_scale(page, DPI))
         truth_boxes = [[v * DPI / 72 for v in t["box"]] for t in items]
@@ -343,7 +362,8 @@ def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[
             others[key], others_orig[key], others_id[key] = [], [], []
             for i in bl["words"]:
                 if not any(_covered(words[i]["box"], tb) > 0.3 for tb in truth_boxes):
-                    pred = predict(pf, gray, bl["id"], words[i]["text"], words[i]["box"], [i])
+                    pred = predict(pf, gray, bl["id"], words[i]["text"], words[i]["box"], [i],
+                                   face=pf.face_for(words[i]["box"])[0])
                     for img, dest in ((fgray, others), (gray, others_orig), (igray, others_id)):
                         if img is None:
                             continue
@@ -363,10 +383,16 @@ def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[
             m0 = measure(crop(gray, box))                                    # the original value (nothing replaced)
             mf = measure(crop(fgray, box))                                   # the fake
             m1 = measure(crop(igray, box)) if igray is not None else None    # the identity run
-            p0 = predict(pf, gray, bid, t["text"], box, own)
-            pk = predict(pf, gray, bid, t["fake"], box, own)
+            p0 = predict(pf, gray, bid, t["text"], box, own, face=face)
+            style = pf.block_style(bid) if bid is not None else None
+            pred_face = (fontmatch.face(style.family, bool(own and pf.is_bold(own, style.family)))
+                         if style is not None and style.family else None)
+            fake_here = t["fake"] if t.get("fake_exact") else (_shown_text(fwords, truth_box) or t["fake"])
+            pk = predict(pf, gray, bid, fake_here, box, own, face=face)
             rec = {"file": tag, "page": pno, "label": t.get("label", tag), "text": t["text"], "fake_text": t["fake"],
                    "family": t.get("family"), "bold": t.get("bold"), "det_family": face.family if face else None,
+                   "fake_shown": fake_here, "fake_exact": bool(t.get("fake_exact")),
+                   "pipe_face": face.name if face else None, "pred_face": pred_face.name if pred_face else None,
                    "ok_family": bool(face and t.get("family") and face.family == t["family"]),
                    "ok_bold": bool(face and t.get("bold") is not None and face.bold == t["bold"]),
                    "size_ratio": size[0] / (t["size"] * DPI / 72) if size and t.get("size") else None,
@@ -394,8 +420,13 @@ def process_file(file: str, work: Path, ner, log, code: Path | None = None, abla
         fake_out, scan_s, anon_s, fake_cfg = run_pipeline(src, work / "fake", ner, None, log, code)
         id_out, id_scan_s, id_anon_s, _ = run_pipeline(src, work / "id", ner, identity_config(truth), log, code)
     fake_text = {r["find"]: r["replace"] for r in yaml.safe_load(fake_cfg)["replacements"] if r.get("replace")}
-    values = [{"page": t["page"], "box": t["box"], "text": t["text"], "fake": fake_text.get(t["text"], t["text"]),
-               "label": labels[t["page"]], "family": t["family"], "bold": t["bold"], "size": t["size"]} for t in truth]
+    values = []
+    for t in truth:
+        parts = fake_text.get(t["value"], "").split()          # the replacement of the whole value
+        exact = len(parts) == t["n"]                           # the word of the same index: the text that was written
+        values.append({"page": t["page"], "box": t["box"], "text": t["text"],
+                       "fake": parts[t["k"]] if exact else t["text"], "fake_exact": exact,
+                       "label": labels[t["page"]], "family": t["family"], "bold": t["bold"], "size": t["size"]})
     res = measure_values(src, fake_out, id_out, values, images)
     res.update({"file": file, "scan_s": scan_s, "anon_s": anon_s, "id_scan_s": id_scan_s, "id_anon_s": id_anon_s})
     return res
@@ -717,7 +748,7 @@ def render_sheet(records: list[dict], out: Path, title: str) -> int:
         parts.append(
             f"<section class=\"row{' flag' if flag else ''}\" data-file=\"{esc(r['file'])}\" data-page=\"{r['page']}\" "
             f"data-flag=\"{1 if flag else 0}\">"
-            f"<h3>{esc(r['text'])} <span class=\"arrow\">→</span> {esc(r['fake_text'])}</h3>"
+            f"<h3>{esc(r['text'])} <span class=\"arrow\">→</span> {esc(r.get('fake_shown') or r['fake_text'])}</h3>"
             f"<p class=\"meta\">{meta}</p>"
             f"<div class=\"pics\">"
             f"<figure><img src=\"{c['orig']}\" alt=\"original\"><figcaption>original (blue box), value x2</figcaption></figure>"
@@ -802,7 +833,7 @@ def cmd_run(args) -> int:
     times = {res["file"]: {k: round(res[k], 2) for k in ("scan_s", "anon_s", "id_scan_s", "id_anon_s")}
              for res in results}
     Path(args.out).write_text(json.dumps({"label": args.label, "summary": summary, "times": times,
-                                          "records": records}, indent=1, ensure_ascii=False, default=str),
+                                          "records": records, "pools": pools}, indent=1, ensure_ascii=False, default=str),
                               encoding="utf-8")
     print_table(summary)
     print(f"-> {args.out}")

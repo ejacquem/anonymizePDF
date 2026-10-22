@@ -210,43 +210,51 @@ per block (bold scores of up to 24 words, grain, size), cached per page.
 - Family per block only as a vote: a value in another font than its block (an IBAN in Consolas) is still read as its line
   says, as before.
 
-### 10.6 Checking the ruler (round five, 2026-10-22)
+### 10.6 Checking the ruler (round five, 2026-10-22): what the consistency measure does and does not show
 
-The consistency measure of the first ruler was wrong: on the ORIGINAL values with nothing replaced it gave 31 % outliers,
-so it followed the letters of each word, not the rendering. Three fixes, each checked:
+The first consistency measure was wrong: on the ORIGINAL values with nothing replaced it gave 31 % outliers, so it
+followed the letters of each word, not the rendering. The ruler was corrected step by step; each step was measured.
 
-1. Each measure is divided by its PREDICTION for the same text in the block's style (`style_bench.predict`: the block's
-   family, size, page quality, paper and ink, painted by `quality.erase` / `quality.paint`, measured the same way).
-   Thickness and sharpness as ratios, darkness as a difference of levels.
-2. The threshold is the Student t quantile for n-1 other words of the block (the sample spread times sqrt(1 + 1/n)), per
-   measure at 2.5 % two-sided, so 'thickness or darkness' is 5 % under the null. The quantile is computed (`t_critical`).
-   The first try (population spread, threshold 2) understated the spread for small n.
-3. A value is measured on the union of the OCR words that cover it, not on its ground-truth box. With the truth box the
-   thickness reads beyond its threshold 11 % of the time, with the OCR words 5 % (`null_diag2`: the same values, the same
-   words). The weight decision is not the cause: the measured weight matches the truth on 175 of 176 values.
+Corrections, in the order they were found (`tools/style_bench.py`):
 
-Why 5 %, not 15 %: the first null diagnostic showed 9 % for word vs word (thickness 5.5 %, darkness 4.8 %: the OR of two
-tests at 5 % is about 10 %, so the combined target was wrong) and 15 % for value vs word, with the excess all in thickness.
+1. Each measure is divided by a PREDICTION for the same text, painted with `quality.erase` / `quality.paint` in the
+   style of its block (size, page quality with the block's grain, paper and ink). Thickness and sharpness as ratios,
+   darkness as a difference of levels. The letters cancel out.
+2. The threshold is the Student t quantile for n-1 other words (sample spread times sqrt(1 + 1/n)), 2.5 % per measure
+   so that 'thickness or darkness' is 5 % under the null (`t_critical`, computed).
+3. A value is measured on the union of the OCR words that cover it, not on its ground-truth box. The truth box reads
+   thicker than a word's box: 11 % thickness outliers against 5 % for the same values measured on their words.
+4. The fake of a truth word is the word at its index in its value's configured replacement when the counts match
+   (`exact`, 138 of 229 values); otherwise it is read back from the OCR of the output under the box. The first version
+   looked up the word itself in the config, so most fakes were predicted as their original text.
+5. The prediction uses the FACE the pipeline paints with (`face_for` of the value or of the reference word). The
+   block's family is a vote over its words and is wrong for values set in another font: of 21 judged mismatches the
+   pipeline's face matched the truth in 13, the block's in 7. Family accuracy has its own column (`fam`, 91 %).
+   This means the consistency no longer penalises a family error: it measures the painting, given the face.
 
-Results (Dossier Test 17, 229 values; outlier = thickness or darkness beyond the threshold):
+Remaining checks that found nothing: the colour fallback (identical numbers), the read-back against the written text
+(correct for the cases checked; OCR errors on digits remain for values without an exact mapping), the ink of each
+value against its block (equal on every value of contrat p2).
+
+Results (Dossier Test 17, 176 values with a z-score; outlier = thickness or darkness beyond its threshold):
 
 | | `b449308` (no block style) | current `main` (block style) | own-ink ablation |
 |---|---:|---:|---:|
-| fakes, share outside the threshold | 12 % | 15 % | 15 % (identical to main) |
-| original values, nothing replaced (null, target 5 %) | 6 % | 6 % | 6 % |
-| identity replacements | 9 % | 5 % | 5 % |
-| spread of values / their block: thickness, darkness, sharpness | 0.78 / 0.62 / 0.69 | 0.74 / 0.52 / 0.64 | 0.74 / 0.52 / 0.64 |
-| |z| darkness, 90th percentile (null about 1.9) | 2.22 | 1.72 | 1.72 |
+| fakes, share outside the threshold | 5 % | 8 % | 8 % (identical to main) |
+| original values, nothing replaced (null, target 5 %) | 5 % | 5 % | 5 % |
+| identity replacements | 6 % | 3 % | 3 % |
+| spread of values / their block: thickness, darkness, sharpness | 0.82 / 0.67 / 0.54 | 0.71 / 0.49 / 0.55 | 0.71 / 0.49 / 0.55 |
 
-- The null is at target. The fakes are above it: 15 % on current main, the gap concentrated on contrat p2 (30 % vs 4 %
-  null) and paragraphes p3/p4 (18 % vs 0 to 5 %).
-- The block style does NOT measurably improve consistency on this ruler. The earlier 'block style 36 % vs baseline 44 %'
-  of 10.2 came from the first, invalid ruler and is superseded. The difference to `b449308` (12 vs 15 %) is within noise
-  for 229 values; darkness spread and darkness z favour the block style, thickness does not. Kept as the design (the
-  spec puts the look on the block), but the claim of a gain is withdrawn.
+- The null is at target. The fakes are close to it (8 % against 5 %), which is within a few values of noise on 176.
+- Per page, the remaining excess is on `contrat p2` (26 % of 27 values with z) and `paragraphes p4` (18 % of 17). On
+  `contrat p2` the flags are darkness: the fakes' 5th-percentile darkness is lighter than the prediction's (the ink
+  is the block's, checked on every value). Not explained. A candidate, not checked: the darkest-5 % statistic of a small
+  crop depends on how much ink the text covers, and the fake's layout (squeeze, filling, baseline) differs from the
+  prediction's.
+- The block style shows no measurable consistency gain on this ruler (8 % against the baseline's 5 %, not significant
+  on 176 values). The 36 % vs 44 % of 10.2 came from the first, invalid ruler and is withdrawn. The block style is kept
+  as the design (the spec puts the look on the block), but no gain is claimed.
 - The own-ink ablation is identical to the block style on every row: the patch of `PageFonts.block_colours` takes effect
   (checked), so on these generated files the block's ink and each word's own ink are the same. A file with uneven ink is
   needed before the block ink can be judged.
-- The review sheet (`tools/style_bench.py sheet`) shows the 26 flagged values of Test 17 (15 % of the 176 values with a
-  z-score; the 53 others have blocks with fewer than 3 other unreplaced words) with their pictures, worst first.
-- Not done here: rendering changes. No change to the fakes is justified by these numbers beyond the gap to the null.
+- Not done here: rendering changes. No change to the fakes is justified by these numbers.
