@@ -18,10 +18,15 @@ Measures (300 dpi renderings, the crop of a box; raw pixel differences are not s
   percentile of the edge gradient / contrast; ink height; grain: MAD of the paper around the ink.
 - round trip, per value: ratio of thickness, of contrast, of sharpness and of height; difference of darkness and of
   grain; 3x3-window SSIM at the best shift of +-2 px (and the shift);
-- consistency, per value of the FAKE output: z-scores of thickness, darkness, sharpness and height against the other
-  words of its block (the unreplaced OCR words of the same block; blocks from anonymizer/layout.py); the share of values
-  with |z| > 2 on thickness or darkness; and the spread of the values of a block against the spread of its other words
-  (ratio of standard deviations, 1 = the same spread, median over the blocks);
+- consistency: each measure is first divided by the PREDICTION for the same text in the style of its block (the block's
+  family, size, page quality, paper and ink, painted by quality.erase / quality.paint, then measured the same way), so
+  the letters of the text cancel out: thickness and sharpness as ratios, darkness as a difference in levels. Then the
+  z-scores against the other words of the block (the unreplaced OCR words, same normalisation; blocks from
+  anonymizer/layout.py), for three kinds of image: the FAKE output, the ORIGINAL page with nothing replaced (the null:
+  its share of outliers should be about 5 %), and the IDENTITY run. The share of values with |z| > 2 on thickness or
+  darkness, against the Student t threshold for the number of other words of the block (outT / orgT / idnT: 5 % of
+  the values under the null); the spread of the values of a block against the spread of its other words (ratio of standard deviations,
+  1 = the same spread, median over the blocks);
 - detection, per value of the ORIGINAL page: family and weight of fontmatch.PageFonts.face_for against the truth, and the
   size ratio (measured size / truth size).
 Results are grouped by page quality ('polices p1 300 dpi' ...) and for all pages ('ALL').
@@ -29,18 +34,21 @@ Results are grouped by page quality ('polices p1 300 dpi' ...) and for all pages
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import os
 import secrets
 import shutil
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLES = ROOT / "sample_data" / "Dossier Test 17"
@@ -48,11 +56,12 @@ SET = ["polices_scan.pdf", "contrat_assurance_scan.pdf", "paragraphes_scan.pdf"]
 LANG = "fra+eng"
 DPI = 300
 TEST_KEY = Path(tempfile.gettempdir()) / "anonymizePDF_style_bench_key.txt"       # a scratch key, not the user's
-OUTLIER_Z = 2.0
 MIN_OTHERS = 3                  # other words of a block needed to judge a value against them
-# a z-score or a spread is not divided by less than this (a block whose other words are all alike)
-FLOOR = {"thick": 0.03, "dark5": 3.0, "sharp": 0.03, "h": 0.5}
-MEASURES = ("thick", "dark5", "sharp", "h")
+# a z-score or a spread is not divided by less than this (a block whose other words are all alike); the normalised
+# measures of the consistency are ratios to the prediction (thickness, sharpness) or levels (darkness)
+FLOOR = {"thick": 0.03, "dark5": 3.0, "sharp": 0.03}
+MEASURES = ("thick", "dark5", "sharp")
+PAD = 12                        # pixels around a predicted rendering (the value's box is cut out of it)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -111,6 +120,43 @@ def measure(c):
     grain = 1.4826 * float(np.median(np.abs(paper_px - np.median(paper_px)))) if paper_px.size > 8 else float("nan")
     return {"thick": float(np.median(runs)) / h if runs else 0.0, "dark5": float(np.percentile(c, 5)),
             "contrast": contrast, "sharp": float(np.percentile(mag, 95)) / contrast, "h": float(h), "grain": grain}
+
+
+def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int]):
+    """The measure of `text` written in `box` in the style of block bid: the block's family and size, the page quality,
+    the block's paper and ink, painted by the functions a replacement uses (quality.erase, quality.paint). None when the
+    block has no style. The measure of the page is divided by this one, so the content of the text (its capitals,
+    digits, letters with ascenders) cancels out of the consistency."""
+    from PIL import Image
+
+    from anonymizer import fontmatch, quality
+
+    style = pf.block_style(bid)
+    if style is None or style.family is None or style.size is None:
+        return None
+    face = fontmatch.face(style.family, bool(own and pf.is_bold(own, style.family)))
+    if face is None:
+        return None
+    x0, y0, x1, y1 = box
+    w, h = max(int(round(x1 - x0)), 2), max(int(round(y1 - y0)), 2)
+    cols = pf.block_colours(Image.fromarray(gray).convert("RGB"), bid)
+    paper, ink = cols if cols else ((235, 235, 235), (25, 25, 25))
+    q = pf.page_quality()
+    font = face.font(round(style.size))
+    natural = font.getlength(text)
+    sx = max(min(1.0, w / natural), 0.9) if natural > 0 else 1.0       # squeezed to the box, as a replacement is
+    canvas = Image.new("RGB", (w + 2 * PAD, h + 2 * PAD), tuple(paper))
+    quality.erase(canvas, (PAD, PAD, PAD + w, PAD + h), paper, q, ("predict", text))
+    quality.paint(canvas, text, font, (PAD, PAD + 0.8 * h), sx, ink, q, ("predict", text))
+    grey = np.asarray(canvas.convert("L")).astype(float)
+    return measure(grey[PAD:PAD + h, PAD:PAD + w])
+
+
+def normalized(m: dict | None, p: dict | None) -> dict | None:
+    """A measure over its prediction: thickness and sharpness as ratios, darkness as a difference of levels."""
+    if not m or not p or p["thick"] <= 0 or p["sharp"] <= 0:
+        return None
+    return {"thick": m["thick"] / p["thick"], "dark5": m["dark5"] - p["dark5"], "sharp": m["sharp"] / p["sharp"]}
 
 
 def _box3(a):
@@ -174,8 +220,13 @@ def identity_config(items: list[dict]) -> str:
     return json.dumps(cfg, ensure_ascii=False)
 
 
-def run_pipeline(src: Path, work: Path, ner, config: str | None, log) -> tuple[Path, float, float]:
-    """Scan (unless a config is given) and anonymize one copy of src: (output path, scan seconds, anonymize seconds)."""
+def run_pipeline(src: Path, work: Path, ner, config: str | None, log,
+                 code: Path | None = None) -> tuple[Path, float, float, str]:
+    """Scan (unless a config is given) and anonymize one copy of src: (output path, scan seconds, anonymize seconds,
+    the config used). code: another checkout of the anonymizer (a commit exported in a worktree), run in a subprocess
+    that imports its modules first; the measures stay those of this checkout."""
+    if code is not None:
+        return _run_in_checkout(src, work, config, code)
     from anonymizer import engine
 
     folder = work / src.stem
@@ -188,7 +239,36 @@ def run_pipeline(src: Path, work: Path, ner, config: str | None, log) -> tuple[P
     t0 = time.time()
     rep = engine.run_anonymize(folder, folder.name, config, LANG, False, log)
     anon_s = time.time() - t0
-    return folder / rep["files"][0]["output"], scan_s, anon_s
+    return folder / rep["files"][0]["output"], scan_s, anon_s, config
+
+
+def _run_in_checkout(src: Path, work: Path, config: str | None, code: Path) -> tuple[Path, float, float, str]:
+    """run_pipeline in a subprocess of this file, with the anonymizer of checkout `code` (see cmd_pipeline)."""
+    work.mkdir(parents=True, exist_ok=True)
+    args = [sys.executable, str(Path(__file__).resolve()), "pipeline", str(code), str(src), str(work)]
+    if config is not None:
+        cfg = work / f"{src.stem}_config.json"
+        cfg.write_text(config, encoding="utf-8")
+        args.append(str(cfg))
+    done = subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
+    if done.returncode != 0:
+        raise RuntimeError(f"the pipeline of {code} failed:\n{done.stderr[-2000:]}")
+    res = json.loads(done.stdout.strip().splitlines()[-1])
+    return Path(res["output"]), res["scan_s"], res["anon_s"], res["config"]
+
+
+@contextlib.contextmanager
+def own_ink():
+    """The ablation: the replacements take the paper and ink of their own words, not their block's (the family, the
+    size and the grain of the block still apply). Only while the pipeline runs: the predictions keep the block's."""
+    from anonymizer import fontmatch
+
+    saved = fontmatch.PageFonts.block_colours
+    fontmatch.PageFonts.block_colours = lambda self, img, bid: None
+    try:
+        yield
+    finally:
+        fontmatch.PageFonts.block_colours = saved
 
 
 def grey_pages(path: Path):
@@ -200,18 +280,22 @@ def grey_pages(path: Path):
     return doc, [np.asarray(ocr.render_page(page, DPI).convert("L")) for page in doc]
 
 
-def process_file(file: str, work: Path, ner, log) -> dict:
-    """Every truth value of one file: detection, round trip and the measures of its block (see the module doc)."""
+def process_file(file: str, work: Path, ner, log, code: Path | None = None, ablation: str | None = None) -> dict:
+    """Every truth value of one file: detection, round trip and the measures of its block (see the module doc).
+    code: the pipeline of another checkout; ablation: 'own_ink' (see own_ink)."""
     from anonymizer import fontmatch, layout, ocr, scanpaint
 
     src = SAMPLES / file
     truth, labels = load_truth(file)
-    fake_out, scan_s, anon_s = run_pipeline(src, work / "fake", ner, None, log)
-    id_out, id_scan_s, id_anon_s = run_pipeline(src, work / "id", ner, identity_config(truth), log)
+    with own_ink() if ablation == "own_ink" else contextlib.nullcontext():
+        fake_out, scan_s, anon_s, fake_cfg = run_pipeline(src, work / "fake", ner, None, log, code)
+        id_out, id_scan_s, id_anon_s, _ = run_pipeline(src, work / "id", ner, identity_config(truth), log, code)
+    fake_text = {r["find"]: r["replace"] for r in yaml.safe_load(fake_cfg)["replacements"] if r.get("replace")}
     src_doc, orig = grey_pages(src)
     fake_doc, fake = grey_pages(fake_out)
     id_doc, ident = grey_pages(id_out)
-    records, others = [], {}
+    records = []
+    others, others_orig, others_id = {}, {}, {}      # block -> normalised measures of its unreplaced words, per kind
     for pno, page in enumerate(src_doc, start=1):
         items = [t for t in truth if t["page"] == pno]
         if not items:
@@ -221,34 +305,42 @@ def process_file(file: str, work: Path, ner, log) -> dict:
         blocks, block_of = layout.blocks(words)
         pf = fontmatch.PageFonts(gray, words, scanpaint.native_scale(page, DPI))
         boxes = [[v * DPI / 72 for v in t["box"]] for t in items]
-        for bl in blocks:              # the other words of each block: unreplaced, measured in the fake output
+        for bl in blocks:              # the other words of each block: unreplaced, each over its own prediction
             key = f"{file}:{pno}:{bl['id']}"
-            others[key] = []
+            others[key], others_orig[key], others_id[key] = [], [], []
             for i in bl["words"]:
                 if not any(_covered(words[i]["box"], tb) > 0.3 for tb in boxes):
-                    m = measure(crop(fgray, words[i]["box"]))
-                    if m:
-                        others[key].append(m)
+                    pred = predict(pf, gray, bl["id"], words[i]["text"], words[i]["box"], [i])
+                    for img, dest in ((fgray, others), (gray, others_orig), (igray, others_id)):
+                        n = normalized(measure(crop(img, words[i]["box"])), pred)
+                        if n:
+                            dest[key].append(n)
         for t, box in zip(items, boxes):
             face, _ = pf.face_for(box)
             size = pf.metrics(box, face, t["bold"]) if face is not None else None
             # the block of the value: that of the OCR word it overlaps most (None when OCR missed it)
             hits = [(_covered(box, w["box"]), i) for i, w in enumerate(words) if _covered(box, w["box"]) > 0.3]
-            block = f"{file}:{pno}:{block_of[max(hits)[1]]}" if hits else None
-            m0 = measure(crop(gray, box))
+            bid = block_of[max(hits)[1]] if hits else None
+            own = pf.value_words(box)
+            m0 = measure(crop(gray, box))           # the original value (nothing replaced)
+            m1 = measure(crop(igray, box))          # the value replaced by itself (identity run)
+            mf = measure(crop(fgray, box))          # the fake
+            p0 = predict(pf, gray, bid, t["text"], box, own)
+            pf_ = predict(pf, gray, bid, fake_text.get(t["text"], t["text"]), box, own)
             records.append({
                 "file": file, "page": pno, "label": labels[pno], "text": t["text"], "family": t["family"],
                 "bold": t["bold"], "det_family": face.family if face else None,
                 "ok_family": bool(face and face.family == t["family"]),
                 "ok_bold": bool(face and face.bold == t["bold"]),
                 "size_ratio": size[0] / (t["size"] * DPI / 72) if size else None,
-                "rt": roundtrip(crop(gray, box), crop(igray, box), m0, measure(crop(igray, box))),
-                "fake": measure(crop(fgray, box)), "block": block,
+                "rt": roundtrip(crop(gray, box), crop(igray, box), m0, m1),
+                "orig": m0, "ident": m1, "fake": mf, "block": f"{file}:{pno}:{bid}" if bid is not None else None,
+                "orig_n": normalized(m0, p0), "ident_n": normalized(m1, p0), "fake_n": normalized(mf, pf_),
             })
     for doc in (src_doc, fake_doc, id_doc):
         doc.close()
     return {"file": file, "scan_s": scan_s, "anon_s": anon_s, "id_scan_s": id_scan_s, "id_anon_s": id_anon_s,
-            "records": records, "others": others}
+            "records": records, "others": others, "others_orig": others_orig, "others_id": others_id}
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -262,23 +354,47 @@ def _med(xs):
     return float(statistics.median(xs)) if xs else None
 
 
-def judge(records: list[dict], others: dict) -> None:
-    """Adds 'z' (per measure, against the other words of the block) to the values whose block has enough others."""
+def judge(records: list[dict], others: dict, kind: str = "fake") -> None:
+    """Adds the z-scores (per measure, against the other words of the block) of one kind of measure to the values whose
+    block has enough others: 'z' for the fake, 'z_orig' for the original value, 'z_ident' for the identity replacement."""
+    name, norm = f"z_{kind}", f"{kind}_n"
     for r in records:
         ref = others.get(r["block"], []) if r["block"] else []
-        if not r["fake"] or len(ref) < MIN_OTHERS:
+        if not r[norm] or len(ref) < MIN_OTHERS:
             continue
-        r["z"] = {}
+        n = len(ref)
+        r[name] = {"crit": t_critical(n - 1)}
         for m in MEASURES:
             vals = [o[m] for o in ref]
-            r["z"][m] = (r["fake"][m] - statistics.fmean(vals)) / max(statistics.pstdev(vals), FLOOR[m])
+            # predictive z of a new value against n others: the sample spread, inflated by sqrt(1 + 1/n) (the
+            # uncertainty of the mean); with few others the population spread understated it and |z| > 2 was too common
+            spread_ = statistics.stdev(vals) * math.sqrt(1 + 1 / n)
+            r[name][m] = (r[norm][m] - statistics.fmean(vals)) / max(spread_, FLOOR[m])
+
+
+# two-sided 95 % Student t quantiles for 1..30 degrees of freedom (the outlier threshold of a value against n others:
+# under the null 5 % of the values pass it, whatever n is); from 30 on, the normal 1.96 is used
+_T975 = [12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
+         2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042]
+
+
+def t_critical(df: int) -> float:
+    return _T975[df - 1] if 1 <= df <= len(_T975) else 1.96
+
+
+def _outlier_share(rs: list[dict], name: str):
+    """Share of the values whose thickness or darkness is beyond their own threshold (see judge)."""
+    judged = [r for r in rs if name in r]
+    if not judged:
+        return None
+    return sum(1 for r in judged if max(abs(r[name]["thick"]), abs(r[name]["dark5"])) > r[name]["crit"]) / len(judged)
 
 
 def spread_ratios(records: list[dict], others: dict) -> dict[str, list[float]]:
     """Per block: the spread of its values over the spread of its other words, for each measure."""
     blocks: dict[str, list[dict]] = {}
     for r in records:
-        if r["fake"] and "z" in r:
+        if r["fake_n"] and "z_fake" in r:
             blocks.setdefault(r["block"], []).append(r)
     out = {m: [] for m in MEASURES}
     for key, members in blocks.items():
@@ -286,14 +402,17 @@ def spread_ratios(records: list[dict], others: dict) -> dict[str, list[float]]:
             continue
         ref = others[key]
         for m in MEASURES:
-            out[m].append(statistics.pstdev([r["fake"][m] for r in members])
+            out[m].append(statistics.pstdev([r["fake_n"][m] for r in members])
                           / max(statistics.pstdev([o[m] for o in ref]), FLOOR[m]))
     return out
 
 
-def summarize(records: list[dict], others: dict) -> dict:
-    """Per page quality and for all pages: detection, round trip and consistency."""
-    judge(records, others)
+def summarize(records: list[dict], pools: dict) -> dict:
+    """Per page quality and for all pages: detection, round trip and consistency. pools: 'fake' / 'orig' / 'ident' ->
+    the measures of the unreplaced words of each block, in the image of that kind."""
+    for kind, others in pools.items():
+        judge(records, others, kind)
+    others = pools["fake"]
     groups: dict[str, list[dict]] = {}
     for r in records:
         groups.setdefault(r["label"], []).append(r)
@@ -301,7 +420,7 @@ def summarize(records: list[dict], others: dict) -> dict:
     out = {}
     for name, rs in groups.items():
         rt = [r["rt"] for r in rs if r["rt"]]
-        judged = [r for r in rs if "z" in r]
+        judged = [r for r in rs if "z_fake" in r]
         spread = spread_ratios(rs, others)
         thick = [x["thick"] for x in rt if x["thick"]]
         out[name] = {
@@ -318,10 +437,14 @@ def summarize(records: list[dict], others: dict) -> dict:
             "rt_ssim": _med([x["ssim"] for x in rt if x["ssim"] is not None]),
             "rt_shift": (sum(1 for x in rt if x["shift"]) / len(rt)) if rt else None,
             "cons_n": len(judged),
-            "cons_outlier": (sum(1 for r in judged if max(abs(r["z"]["thick"]), abs(r["z"]["dark5"])) > OUTLIER_Z)
-                             / len(judged)) if judged else None,
-            "cons_z_thick_p90": _pct([abs(r["z"]["thick"]) for r in judged], 90),
-            "cons_z_dark_p90": _pct([abs(r["z"]["dark5"]) for r in judged], 90),
+            "cons_outlier": _outlier_share(rs, "z_fake"),
+            "cons_z_thick_p90": _pct([abs(r["z_fake"]["thick"]) for r in judged], 90),
+            "cons_z_dark_p90": _pct([abs(r["z_fake"]["dark5"]) for r in judged], 90),
+            # the null: the original values and their identity replacements against their blocks, as the fakes are
+            "orig_outlier": _outlier_share(rs, "z_orig"),
+            "orig_z_dark_p90": _pct([abs(r["z_orig"]["dark5"]) for r in rs if "z_orig" in r], 90),
+            "ident_outlier": _outlier_share(rs, "z_ident"),
+            "ident_z_dark_p90": _pct([abs(r["z_ident"]["dark5"]) for r in rs if "z_ident" in r], 90),
             **{f"spread_{m}": _med(spread[m]) for m in MEASURES},
         }
     return out
@@ -333,9 +456,10 @@ def summarize(records: list[dict], others: dict) -> dict:
 COLUMNS = [("n", "n", "{:d}"), ("fam", "fam", "{:.0%}"), ("wt", "wt", "{:.0%}"), ("size", "size", "{:.2f}"),
            ("rt_thick", "RTthick", "{:.2f}"), ("rt_dark_abs", "RT|dark|", "{:.1f}"), ("rt_sharp", "RTsharp", "{:.2f}"),
            ("rt_ssim", "RTssim", "{:.3f}"), ("rt_shift", "RTshift", "{:.0%}"),
-           ("cons_outlier", "out|z|>2", "{:.0%}"), ("cons_z_thick_p90", "|zT|90", "{:.2f}"),
-           ("cons_z_dark_p90", "|zD|90", "{:.2f}"), ("spread_thick", "sprT", "{:.2f}"),
-           ("spread_dark5", "sprD", "{:.2f}"), ("spread_sharp", "sprS", "{:.2f}"), ("spread_h", "sprH", "{:.2f}")]
+           ("cons_outlier", "outT", "{:.0%}"), ("cons_z_thick_p90", "|zT|90", "{:.2f}"),
+           ("cons_z_dark_p90", "|zD|90", "{:.2f}"), ("orig_outlier", "orgT", "{:.0%}"),
+           ("ident_outlier", "idnT", "{:.0%}"), ("spread_thick", "sprT", "{:.2f}"),
+           ("spread_dark5", "sprD", "{:.2f}"), ("spread_sharp", "sprS", "{:.2f}")]
 
 
 def _cell(v, fmt):
@@ -355,6 +479,19 @@ def print_table(summary: dict) -> None:
         print("  ".join(str(c).ljust(w) for c, w in zip(row, width)))
 
 
+def cmd_pipeline(args) -> int:
+    """Subprocess of run --code: the scan and the anonymization of one file with the anonymizer of checkout args.code
+    (its modules first on the path). Prints one JSON line: the output, the times and the config."""
+    sys.path.insert(0, args.code)
+    from anonymizer.pii import load_ner
+
+    ner = load_ner(quiet=True)
+    config = Path(args.config).read_text(encoding="utf-8") if args.config else None
+    out, scan_s, anon_s, cfg = run_pipeline(Path(args.src), Path(args.work), ner, config, lambda *a: None)
+    print(json.dumps({"output": str(out), "scan_s": scan_s, "anon_s": anon_s, "config": cfg}))
+    return 0
+
+
 def cmd_run(args) -> int:
     os.environ["ANON_SECRET_FILE"] = str(TEST_KEY)
     if not TEST_KEY.exists():
@@ -368,15 +505,17 @@ def cmd_run(args) -> int:
     try:
         for file in args.file or SET:
             t0 = time.time()
-            res = process_file(file, work / Path(file).stem, ner, lambda *a: None)
+            res = process_file(file, work / Path(file).stem, ner, lambda *a: None,
+                               Path(args.code) if args.code else None, args.ablation)
             results.append(res)
             print(f"{file}: {len(res['records'])} values, scan {res['scan_s']:.1f}s, anonymize {res['anon_s']:.1f}s, "
                   f"identity run {res['id_scan_s'] + res['id_anon_s']:.1f}s (file {time.time() - t0:.0f}s)", flush=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     records = [r for res in results for r in res["records"]]
-    others = {k: v for res in results for k, v in res["others"].items()}
-    summary = summarize(records, others)
+    pools = {kind: {k: v for res in results for k, v in res[key].items()}
+             for kind, key in (("fake", "others"), ("orig", "others_orig"), ("ident", "others_id"))}
+    summary = summarize(records, pools)
     times = {res["file"]: {k: round(res[k], 2) for k in ("scan_s", "anon_s", "id_scan_s", "id_anon_s")}
              for res in results}
     Path(args.out).write_text(json.dumps({"label": args.label, "summary": summary, "times": times,
@@ -392,7 +531,7 @@ def cmd_compare(args) -> int:
     b = json.loads(Path(args.after).read_text(encoding="utf-8"))
     print(f"{'quality':<22}{'measure':<18}{'before':>10}{'after':>10}")
     shown = ("fam", "wt", "rt_thick", "rt_dark_abs", "rt_sharp", "rt_ssim", "cons_outlier", "cons_z_thick_p90",
-             "cons_z_dark_p90", "spread_thick", "spread_dark5", "spread_sharp", "spread_h")
+             "cons_z_dark_p90", "orig_outlier", "ident_outlier", "spread_thick", "spread_dark5", "spread_sharp")
     fmts = {k: f for k, _, f in COLUMNS}
     for name in sorted(set(a["summary"]) & set(b["summary"]), key=lambda s: (s != "ALL", s)):
         for k in shown:
@@ -410,10 +549,19 @@ def main() -> int:
     r.add_argument("out")
     r.add_argument("--label", default="")
     r.add_argument("--file", action="append", help="only this sample file of Dossier Test 17 (repeatable)")
+    r.add_argument("--code", help="run the anonymizer of this other checkout (e.g. a commit exported in a worktree)")
+    r.add_argument("--ablation", choices=["own_ink"], help="the replacements take their own paper and ink (ablation)")
     c = sub.add_parser("compare")
     c.add_argument("before")
     c.add_argument("after")
+    p = sub.add_parser("pipeline", help="subprocess of run --code")
+    p.add_argument("code")
+    p.add_argument("src")
+    p.add_argument("work")
+    p.add_argument("config", nargs="?")
     args = ap.parse_args()
+    if args.cmd == "pipeline":
+        return cmd_pipeline(args)
     return cmd_run(args) if args.cmd == "run" else cmd_compare(args)
 
 

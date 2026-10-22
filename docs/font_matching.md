@@ -209,3 +209,34 @@ per block (bold scores of up to 24 words, grain, size), cached per page.
 - Quality (blur, spread, scale) is still per page, not per block; a block is never measured on its own quality.
 - Family per block only as a vote: a value in another font than its block (an IBAN in Consolas) is still read as its line
   says, as before.
+
+### 10.6 Checking the ruler (round five, 2026-10-22): the consistency measure is not validated yet
+
+The consistency rows of 10.2 are not trustworthy. The null test (the same measure on the ORIGINAL values, nothing replaced,
+against their block) gave 31 % outliers with the first ruler: the untouched words are as 'inconsistent' as the fakes, so the
+measure followed the letters of each word, not the rendering. Three changes to the ruler, measured on the current `main`:
+
+| consistency, all pages (n = 229) | first ruler (raw, z vs the block, |z| > 2) | each measure divided by its prediction (|z| > 2) | + Student t threshold for n-1 others |
+|---|---:|---:|---:|
+| fakes, share outside the threshold | 36 % | 23 % | 19 % |
+| original values (null, should be about 5 %) | 31 % | 24 % | 15 % |
+| identity replacements | 38 % | 22 % | 15 % |
+| |z| darkness, 90th percentile (null: about 1.9) | 9.1 | 1.95 | 1.92 |
+
+- The prediction (`style_bench.predict`): the text of each word (or value) written in the block's family, size, page
+  quality, paper and ink by `quality.erase` / `quality.paint`, then measured the same way; each measure is divided by it
+  (thickness, sharpness: ratio; darkness: difference of levels). The letters cancel out, as intended.
+- The threshold: the block has only a few other words, and the population spread understated the spread. The predictive
+  z (sample spread times sqrt(1 + 1/n)) against the Student t quantile for n-1 degrees of freedom gives the right null for
+  small n. The null is still 15 %, not 5 %: this is NOT explained yet. Suspected: a value box spans several words (its
+  thickness and geometry differ from one word's), and OCR boxes of single words vary in tightness. Not checked.
+- Comparison with the same ruler (Student t): baseline `b449308` (no block style, run as a subprocess of the worktree):
+  fakes 28 % outside, null 15 %, identity 21 %; spreads thickness 0.83, darkness 0.57, sharpness 0.50. Current `main`
+  (block style): fakes 19 %, null 15 %, identity 15 %; spreads 0.60 / 0.51 / 0.47. The direction is the same as before
+  (fewer outliers with the block style), but the gap to the null is small and the null itself is not at 5 %.
+- Ablation 'block style with each value's own ink': the numbers are identical to the block style, to two decimals on
+  every row. The patch of `PageFonts.block_colours` was checked to take effect; the cause is that the colours of a block
+  and of its words are the same on these generated files (uniform ink and paper), so this ablation says nothing yet. A
+  test file with uneven ink is needed before the ink of a block can be judged.
+- Not done: the visual review sheet (step 4 of the round); the null test is not at its target, so no rendering change is
+  justified from these numbers yet.

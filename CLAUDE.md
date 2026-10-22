@@ -879,7 +879,7 @@ Order must never change a result (`order_tests`): a value written with several s
 
 Run it after every change (exit code 0 = all passed; about 8 min on an idle 4 cores / 8 threads, 20 min when the machine is busy, with 2 keys (1625 checks), it was 17 min
 one job after the other; `--quick` = 1 key and no option tests, `--fast` = also leaves out the long font / contract runs
-(`SLOW_GROUPS`), `--folder "Dossier Test 04"` to target, `--keep` to keep outputs, `--jobs N` processes at once, default 6,
+(`SLOW_GROUPS`), `--folder "Dossier Test 04"` to target, `--keep` to keep outputs, `--only GROUP` (repeatable) to run some unit groups alone, `--jobs N` processes at once, default 6,
 1 = one after the other with live output). It copies `sample_data/*` to a temp dir and uses
 temporary random keys (`ANON_SECRET_FILE`), never the user's key, never writing into `sample_data/`.
 The run is a list of jobs (`build_jobs`, `run_job`): each group of tests, each test folder with each key, and the option
@@ -954,6 +954,12 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   the same file, options off = Arial on a flat patch).
 - Every output has an empty second check (`suspects`): on the original files of the poor copy the same check lists
   the values it sees (a useful sanity check when the test documents change).
+- A failed check keeps its detail: the summary prints its last lines, and a job whose pool process dies is a failed
+  check after `JOB_LIMIT` seconds (no wait for ever). A job that raises shows its traceback in the summary.
+- Known key-dependent failure: 'a digital line: the replacement ends about where the original did' (the town
+  'BOULOGNE-BILLANCOURT (72000)'): on about 5 % of random keys (2 of 40 replayed) the fake town is 14-17 % narrower,
+  leaving a gap before the postcode. A real defect in the length of compound town fakes, not fixed (no rendering
+  change in that round): the check is kept strict, so a run with that key is red.
 - Several keys matter: some bugs only appear with some keys (`Inès` → `Ines`, `Thomas` → `Julien`).
   Case solved with key_hunt (1 key in 150): the '4471' of Dossier Test 01 was a false alarm of the leak search, which
   joined the lines of the text: the fake 'BE96ZZZ0969601447' above '17.947.729' made a '4471'. A value of one token
@@ -983,9 +989,16 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   (`polices_scan.pdf`, `contrat_assurance_scan.pdf`, `paragraphes_scan.pdf`, truth in `fonts_truth.json`). Each file runs
   twice on a temporary copy with a scratch key: the fake run (what the user gets) and an identity run (every value
   replaced by itself: the round trip). Measures per value: thickness, darkness, contrast, sharpness, height and grain of
-  its crop; round trip ratios and differences and a 3x3-window SSIM at the best shift of +-2 px; consistency (z-scores of
-  the fake against the unreplaced words of its block, the share with |z| > 2 on thickness or darkness, the spread of the
-  values against the spread of the other words of the block); detection (family, weight, size) on the original page.
+  its crop; round trip ratios and differences and a 3x3-window SSIM at the best shift of +-2 px; consistency (each
+  measure of the fake divided by its PREDICTION for the same text in the block's style, `predict`; z-scores against the
+  unreplaced words of its block, same normalisation; the share beyond the Student t threshold for n-1 others: outT, and
+  the same for the original values, the null orgT, and the identity run idnT); detection (family, weight, size) on the
+  original page.
+- The null (orgT, about 5 % when the ruler is right) is 15 % on current main: the ruler is NOT validated yet (docs/
+  font_matching.md section 10.6). Do not tune the rendering on these numbers alone.
+- `--code <checkout>` runs the pipeline of another checkout (a worktree of an older commit) in a subprocess; the
+  measures and the predictions stay those of this checkout. `--ablation own_ink`: the replacements take their own
+  paper and ink (only the pipeline runs; see 10.6).
 - `compare <before.json> <after.json>` prints the measures side by side. Takes about 5 minutes (the pipeline runs twice
   per file). Not part of check_all. Results: docs/font_matching.md section 10.
 - Not built: a synthetic paragraph generator of its own (the Test 17 paragraph file is the set), and the public-domain
