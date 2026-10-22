@@ -3685,6 +3685,116 @@ def review_summary_tests():
     check("summary: the file is a number (F1), the kind of text is kept (Title+CAPS / digits)",
           "F1 p2" in text and "Title+CAPS" in text and "digits" in text)
     check("summary: the guard finds a value written into the text", rs.leaks(text + " marguerite", secrets) != [])
+    named = ("<html><head><title>Style review: folder Dossier Dupontel</title></head><body>"
+             + section("zeta_Dupontel.pdf", "Marguerite DUPONTEL", "Rachid BEAUMONT", "Calibri, 200 dpi, blur 1.4px, "
+                       "spread +0.00px, grain 4, block 3", False)
+             + section("alpha_Dupontel.pdf", "Marguerite DUPONTEL", "Rachid BEAUMONT", "Calibri, 200 dpi, blur 1.4px, "
+                       "spread +0.00px, grain 4, block 3", False)
+             + "</body></html>")
+    named_rows, _ = rs.parse(named)
+    check("summary: the files are numbered in the order of their names (as scan_props)",
+          [r["file"] for r in named_rows] == ["F2", "F1"], str([r["file"] for r in named_rows]))
+    text2 = rs.summary(named_rows, 5)
+    lines = text2.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("== histogram"))
+    hist = [ln.split() for ln in lines[start:] if ln.startswith(("F1 p2", "F2 p2"))]
+    # the histogram: the columns are the bands 'thk orig' falls in (<0.2, 0.2 ... 1.5, 1.6+); 0.90 is the band 0.9
+    check("summary: the histogram of thickness orig counts each page in its band (0.90 -> 0.9)",
+          len(hist) == 2 and all(h[2] == "1" and h[3 + 8] == "1" for h in hist), str(hist))
+    check("summary: the tables give the z-scores of the original words and its sharpness",
+          "zT orig" in text2 and "shp orig" in text2 and any(ln.startswith("Calibri") and "+0.50" in ln for ln in lines),
+          text2[:400])
+
+
+def scan_props_tests():
+    """tools/scan_props.py: the properties of the pages of a folder, with no client data: the images as drawn (filter,
+    bits, dpi), the block test on pictures drawn as blocks and smooth ones, the strokes of a page, the file numbering
+    (the outputs of an earlier run are left out), a file that cannot be opened, and the guard that refuses a name."""
+    print("\n== scan properties (no client data)")
+    sys.path.insert(0, str(ROOT / "tools"))
+    import scan_props as sp
+    from PIL import Image, ImageDraw, ImageFont
+
+    rng = np.random.default_rng(7)
+    small = rng.integers(0, 256, (100, 150)).astype(np.uint8)
+    blocky = np.repeat(np.repeat(small, 2, axis=0), 2, axis=1)               # drawn as blocks of 2 x 2 pixels
+    smooth = np.asarray(Image.fromarray(small).resize((300, 200), Image.BILINEAR))
+    whole = [(0.0, 0.0, 300.0, 200.0)]
+    b_blocky = sp.block_test(blocky, whole, 0.5)
+    b_smooth = sp.block_test(smooth, whole, 0.5)
+    b_shift = sp.block_test(blocky[:, 1:], [(0.0, 0.0, 299.0, 200.0)], 0.5)
+    check("scan props: a picture drawn as blocks at 2x shows block edges on its own grid",
+          b_blocky["x"]["ratio"] > 10 and b_blocky["x"]["model"] > 10, str(b_blocky))
+    check("scan props: a smooth picture at 2x shows no block edges at any phase",
+          b_smooth["x"]["ratio"] < sp.BLOCK_RATIO and b_smooth["y"]["ratio"] < sp.BLOCK_RATIO, str(b_smooth))
+    # a grid edge is known to half a pixel (a phase and the one after it give the same edges): a shift of one pixel
+    # moves the best phase by half a pixel to a pixel and a half
+    moved = (b_shift["x"]["phase"] - b_blocky["x"]["phase"]) % 2.0
+    check("scan props: the phase of the blocks follows their edge (a shift of one pixel moves it by 0.5 to 1.5 px)",
+          0.5 - 1e-9 <= moved <= 1.5 + 1e-9 and b_shift["x"]["ratio"] > 10, f"{b_shift['x']} vs {b_blocky['x']}")
+    check("scan props: no block test on a page drawn at its own resolution (scale 1)",
+          sp.block_test(blocky, whole, 1.0) is None)
+
+    bars = np.full((60, 200), 255, np.uint8)
+    for x in range(10, 190, 10):
+        bars[:, x:x + 4] = 0                                                    # bars 4 px wide, 6 px apart
+    st = sp.strokes(bars, [(0.0, 0.0, 200.0, 60.0)], 0.5)
+    check("scan props: strokes in page px and in native px (bars of 4 px at scale 0.5: 2 native px)",
+          st is not None and st["px"] == 4.0 and st["native"] == 2.0 and st["share"]["4"] == 1.0, str(st))
+
+    secrets = sp.secrets_of(Path("Dossier Dupontel"), [Path("releve_Dupontel_2024.pdf"), Path("scan_page.pdf")])
+    check("scan props: the guard knows the folder and file names and their words, not the words the script prints",
+          {"Dupontel", "Dossier", "releve_Dupontel_2024"} <= secrets and "page" not in secrets and "scan" not in secrets,
+          str(sorted(secrets)))
+    check("scan props: the guard finds a name written into the text",
+          sp.leaks("F1 | p1 | scan\nimage Flate | 8 bit Dupontel", secrets) == ["Dupontel"])
+    check("scan props: the report holds no name of the folder or of its files",
+          sp.leaks("F1 | p1 | scan\nimage Flate | 8 bit", secrets) == [])
+
+    work = Path(tempfile.mkdtemp(prefix="anon_props_"))
+    try:
+        folder = work / "Dossier Dupontel"
+        folder.mkdir()
+        # a scanned A6 page at 150 dpi (8 bit, Flate) and a digital page, in one file; a digital file; an output
+        im = Image.new("L", (620, 874), 255)
+        draw = ImageDraw.Draw(im)
+        font = ImageFont.truetype(str(ROOT / "anonymizer" / "fonts" / "DejaVuSans.ttf"), 24)
+        for k in range(24):
+            draw.text((40, 60 + k * 34), f"Compte numero {1000 + k * 37} EUR 1234,56 Rue de la Paix", font=font, fill=0)
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        doc = fitz.open()
+        doc.new_page(width=297.6, height=419.5).insert_image(fitz.Rect(0, 0, 297.6, 419.5), stream=buf.getvalue())
+        doc.new_page(width=297.6, height=419.5).insert_text((40, 60), "Virement SEPA numero 1234 montant 56,78 EUR")
+        doc.save(folder / "releve_Dupontel_2024.pdf", deflate=True)
+        doc.close()
+        doc = fitz.open()
+        doc.new_page(width=297.6, height=419.5).insert_text((40, 60), "Note de frais numero 77 montant 12,00 EUR")
+        doc.save(folder / "alpha_note.pdf")
+        doc.close()
+        shutil.copy(folder / "alpha_note.pdf", folder / "alpha_note_anonymized.pdf")
+        (folder / "broken_Dupontel.pdf").write_bytes(b"not a pdf")
+        paths = sp.pdf_files(folder)
+        check("scan props: the files are numbered in the order of their names, the outputs of a run are left out",
+              [p.name for p in paths] == ["alpha_note.pdf", "broken_Dupontel.pdf", "releve_Dupontel_2024.pdf"],
+              str([p.name for p in paths]))
+        files = [(f"F{n}", sp.measure_file(p)) for n, p in enumerate(paths, start=1)]
+        text = sp.report(files)
+        check("scan props: a scan page is read as a scan and a digital page as digital",
+              "p1 | scan | rotation 0" in text and "p2 | digital | rotation 0" in text, text[:600])
+        check("scan props: the image as drawn: Flate, 8 bit, gray, 150 dpi",
+              "Flate | 8 bit | gray | 620 x 874 px | 150 x 150 dpi" in text, text[:600])
+        check("scan props: the scan page has its block test, its fit and its strokes",
+              "    blocks   x" in text and "    fit      blur" in text and "    strokes  median" in text, text[:900])
+        check("scan props: a file that cannot be opened gives its exception only",
+              "F2 | could not be opened (" in text, text[:600])
+        check("scan props: no word of the page, no file name in the report",
+              not sp.leaks(text, sp.secrets_of(folder, paths)) and not any(w in text for w in
+                                                                              ("Compte", "Virement", "Dupontel",
+                                                                               "releve", "alpha", "broken")),
+              text[:300])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def colour_tests():
@@ -3797,7 +3907,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests",
+    "review_summary_tests", "scan_props_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

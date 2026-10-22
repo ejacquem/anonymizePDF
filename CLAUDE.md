@@ -115,6 +115,7 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        snapshot_results.py (before / after comparison of the results, section 11b);
                        style_bench.py (scoreboard of the replaced text against its block, section 12c);
                        review_summary.py (a review sheet summed up with no client data, to share; section 12c);
+                       scan_props.py (properties of the scanned pages of a folder, no client data; section 12c);
                        bench.py (time by document and by stage, before / after, section 11b);
                        check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
                        section 12b: the PDFs are downloaded, never committed)
@@ -1014,7 +1015,16 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   z-scores, the share flagged, and the worst values (face, quality, kind, measures). Left out: the values, the fakes,
   the pictures, the file names (F1, F2...) and the folder name. A guard checks the text against every value, fake word,
   file name and the title (4 characters or more, the words of the catalog's font names excepted) and prints nothing if
-  one is found. `review_summary_tests`.
+  one is found. The tables also give the z-scores of the original words and the original sharpness, and a histogram of
+  the thickness of the original words per page (the bands 0.2 .. 1.6). The files are F1, F2... in the order of their
+  names, as `tools/scan_props.py` numbers them. `review_summary_tests`.
+- `python tools/scan_props.py <folder> [--out props.txt]` (docs/font_matching.md 10.7): the properties of the scanned
+  pages of a folder, NO client data (no text, word, value, picture or file name; the guard checks it): per page the
+  images as drawn (filter, bits, colour, dpi, Interpolate), the native scale and the rule the model draws it with, the
+  block test (grey change across the native pixel edges against inside them, along x and y, at the best phase and at
+  phase 0, and the phase of the image's edge), the hardness (mid-tones on the native grid), the fit (blur, spread,
+  black and white, error, grain), the strokes (median run in page and native px, the share of each run length) and the
+  paper / ink levels. The scan pages are read as the app reads them (OCR needed). `scan_props_tests`.
 - `compare <before.json> <after.json>` prints the measures side by side. Takes about 5 minutes (the pipeline runs twice
   per file). Not part of check_all. Results: docs/font_matching.md section 10.
 - Not built: a synthetic paragraph generator of its own (the Test 17 paragraph file is the set), and the public-domain

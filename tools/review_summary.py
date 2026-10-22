@@ -4,10 +4,11 @@ Summary of a style review sheet (`tools/style_bench.py sheet review.html --folde
 copied and shared for an analysis of the fonts.
 
 Kept, per replaced value: the face the fake was written in (a font of the catalog), the scan quality (dpi, blur, spread,
-grain, black and white), the block, the page number, a file number (F1, F2... in the order of the sheet), the kind of
-text (digits / CAPITALS / Title / lower / mixed) and its length bucket, and the measures of the sheet (thickness,
-darkness, sharpness of the original and of the fake, each divided by its prediction, their z-scores, the threshold, the
-flag).
+grain, black and white), the block, the page number, a file number (F1, F2... in the order of the file names, as
+tools/scan_props.py numbers them), the kind of text (digits / CAPITALS / Title / lower / mixed) and its length bucket,
+and the measures of the sheet (thickness, darkness, sharpness of the original and of the fake, each divided by its
+prediction, their z-scores, the threshold, the flag). The tables give the z-scores of the original words too, and a
+histogram of the thickness of the original words per page.
 Left out: the values and their fakes (the headings), the pictures, the file names, the folder name (the title).
 Before printing, the summary is checked against every value, fake, file name and the title of the sheet: if any of them
 (4 characters or more) appears in it, nothing is printed and the script stops.
@@ -21,6 +22,7 @@ import html
 import re
 import statistics
 import sys
+from bisect import bisect_right
 from collections import defaultdict
 from pathlib import Path
 
@@ -77,15 +79,18 @@ def parse(page: str) -> tuple[list[dict], set[str]]:
     title = re.search(r"<title>(.*?)</title>", page, re.S)
     if title:
         secrets.add(html.unescape(title.group(1)).replace("Style review: ", "").replace("folder ", ""))
-    files: dict[str, str] = {}
+    sections = list(re.finditer(r'<section class="row( flag)?" data-file="(.*?)" data-page="(\d+)" data-flag="(\d)">(.*?)</section>',
+                                page, re.S))
+    # F1, F2... in the order of the file names (case ignored), as tools/scan_props.py numbers them
+    fids = {name: f"F{n}" for n, name in enumerate(sorted({html.unescape(s.group(2)) for s in sections},
+                                                         key=str.casefold), start=1)}
     rows = []
-    for sec in re.finditer(r'<section class="row( flag)?" data-file="(.*?)" data-page="(\d+)" data-flag="(\d)">(.*?)</section>',
-                           page, re.S):
+    for sec in sections:
         flag, file, pno, _, body = sec.groups()
         file = html.unescape(file)
         secrets.add(file)
         secrets.add(Path(file).stem)
-        fid = files.setdefault(file, f"F{len(files) + 1}")
+        fid = fids[file]
         head = re.search(r"<h3>(.*?)</h3>", body, re.S)
         orig_text = fake_text = ""
         if head:
@@ -145,6 +150,32 @@ def _get(r, key, i):
     return v[i] if v else None
 
 
+THK_EDGES = [round(0.2 + 0.1 * k, 1) for k in range(15)]     # 0.2 .. 1.6: the bands of the histogram of 'thk orig'
+
+
+def histogram(judged: list[dict]) -> list[str]:
+    """Per page: how many original words fall in each band of thickness over its prediction (0.1 wide, from 0.2 to
+    1.6, the ends open). A bimodal page shows two groups of bands (the thickness problem of docs/font_matching.md)."""
+    labels = ["<0.2"] + [f"{e:.1f}" for e in THK_EDGES[:-1]] + [f"{THK_EDGES[-1]:.1f}+"]
+    groups = defaultdict(list)
+    for r in judged:
+        v = _get(r, "thick", 0)
+        if v is not None:
+            groups[(r["file"], r["page"])].append(v)
+    out = ["== histogram of 'thk orig' (original word over its prediction, thickness): values per band",
+           f"{'':10} {'n':>4} " + " ".join(f"{lab:>4}" for lab in labels)]
+    total = [0] * len(labels)
+    for (fid, page), vs in sorted(groups.items(), key=lambda kv: (int(kv[0][0][1:]), kv[0][1])):
+        counts = [0] * len(labels)
+        for v in vs:
+            counts[bisect_right(THK_EDGES, v)] += 1
+        total = [a + b for a, b in zip(total, counts)]
+        out.append(f"{fid + ' p' + str(page):10} {len(vs):>4} " + " ".join(f"{c or '.':>4}" for c in counts))
+    out.append(f"{'all':10} {sum(total):>4} " + " ".join(f"{c or '.':>4}" for c in total))
+    out.append("")
+    return out
+
+
 def summary(rows: list[dict], worst: int) -> str:
     out = []
     judged = [r for r in rows if r["m"]]
@@ -157,28 +188,30 @@ def summary(rows: list[dict], worst: int) -> str:
                "fake = the replacement; z = against the other words of its block.")
     out.append("")
 
+    # (measure, index in its list [original, z of the original, fake, z of the fake], format), one column each
+    columns = (("thick", 0, "{:.2f}"), ("thick", 1, "{:+.2f}"), ("thick", 2, "{:.2f}"), ("thick", 3, "{:+.2f}"),
+               ("dark", 0, "{:+.1f}"), ("dark", 1, "{:+.2f}"), ("dark", 2, "{:+.1f}"), ("dark", 3, "{:+.2f}"),
+               ("sharp", 0, "{:.2f}"), ("sharp", 2, "{:.2f}"))
+    heads = ("thk orig", "zT orig", "thk fake", "zT fake", "drk orig", "zD orig", "drk fake", "zD fake", "shp orig",
+             "shp fake")
+
     def table(title, key):
         groups = defaultdict(list)
         for r in judged:
             groups[key(r)].append(r)
         out.append(f"== by {title}")
-        out.append(f"{'':38} {'n':>3} {'flag':>5} {'thk orig':>8} {'thk fake':>8} {'zT fake':>7} "
-                   f"{'drk orig':>8} {'drk fake':>8} {'zD fake':>7} {'shp fake':>8}")
+        out.append(f"{'':30} {'n':>3} {'flag':>5} " + " ".join(f"{h:>8}" for h in heads))
         for k, rs in sorted(groups.items(), key=lambda kv: (-sum(r["flag"] for r in kv[1]) / len(kv[1]), -len(kv[1]))):
             fl = sum(r["flag"] for r in rs) / len(rs)
-            out.append(f"{str(k)[:38]:38} {len(rs):>3} {fl:>5.0%} "
-                       f"{_f(_med(_get(r, 'thick', 0) for r in rs)):>8} {_f(_med(_get(r, 'thick', 2) for r in rs)):>8} "
-                       f"{_f(_med(_get(r, 'thick', 3) for r in rs), '{:+.2f}'):>7} "
-                       f"{_f(_med(_get(r, 'dark', 0) for r in rs), '{:+.1f}'):>8} "
-                       f"{_f(_med(_get(r, 'dark', 2) for r in rs), '{:+.1f}'):>8} "
-                       f"{_f(_med(_get(r, 'dark', 3) for r in rs), '{:+.2f}'):>7} "
-                       f"{_f(_med(_get(r, 'sharp', 2) for r in rs)):>8}")
+            cells = " ".join(f"{_f(_med(_get(r, m, i) for r in rs), fmt):>8}" for m, i, fmt in columns)
+            out.append(f"{str(k)[:30]:30} {len(rs):>3} {fl:>5.0%} {cells}")
         out.append("")
 
     table("face (font the fake was written in)", lambda r: r["face"])
     table("page and its quality", lambda r: f"{r['file']} p{r['page']} {_quality(r)}")
     table("face on each page", lambda r: f"{r['file']} p{r['page']} {r['face']}")
     table("kind of text", lambda r: f"{r['kind']} {r['length']}")
+    out += histogram(judged)
 
     out.append(f"== the {worst} worst values (largest |z| of thickness or darkness)")
     out.append(f"{'file':4} {'p':>2} {'face':24} {'quality':30} {'kind':12} {'thk o/f':>11} {'zT':>6} "
