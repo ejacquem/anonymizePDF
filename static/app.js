@@ -870,7 +870,7 @@ function boxEntries() {
   if (!name || !state.model || !state.model.manual) return [];
   const man = state.model.manual, out = [];
   man.blackouts.forEach((b, i) => {
-    if (b.file !== name) return;
+    if (b.file !== name || b.removed) return;                 // a removed automatic box is listed apart (removedBoxes)
     out.push({ key: "m|" + i, type: "manual", idx: i, page: b.page, box: b.box,
       kind: b.origin || "manual",
       label: b.origin ? `${BOX_KIND_LABEL[b.origin] || b.origin} · edited` : BOX_KIND_LABEL.manual });
@@ -889,6 +889,14 @@ function boxEntries() {
       page: b.page, box: b.box, kind: b.kind, label: BOX_KIND_LABEL[b.kind] || b.kind });
   });
   return out;
+}
+
+// the automatic boxes removed by hand on the selected file: kept in the config (manual_blackouts, removed: true), they
+// stay out of every anonymization until they are restored
+function removedBoxes() {
+  const name = currentFileName(), man = state.model && state.model.manual;
+  if (!name || !man) return [];
+  return man.blackouts.map((b, idx) => ({ b, idx })).filter((x) => x.b.file === name && x.b.removed);
 }
 
 function drawBoxes() {
@@ -957,8 +965,14 @@ function boxListInner() {
   const name = currentFileName();
   if (!name) return `<div class="muted small">Select a file to see its black boxes.</div>`;
   const entries = boxEntries();
+  const gone = removedBoxes();
+  const removedHtml = !gone.length ? "" : `<div class="muted small" style="margin-top:6px">Removed automatic boxes: they stay removed on every anonymization (↺ puts one back).</div>`
+    + gone.map(({ b, idx }) => `<div class="brow removedbox" title="Removed by hand">
+      <span class="btag k-${BOX_KIND_CLASS[b.origin] || "hand"}">${esc((BOX_KIND_LABEL[b.origin] || b.origin) + " · removed")}</span>
+      <span class="bname">p.${b.page} · ${Math.round(b.box[2] - b.box[0])}×${Math.round(b.box[3] - b.box[1])} pt</span>
+      <button class="mdel" data-brestore="${idx}" title="Put this automatic box back">↺</button></div>`).join("");
   if (!entries.length) {
-    return `<div class="muted small">No black box on ${esc(name)}.</div>`;
+    return `<div class="muted small">No black box on ${esc(name)}.</div>` + removedHtml;
   }
   return entries.filter((e) => e.type !== "text").map((e) => {
     const w = Math.round(e.box[2] - e.box[0]), h = Math.round(e.box[3] - e.box[1]);
@@ -966,7 +980,7 @@ function boxListInner() {
       <span class="btag k-${BOX_KIND_CLASS[e.kind] || "hand"}">${esc(e.label)}</span>
       <span class="bname">p.${e.page} · ${w}×${h} pt</span>
       <button class="mdel" data-bdel="${esc(e.key)}" title="Remove this black box">✕</button></div>`;
-  }).join("");
+  }).join("") + removedHtml;
 }
 
 function boxPanelHtml() {
@@ -1155,11 +1169,18 @@ function deleteBox(key) {
     state.model.manual.blackouts.splice(e.idx, 1);
     return saveBoxes("Black box removed");
   }
-  // an automatic box: left out of the next run only, the next anonymization detects it again
-  pendingEntry(currentFileName()).removed.push({ page: e.page, kind: e.kind, box: e.box.map((v) => Math.round(v * 10) / 10) });
-  drawBoxes();
-  updateToolbar();
-  setStatus("Automatic black box removed · press Anonymize file to update it", "ok");
+  // an automatic box: written to the config as removed, so it stays removed on every anonymization (↺ restores it)
+  const box = e.box.map((v) => Math.round(v * 10) / 10);
+  state.model.manual.blackouts.push({ file: currentFileName(), page: e.page, box, origin: e.kind, replaces: [...box], removed: true });
+  return saveBoxes("Automatic black box removed (it stays removed)");
+}
+
+function restoreBox(idx) {
+  const b = state.model.manual.blackouts[idx];
+  if (!b || !b.removed) return;
+  rememberBoxes();
+  state.model.manual.blackouts.splice(idx, 1);
+  return saveBoxes("Automatic black box put back");
 }
 
 $("#btnText").onclick = async () => {
@@ -1493,6 +1514,7 @@ async function saveConfig() {
     setDirty(false);
     msg.className = "muted small";
     msg.textContent = "Saved " + new Date().toLocaleTimeString();
+    loadTree().catch(() => {});                                // the dots: a saved config is newer than the outputs
     return true;
   } catch (e) {
     msg.className = "err small";
@@ -1708,6 +1730,7 @@ $("#cfgTable").addEventListener("input", (ev) => {
 $("#cfgTable").addEventListener("click", (ev) => {
   const t = ev.target;
   if (t.dataset && t.dataset.bdel) { ev.stopPropagation(); return deleteBox(t.dataset.bdel); }
+  if (t.dataset && t.dataset.brestore) { ev.stopPropagation(); return restoreBox(+t.dataset.brestore); }
   const row = t.closest && t.closest(".brow");
   if (row) { focusBox(row.dataset.bkey); return; }
   if (t.classList.contains("gchk")) { ev.stopPropagation(); return; }    // do not fold the group

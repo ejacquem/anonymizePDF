@@ -341,6 +341,8 @@ def parse_config(text: str) -> dict:
         if isinstance(item.get("replaces"), list) and len(item["replaces"]) == 4 and item.get("origin"):
             out["replaces"] = [float(v) for v in item["replaces"]]                    # a moved automatic box:
             out["origin"] = str(item["origin"])                                         # its kind and detected box
+            if item.get("removed") is True:
+                out["removed"] = True                       # removed by hand: not drawn at all, and not detected again
         manual_boxes.append(out)
     texts = []
     for i, item in enumerate(data.get("manual_texts") or [], start=1):
@@ -1392,7 +1394,7 @@ def _manual_boxes(cfg: dict, name: str) -> dict:
     """{page: [box in PDF points]} of the black boxes drawn by hand on one file."""
     out: dict = {}
     for b in cfg.get("manual_blackouts") or []:
-        if b["file"] == name:
+        if b["file"] == name and not b.get("removed"):
             out.setdefault(int(b["page"]), []).append(tuple(b["box"]))
     return out
 

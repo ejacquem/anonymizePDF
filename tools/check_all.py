@@ -513,6 +513,27 @@ def option_tests(work_root: Path, ner):
         black = float((pages[p][y0:y1, x0:x1] < 20).mean())
         check(f"visages_scan.pdf: removed photo p{p} is not blacked out", black < 0.5, f"{black:.0%} black in its box")
 
+    doc.close()                                               # the folder is made again below
+
+    # the same removal written in the config (manual_blackouts, removed: true): it stays removed on every run, with no `removed` sent
+    def removed_in_config(cfg):
+        lines = ["", "manual_blackouts:"] + [
+            "  - {file: \"visages_scan.pdf\", page: %d, box: [%s], origin: \"photo\", replaces: [%s], removed: true}"
+            % (b["page"], ", ".join(f"{v:.1f}" for v in b["box"]), ", ".join(f"{v:.1f}" for v in b["box"])) for b in first]
+        return cfg.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+
+    cfg_text, rep = run_folder("Dossier Test 06", work_root, ner, edit=removed_in_config, files_only=["visages_scan.pdf"])
+    kinds = [b["kind"] for b in rep["files"][0]["blackouts"]]
+    check("visages_scan.pdf: photos removed in the config stay removed (no box drawn for them)", "photo" not in kinds, str(kinds))
+    parsed = engine.parse_config(cfg_text)
+    check("removed automatic boxes of the config: read as removed, not drawn as hand-drawn boxes",
+          all(b.get("removed") for b in parsed["manual_blackouts"]) and not engine._manual_boxes(parsed, "visages_scan.pdf")
+          and len(engine._removed_boxes(parsed, {}, "visages_scan.pdf").get(1, [])) + sum(
+              len(v) for k, v in engine._removed_boxes(parsed, {}, "visages_scan.pdf").items() if k != 1) == len(first))
+    again = configmodel.to_yaml(configmodel.to_model(cfg_text), "Dossier Test 06")
+    check("removed automatic boxes survive the config round trip",
+          [b.get("removed") for b in engine.parse_config(again)["manual_blackouts"]] == [True] * len(first))
+
 
 def detector_tests():
     """The detectors on the strings the real files showed (fast, no OCR, no file)."""

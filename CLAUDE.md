@@ -192,9 +192,13 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   its box in the viewer and centre the anonymized pane on it (`focusBox`, as a replaced value centres the original;
   the typed texts list works the same way), dashed overlay for automatic boxes; click a box = select its row; ✕ or Delete
   removes it.
-  Automatic boxes are never written to the config: removing one leaves it out of the next run only (the list of
-  removed boxes is sent with the run, `removed`; the next run detects them again). Moving one adds a `manual_blackouts`
-  entry with `origin` and `replaces` (the detected box): that box is skipped on every run.
+  Removing an automatic box writes a `manual_blackouts` entry with `origin`, `replaces` (the detected box, also its
+  `box`) and `removed: true`: the box is skipped on EVERY run, it is not drawn as a hand-drawn box, and the config is
+  newer than the output so the file's dot turns yellow (nothing is pending outside the config any more). The black
+  boxes list shows these under 'Removed automatic boxes' with a ↺ that puts one back (`restoreBox`); undo / redo cover
+  both. Moving one adds the same entry without `removed`: that box is skipped on every run too. (`engine._manual_boxes`
+  leaves the removed entries out, `_removed_boxes` uses all of them; the old per-run `removed` list of the API still
+  works but the app no longer sends anything in it.)
 - Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format;
   a note with a button to the Config tab when the second check's values were offered there as suggestions.
 - The OCR engine and the names models are chosen in ⚙ Settings (`POST /api/settings`, sent again at each start from
@@ -336,7 +340,7 @@ manual_blackouts:                   # black boxes drawn in the Anonymized pane: 
 ```
 `auto_changes:` (written by the app) keeps the automatic values changed by hand: `{find, type, original, was_active, removed}`.
 `manual_texts:` (written by the app): texts typed by hand, `{file, page, box, text}` in PDF points.
-There is no list of removed automatic boxes in the config: they are only sent with an anonymization run.
+An automatic box removed by hand is `{file, page, box, origin, replaces, removed: true}` in `manual_blackouts` (stays removed on every run).
 Missing keys in older configs get the safe defaults (everything on). `find` matching (`pii.term_regex`): case-
 insensitive, flexible whitespace, word boundaries; on scans `ocr=True` also accepts 0/O/D, 1/l/I, 5/S, 8/B, 2/Z,
 missing accents and a space inside a number. Overlaps (`pii.resolve`): terms beat regex, then the rank, then the longer

@@ -249,13 +249,16 @@ def to_yaml(model: dict, folder: str = "") -> str:
         L.append("")
     if manual.get("blackouts"):
         L += ["# Black boxes drawn by hand: PDF points, page 1 = first page of the file. Kept by every scan.",
-              "# origin / replaces: an automatic box moved by hand (its kind, and the box the detector found).",
+              "# origin / replaces: an automatic box moved by hand (its kind, and the box the detector found);",
+              "# removed: true = that automatic box was removed by hand and stays removed on every anonymization.",
               "manual_blackouts:"]
         for b in manual["blackouts"]:
             box = ", ".join(f"{float(v):.1f}" for v in b["box"])
             origin = f", origin: {_q(b['origin'])}" if b.get("origin") else ""
             if b.get("replaces") and b.get("origin"):
                 origin += ", replaces: [" + ", ".join(f"{float(v):.1f}" for v in b["replaces"]) + "]"
+                if b.get("removed"):
+                    origin += ", removed: true"
             L.append(f"  - {{file: {_q(b['file'])}, page: {int(b['page'])}, box: [{box}]{origin}}}")
         L.append("")
     if manual.get("texts"):
