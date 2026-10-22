@@ -1701,8 +1701,7 @@ $("#cfgTable").addEventListener("change", (ev) => {
   }
   if (t.classList.contains("echk")) {
     const i = +t.closest(".erow").dataset.i;
-    markOrig(m.entries[i]);
-    m.entries[i].active = t.checked;
+    setActiveWithParts(m, m.entries[i], t.checked);
     tableChanged();
     return renderTable();
   }
@@ -1727,6 +1726,18 @@ $("#cfgTable").addEventListener("input", (ev) => {
     refreshRowFlag(t.closest(".erow"));
   }
 });
+// ticking or unticking a value does the same to the parts the scan made from it (their info says "part of 'value'"), and to
+// the parts of those parts: "D'un office notaire" unticked takes "d'un", "office notaire", "office", "notaire" with it
+function setActiveWithParts(m, entry, on, seen = new Set()) {
+  if (seen.has(entry)) return;
+  seen.add(entry);
+  markOrig(entry);
+  entry.active = on;
+  const tag = `part of '${entry.find}'`;
+  m.entries.forEach((e) => {
+    if (!e.removed && (e.info || "").includes(tag)) setActiveWithParts(m, e, on, seen);
+  });
+}
 $("#cfgTable").addEventListener("click", (ev) => {
   const t = ev.target;
   if (t.dataset && t.dataset.bdel) { ev.stopPropagation(); return deleteBox(t.dataset.bdel); }

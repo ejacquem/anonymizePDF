@@ -229,6 +229,8 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   `original` and `was_active` (`configmodel.auto_flag`, `to_model`, `to_yaml`). A new scan keeps them
   (`configmodel.keep_edits`): a value still found keeps its change, a removed one stays out, a value the scan no longer
   finds keeps its change. The scan no longer asks for a confirmation about this (`check: config_edit_tests`).
+- Ticking / unticking a value does the same to the parts the scan made from it (their info says "part of 'value'", and the parts of
+  those parts): `setActiveWithParts` in app.js.
 - Review flag: 'Mark as reviewed' in the Anonymized pane head; `anon_review.json` per folder = {original name: {at,
   sha256 of the output}}; a flag counts only while the output's hash matches (regenerated or edited -> not reviewed);
   `run_anonymize` also clears the flag of each file it regenerates. Tree badges `✓` (file) and `✓ r/n` (folder).
