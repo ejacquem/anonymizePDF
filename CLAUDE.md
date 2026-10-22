@@ -205,9 +205,10 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   (`--chg-w`), the OCR second pass (same value as the OCR check of Config › Settings), and the fake text quality
   (`qualityOffset`, -1 .. +1, sent with every anonymization as `quality_offset`, see section 10b), and the lowest fake
   text quality allowed (`qualityFloor`, default -0.5, -1 = no limit): the value sent is the slider not below it
-  (`sentQuality()`). The tree (directory): each original has a dot at its left (`file_states` in app.py): red = a
-  leftover, a second-check suspect or an error; orange = a warning of the last run; yellow = the config was saved
-  after the output (or no output yet): anonymize; green = reviewed by hand. The icon is a file, or a lock once an
+  (`sentQuality()`). The tree (directory): each original has a dot at its left (`file_states` in app.py): red = an
+  error or a leftover (an original value still found in the output); green = reviewed by hand (wins over the next two);
+  orange = a warning of the last run or a second-check suspect; yellow = the config was saved after the output (or no
+  output yet): anonymize. The icon is a file, or a lock once an
   anonymized file exists; the anonymized output has no row of its own.
 - A folder anonymization leaves reviewed files alone, except those with black boxes / typed texts / removed boxes not
   applied yet: the client sends them in `include` (`folderPendingFiles`), so a new box always reaches the output.

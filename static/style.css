@@ -204,8 +204,14 @@ table.ov tr.click:hover { background: var(--sel); }
 .seg, .viewmode { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex: none; }
 .seg button, .viewmode button { border: 0; border-radius: 0; padding: 3px 10px; font-size: 12px; }
 .seg button.on, .viewmode button.on { background: var(--accent); color: var(--accent-text); }
-#cfgSearch { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--line);
-  border-radius: 6px; background: var(--panel); color: var(--text); }
+.searchbox { position: relative; flex: 1; min-width: 0; display: flex; }
+.searchbox[hidden] { display: none !important; }
+#cfgSearch { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 3px 22px 3px 8px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--panel); color: var(--text); -webkit-appearance: none; appearance: none; }
+#cfgSearch::-webkit-search-cancel-button { display: none; }
+#cfgSearchClear { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); border: 0; background: none;
+  color: var(--muted, #888); font-size: 16px; line-height: 1; padding: 0 4px; cursor: pointer; }
+#cfgSearchClear:hover { color: var(--text); }
 .cfgtable { flex: 1; overflow: auto; padding: 6px 8px; font-size: 12.5px; }
 .cfgtable[hidden], #cfgSearch[hidden], #configText[hidden] { display: none !important; }
 .cfgsum { margin: 6px 2px 8px; }

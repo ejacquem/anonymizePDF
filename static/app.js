@@ -180,8 +180,8 @@ function unfoldAbove(path) {
 }
 
 const DOT_TITLE = {
-  red: "Text still readable, a suspect for the second check, or an error: see the Recap",
-  orange: "Warning from the last anonymization: see the Recap",
+  red: "An error, or an original value still readable in the output: see the Recap",
+  orange: "Warning or value to check from the last anonymization: see the Recap",
   yellow: "Config changed since the last anonymization: anonymize again",
   green: "Reviewed by hand",
 };
@@ -1788,7 +1788,17 @@ $("#cfgTable").addEventListener("toggle", (ev) => {
     if (d.open) state.openGroups.add(d.dataset.type); else state.openGroups.delete(d.dataset.type);
   }
 }, true);
-$("#cfgSearch").addEventListener("input", renderTable);
+function syncSearchClear() { $("#cfgSearchClear").hidden = !$("#cfgSearch").value; }
+$("#cfgSearch").addEventListener("input", () => { syncSearchClear(); renderTable(); });
+$("#cfgSearchClear").addEventListener("click", () => {
+  $("#cfgSearch").value = "";
+  syncSearchClear();
+  renderTable();
+  $("#cfgSearch").focus();
+});
+$("#cfgSearch").addEventListener("keydown", e => {
+  if (e.key === "Escape" && $("#cfgSearch").value) { e.preventDefault(); $("#cfgSearchClear").click(); }
+});
 
 function openTypes() {
   return new Set([...document.querySelectorAll("#cfgTable details.grp[open]")].map((d) => d.dataset.type));
@@ -1799,7 +1809,7 @@ function showConfigView() {
   const table = state.cfgView === "table";
   document.querySelectorAll(".cfgbar .seg button").forEach((b) => b.classList.toggle("on", b.dataset.view === state.cfgView));
   $("#cfgTable").hidden = !table;
-  $("#cfgSearch").hidden = !table;
+  $("#cfgSearch").parentElement.hidden = !table;
   $("#configText").hidden = table;
 }
 

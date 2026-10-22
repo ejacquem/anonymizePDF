@@ -118,9 +118,10 @@ def save_settings():
 
 
 def file_states(d: Path, own: list[dict]) -> None:
-    """The dot of each original in the tree (`status`): 'red' = a leftover, a second-check suspect or an error (data may
-    still be readable), 'orange' = a warning of the last run, 'yellow' = the config was saved after the output (or
-    there is no output yet): anonymize, 'green' = reviewed by hand, None = nothing to say."""
+    """The dot of each original in the tree (`status`): 'red' = an error, or an original value still found in the output
+    (a leftover); 'green' = reviewed by hand (the review is of the current output, so it wins over what follows);
+    'orange' = a warning of the last run or a value the second check still reads (offered as a suggestion);
+    'yellow' = the config was saved after the output (or there is no output yet): anonymize; None = nothing to say."""
     files = {}
     rep = d / eng.REPORT_NAME
     if rep.exists():
@@ -135,14 +136,14 @@ def file_states(d: Path, own: list[dict]) -> None:
             continue
         f = files.get(c["name"]) or {}
         out = eng.output_of(d / c["name"])
-        if f.get("error") or f.get("leftovers") or f.get("suspects"):
+        if f.get("error") or f.get("leftovers"):
             c["status"] = "red"
-        elif f.get("warnings"):
+        elif c["reviewed"]:
+            c["status"] = "green"
+        elif f.get("warnings") or f.get("suspects"):
             c["status"] = "orange"
         elif cfg_time is not None and (not out.exists() or cfg_time > out.stat().st_mtime):
             c["status"] = "yellow"
-        elif c["reviewed"]:
-            c["status"] = "green"
         else:
             c["status"] = None
 

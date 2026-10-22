@@ -104,7 +104,8 @@
         <div class="seg" title="Table: tick / edit the values. YAML: the config file itself.">
           <button data-view="table">Table</button><button data-view="yaml">YAML</button>
         </div>
-        <input id="cfgSearch" type="search" placeholder="Search a value…" spellcheck="false">
+        <span class="searchbox"><input id="cfgSearch" type="search" placeholder="Search a value…" spellcheck="false">
+          <button id="cfgSearchClear" type="button" title="Clear the search" aria-label="Clear the search" hidden>×</button></span>
       </div>
       <div id="cfgTable" class="cfgtable"></div>
       <textarea id="configText" spellcheck="false" disabled
