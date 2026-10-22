@@ -247,4 +247,6 @@ Results (Dossier Test 17, 229 values; outlier = thickness or darkness beyond the
 - The own-ink ablation is identical to the block style on every row: the patch of `PageFonts.block_colours` takes effect
   (checked), so on these generated files the block's ink and each word's own ink are the same. A file with uneven ink is
   needed before the block ink can be judged.
+- The review sheet (`tools/style_bench.py sheet`) shows the 26 flagged values of Test 17 (15 % of the 176 values with a
+  z-score; the 53 others have blocks with fewer than 3 other unreplaced words) with their pictures, worst first.
 - Not done here: rendering changes. No change to the fakes is justified by these numbers beyond the gap to the null.

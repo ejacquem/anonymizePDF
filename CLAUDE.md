@@ -1001,6 +1001,11 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - `--code <checkout>` runs the pipeline of another checkout (a worktree of an older commit) in a subprocess; the
   measures and the predictions stay those of this checkout. `--ablation own_ink`: the replacements take their own
   paper and ink (only the pipeline runs; see 10.6).
+- `sheet <out.html> [--file NAME] [--folder PATH]`: the review sheet, one self-contained HTML page with every replaced
+  value (worst first): the value and its line, original and fake, the face, weight, block, look, the normalised measures
+  and z-scores; outliers in red; filters by file and page, 'flagged only'. `--folder` anonymizes a COPY of the PDFs (not
+  the `_anonymized` outputs) with the scratch key and reads the values from the report. Pictures are JPEG (about 8 MB for
+  Dossier Test 17). Never run it on Dossier Test Reel into the repo.
 - `compare <before.json> <after.json>` prints the measures side by side. Takes about 5 minutes (the pipeline runs twice
   per file). Not part of check_all. Results: docs/font_matching.md section 10.
 - Not built: a synthetic paragraph generator of its own (the Test 17 paragraph file is the set), and the public-domain

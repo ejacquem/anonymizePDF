@@ -282,73 +282,150 @@ def grey_pages(path: Path):
     return doc, [np.asarray(ocr.render_page(page, DPI).convert("L")) for page in doc]
 
 
-def process_file(file: str, work: Path, ner, log, code: Path | None = None, ablation: str | None = None) -> dict:
-    """Every truth value of one file: detection, round trip and the measures of its block (see the module doc).
-    code: the pipeline of another checkout; ablation: 'own_ink' (see own_ink)."""
+def _png(gray: np.ndarray, box, grow: tuple[float, float], scale: int, outline) -> str:
+    """A JPEG (data URI) of the grey page around box, grown by `grow` pixels, with box drawn on it."""
+    import base64
+    import io
+
+    from PIL import Image, ImageDraw
+
+    x0, y0, x1, y1 = box
+    gx, gy = grow
+    X0, Y0 = max(int(x0 - gx), 0), max(int(y0 - gy), 0)
+    X1, Y1 = min(int(math.ceil(x1 + gx)), gray.shape[1]), min(int(math.ceil(y1 + gy)), gray.shape[0])
+    img = Image.fromarray(np.clip(gray[Y0:Y1, X0:X1], 0, 255).astype(np.uint8)).convert("RGB")
+    ImageDraw.Draw(img).rectangle((x0 - X0, y0 - Y0, x1 - X0 - 1, y1 - Y0 - 1), outline=outline)
+    if scale > 1:
+        img = img.resize((img.width * scale, img.height * scale), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=75)               # the grain of a scan makes a PNG several times bigger
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _crops(gray: np.ndarray, fgray: np.ndarray, box) -> dict:
+    """The sheet's pictures of a value: the value x2 and its line (about two heights on each side), as the original
+    (blue box) and as the fake (orange box). The two images of a pair have the same grid."""
+    h = max(box[3] - box[1], 1.0)
+    line = (1.5 * h, 0.5 * h)
+    return {"orig": _png(gray, box, (4, 4), 2, (40, 90, 220)), "fake": _png(fgray, box, (4, 4), 2, (230, 120, 20)),
+            "orig_line": _png(gray, box, line, 1, (40, 90, 220)), "fake_line": _png(fgray, box, line, 1, (230, 120, 20))}
+
+
+def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[dict], images: bool = False) -> dict:
+    """The measures of the values of one source file against its output (and its identity run, when given), and the
+    normalised measures of the unreplaced words of each block. values: [{page (1-based), box (PDF points), text (the
+    original), fake (its replacement), label, family / bold / size (the truth of a test file, None for a user's folder)}].
+    A value is measured on the OCR words that cover it: the ground-truth box reads thicker than a word's box (the null of
+    15 % in docs 10.6). Its fake sits in the same place, so the same box serves the original, the identity run and the fake.
+    images: keep the pictures of the values for the sheet."""
+    from PIL import Image
+
     from anonymizer import fontmatch, layout, ocr, scanpaint
 
+    tag = src.name
+    src_doc, orig = grey_pages(src)
+    fake_doc, fake = grey_pages(fake_out)
+    id_doc, ident = grey_pages(id_out) if id_out is not None else (None, None)
+    records = []
+    others, others_orig, others_id = {}, {}, {}      # block -> normalised measures of its unreplaced words, per kind
+    for pno, page in enumerate(src_doc, start=1):
+        items = [v for v in values if v["page"] == pno]
+        if not items:
+            continue
+        gray, fgray = orig[pno - 1], fake[pno - 1]
+        igray = ident[pno - 1] if ident is not None else None
+        words = ocr.ocr_words(ocr.render_page(page, DPI), LANG)
+        blocks, block_of = layout.blocks(words)
+        pf = fontmatch.PageFonts(gray, words, scanpaint.native_scale(page, DPI))
+        truth_boxes = [[v * DPI / 72 for v in t["box"]] for t in items]
+        for bl in blocks:              # the other words of each block: unreplaced, each over its own prediction
+            key = f"{tag}:{pno}:{bl['id']}"
+            others[key], others_orig[key], others_id[key] = [], [], []
+            for i in bl["words"]:
+                if not any(_covered(words[i]["box"], tb) > 0.3 for tb in truth_boxes):
+                    pred = predict(pf, gray, bl["id"], words[i]["text"], words[i]["box"], [i])
+                    for img, dest in ((fgray, others), (gray, others_orig), (igray, others_id)):
+                        if img is None:
+                            continue
+                        n = normalized(measure(crop(img, words[i]["box"])), pred)
+                        if n:
+                            dest[key].append(n)
+        for t, truth_box in zip(items, truth_boxes):
+            # the block of the value: that of the OCR word it overlaps most (None when OCR missed it)
+            hits = [(_covered(truth_box, w["box"]), i) for i, w in enumerate(words) if _covered(truth_box, w["box"]) > 0.3]
+            bid = block_of[max(hits)[1]] if hits else None
+            cover = [w["box"] for w in words if _covered(truth_box, w["box"]) > 0.3]
+            box = (min(b[0] for b in cover), min(b[1] for b in cover), max(b[2] for b in cover),
+                   max(b[3] for b in cover)) if cover else truth_box
+            face, _ = pf.face_for(box)
+            size = pf.metrics(box, face, bool(t.get("bold"))) if face is not None else None
+            own = pf.value_words(box)
+            m0 = measure(crop(gray, box))                                    # the original value (nothing replaced)
+            mf = measure(crop(fgray, box))                                   # the fake
+            m1 = measure(crop(igray, box)) if igray is not None else None    # the identity run
+            p0 = predict(pf, gray, bid, t["text"], box, own)
+            pk = predict(pf, gray, bid, t["fake"], box, own)
+            rec = {"file": tag, "page": pno, "label": t.get("label", tag), "text": t["text"], "fake_text": t["fake"],
+                   "family": t.get("family"), "bold": t.get("bold"), "det_family": face.family if face else None,
+                   "ok_family": bool(face and t.get("family") and face.family == t["family"]),
+                   "ok_bold": bool(face and t.get("bold") is not None and face.bold == t["bold"]),
+                   "size_ratio": size[0] / (t["size"] * DPI / 72) if size and t.get("size") else None,
+                   "rt": roundtrip(crop(gray, box), crop(igray, box), m0, m1) if igray is not None else None,
+                   "orig": m0, "fake": mf, "ident": m1, "block": f"{tag}:{pno}:{bid}" if bid is not None else None,
+                   "orig_n": normalized(m0, p0), "fake_n": normalized(mf, pk),
+                   "ident_n": normalized(m1, p0) if m1 is not None else None}
+            if images:
+                rec["look"] = pf.look(Image.fromarray(gray).convert("RGB"), box).describe()
+                rec["crops"] = _crops(gray, fgray, box)
+            records.append(rec)
+    for doc in (src_doc, fake_doc, id_doc):
+        if doc is not None:
+            doc.close()
+    return {"records": records, "others": others, "others_orig": others_orig, "others_id": others_id}
+
+
+def process_file(file: str, work: Path, ner, log, code: Path | None = None, ablation: str | None = None,
+                 images: bool = False) -> dict:
+    """Every truth value of one file: the fake run and the identity run, then measure_values (see the module doc).
+    code: the pipeline of another checkout; ablation: 'own_ink' (see own_ink); images: pictures for the sheet."""
     src = SAMPLES / file
     truth, labels = load_truth(file)
     with own_ink() if ablation == "own_ink" else contextlib.nullcontext():
         fake_out, scan_s, anon_s, fake_cfg = run_pipeline(src, work / "fake", ner, None, log, code)
         id_out, id_scan_s, id_anon_s, _ = run_pipeline(src, work / "id", ner, identity_config(truth), log, code)
     fake_text = {r["find"]: r["replace"] for r in yaml.safe_load(fake_cfg)["replacements"] if r.get("replace")}
-    src_doc, orig = grey_pages(src)
-    fake_doc, fake = grey_pages(fake_out)
-    id_doc, ident = grey_pages(id_out)
-    records = []
-    others, others_orig, others_id = {}, {}, {}      # block -> normalised measures of its unreplaced words, per kind
-    for pno, page in enumerate(src_doc, start=1):
-        items = [t for t in truth if t["page"] == pno]
-        if not items:
+    values = [{"page": t["page"], "box": t["box"], "text": t["text"], "fake": fake_text.get(t["text"], t["text"]),
+               "label": labels[t["page"]], "family": t["family"], "bold": t["bold"], "size": t["size"]} for t in truth]
+    res = measure_values(src, fake_out, id_out, values, images)
+    res.update({"file": file, "scan_s": scan_s, "anon_s": anon_s, "id_scan_s": id_scan_s, "id_anon_s": id_anon_s})
+    return res
+
+
+def folder_results(folder: Path, work: Path, ner) -> dict:
+    """The measures of a user's folder: a copy of its PDFs (never the originals), scanned and anonymized with the scratch
+    key; the values are the boxes of the anonymization report (no truth, no identity run)."""
+    from anonymizer import engine
+
+    work.mkdir(parents=True, exist_ok=True)
+    for pdf in sorted(folder.glob("*.pdf")):
+        if pdf.stem.endswith("_anonymized"):             # an output of an earlier run, not a document
             continue
-        gray, fgray, igray = orig[pno - 1], fake[pno - 1], ident[pno - 1]
-        words = ocr.ocr_words(ocr.render_page(page, DPI), LANG)
-        blocks, block_of = layout.blocks(words)
-        pf = fontmatch.PageFonts(gray, words, scanpaint.native_scale(page, DPI))
-        boxes = [[v * DPI / 72 for v in t["box"]] for t in items]
-        for bl in blocks:              # the other words of each block: unreplaced, each over its own prediction
-            key = f"{file}:{pno}:{bl['id']}"
-            others[key], others_orig[key], others_id[key] = [], [], []
-            for i in bl["words"]:
-                if not any(_covered(words[i]["box"], tb) > 0.3 for tb in boxes):
-                    pred = predict(pf, gray, bl["id"], words[i]["text"], words[i]["box"], [i])
-                    for img, dest in ((fgray, others), (gray, others_orig), (igray, others_id)):
-                        n = normalized(measure(crop(img, words[i]["box"])), pred)
-                        if n:
-                            dest[key].append(n)
-        for t, truth_box in zip(items, boxes):
-            # the block of the value: that of the OCR word it overlaps most (None when OCR missed it)
-            hits = [(_covered(truth_box, w["box"]), i) for i, w in enumerate(words) if _covered(truth_box, w["box"]) > 0.3]
-            bid = block_of[max(hits)[1]] if hits else None
-            # the value is measured where the OCR sees its ink: the union of the words it covers. The ground-truth box
-            # is not the ink's box (its thickness reads 2x as often as a word's: the null of 15 %, docs 10.6); the fake
-            # sits in the same place, so the same box serves the original, the identity run and the fake
-            cover = [w["box"] for w in words if _covered(truth_box, w["box"]) > 0.3]
-            box = (min(b[0] for b in cover), min(b[1] for b in cover), max(b[2] for b in cover),
-                   max(b[3] for b in cover)) if cover else truth_box
-            face, _ = pf.face_for(box)
-            size = pf.metrics(box, face, t["bold"]) if face is not None else None
-            own = pf.value_words(box)
-            m0 = measure(crop(gray, box))           # the original value (nothing replaced)
-            m1 = measure(crop(igray, box))          # the value replaced by itself (identity run)
-            mf = measure(crop(fgray, box))          # the fake
-            p0 = predict(pf, gray, bid, t["text"], box, own)
-            pf_ = predict(pf, gray, bid, fake_text.get(t["text"], t["text"]), box, own)
-            records.append({
-                "file": file, "page": pno, "label": labels[pno], "text": t["text"], "family": t["family"],
-                "bold": t["bold"], "det_family": face.family if face else None,
-                "ok_family": bool(face and face.family == t["family"]),
-                "ok_bold": bool(face and face.bold == t["bold"]),
-                "size_ratio": size[0] / (t["size"] * DPI / 72) if size else None,
-                "rt": roundtrip(crop(gray, box), crop(igray, box), m0, m1),
-                "orig": m0, "ident": m1, "fake": mf, "block": f"{file}:{pno}:{bid}" if bid is not None else None,
-                "orig_n": normalized(m0, p0), "ident_n": normalized(m1, p0), "fake_n": normalized(mf, pf_),
-            })
-    for doc in (src_doc, fake_doc, id_doc):
-        doc.close()
-    return {"file": file, "scan_s": scan_s, "anon_s": anon_s, "id_scan_s": id_scan_s, "id_anon_s": id_anon_s,
-            "records": records, "others": others, "others_orig": others_orig, "others_id": others_id}
+        shutil.copy(pdf, work / pdf.name)
+    config = engine.scan_folder(work, work.name, ner, LANG, lambda *a: None)["config"]
+    rep = engine.run_anonymize(work, work.name, config, LANG, False, lambda *a: None)
+    parts = []
+    for f in rep["files"]:
+        if f.get("error"):
+            print(f"  skipped (error): {f['file']}: {f['error']}")
+            continue
+        values = [{"page": b["page"], "box": b["box"], "text": item["original"],
+                   "fake": item["replacement"].split(" / ")[0], "label": f["file"]}
+                  for item in f["items"] for b in item["boxes"]]
+        parts.append(measure_values(work / f["file"], work / f["output"], None, values, True))
+    merged = {"records": [r for part in parts for r in part["records"]]}
+    for key in ("others", "others_orig", "others_id"):
+        merged[key] = {k: v for part in parts for k, v in part[key].items()}
+    return merged
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -544,6 +621,160 @@ def cmd_pipeline(args) -> int:
     return 0
 
 
+def _worst(r: dict) -> float:
+    """The largest |z| of a fake's thickness or darkness (-1 when the value has no z-score)."""
+    z = r.get("z_fake")
+    return max(abs(z["thick"]), abs(z["dark5"])) if z else -1.0
+
+
+SHEET_MEASURES = (("thick", "thickness: run / height, ratio"), ("dark5", "darkness: levels, difference"),
+                  ("sharp", "sharpness: edge / contrast, ratio"))
+
+SHEET_CSS = """
+body { font: 14px/1.4 system-ui, sans-serif; margin: 0 auto; max-width: 1100px; padding: 16px; color: #1c1c1c; }
+header { position: sticky; top: 0; background: #fff; padding: 8px 0; border-bottom: 1px solid #ddd; z-index: 1; }
+header h1 { font-size: 18px; margin: 0 0 6px; }
+.filters { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.note { color: #555; font-size: 12px; margin: 6px 0 0; }
+section.row { border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; margin: 14px 0; }
+section.row.flag { border-color: #d44; box-shadow: inset 4px 0 0 #d44; }
+section.row h3 { margin: 0 0 4px; font-size: 15px; }
+.arrow { color: #888; }
+.meta { color: #666; font-size: 12px; margin: 0 0 8px; }
+.pics { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+figure { margin: 0; }
+figcaption { font-size: 11px; color: #666; }
+figure img { display: block; background: #fff; border: 1px solid #ccc; max-width: 100%; image-rendering: pixelated; }
+.line figure { margin-top: 6px; }
+.line figure img { image-rendering: auto; }
+table.m { border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+table.m th, table.m td { border-bottom: 1px solid #eee; padding: 3px 10px; text-align: right; }
+table.m th:first-child, table.m td:first-child { text-align: left; }
+td.out { color: #b00; font-weight: 600; }
+"""
+
+SHEET_JS = """
+const sel = { file: document.getElementById('file'), page: document.getElementById('page'),
+              flag: document.getElementById('flag') };
+const count = document.getElementById('count');
+function applyFilters() {
+  let shown = 0;
+  document.querySelectorAll('section.row').forEach(s => {
+    const ok = (!sel.file.value || s.dataset.file === sel.file.value)
+      && (!sel.page.value || s.dataset.page === sel.page.value)
+      && (!sel.flag.checked || s.dataset.flag === '1');
+    s.style.display = ok ? '' : 'none';
+    if (ok) shown++;
+  });
+  count.textContent = shown + ' shown';
+}
+Object.values(sel).forEach(e => e.addEventListener('change', applyFilters));
+applyFilters();
+"""
+
+
+def render_sheet(records: list[dict], out: Path, title: str) -> int:
+    """One self-contained HTML page: every replaced value, worst first: its picture (original and fake, the value and its
+    line), face, weight, block and look, the normalised measures and their z-scores. A value is flagged (red) when its
+    thickness or darkness is beyond its threshold. Filters by file and page, and 'flagged only' (a few lines of JS)."""
+    import html
+
+    esc = html.escape
+    rows = sorted(records, key=lambda r: -_worst(r))
+    files = sorted({r["file"] for r in records})
+    pages = sorted({r["page"] for r in records})
+    flagged = 0
+    judged = sum(1 for r in records if "z_fake" in r)
+    parts = []
+    for r in rows:
+        z = r.get("z_fake")
+        flag = bool(z) and _worst(r) > z["crit"]
+        flagged += flag
+        c = r["crops"]
+        meta = " · ".join(x for x in (esc(r["file"]), f"page {r['page']}", esc(r["label"]),
+                                      f"block {r['block']}" if r["block"] else "no block",
+                                      esc(r.get("look") or ""),
+                                      f"weight {'bold' if r.get('ok_bold') else 'as measured'}") if x)
+        if z:
+            body = []
+            for m, name in SHEET_MEASURES:
+                zf, ff = z[m], r['fake_n'][m]
+                fc = ' class="out"' if abs(zf) > z['crit'] else ''
+                if 'z_orig' in r:
+                    zo, fo = r['z_orig'][m], r['orig_n'][m]
+                    oc = ' class="out"' if abs(zo) > r['z_orig']['crit'] else ''
+                    cells = f'<td>{fo:.2f}</td><td{oc}>{zo:+.2f}</td>'
+                else:
+                    cells = '<td>-</td><td>-</td>'
+                body.append(f'<tr><td>{esc(name)}</td>{cells}<td>{ff:.2f}</td><td{fc}>{zf:+.2f}</td></tr>')
+            table = ("<table class=\"m\"><thead><tr><th>measure (normalised by the prediction)</th>"
+                     "<th>original</th><th>z</th><th>fake</th><th>z</th></tr></thead><tbody>"
+                     + "".join(body) + "</tbody></table>"
+                     f"<p class=\"note\">z against the other words of the block; red = beyond its threshold "
+                     f"({z['crit']:.2f}, from the t distribution of the others of the block).</p>")
+        else:
+            table = "<p class=\"note\">No z-score: the block has fewer than 3 other unreplaced words.</p>"
+        parts.append(
+            f"<section class=\"row{' flag' if flag else ''}\" data-file=\"{esc(r['file'])}\" data-page=\"{r['page']}\" "
+            f"data-flag=\"{1 if flag else 0}\">"
+            f"<h3>{esc(r['text'])} <span class=\"arrow\">→</span> {esc(r['fake_text'])}</h3>"
+            f"<p class=\"meta\">{meta}</p>"
+            f"<div class=\"pics\">"
+            f"<figure><img src=\"{c['orig']}\" alt=\"original\"><figcaption>original (blue box), value x2</figcaption></figure>"
+            f"<figure><img src=\"{c['fake']}\" alt=\"fake\"><figcaption>fake (orange box), value x2</figcaption></figure>"
+            f"</div>"
+            f"<div class=\"line\">"
+            f"<figure><img src=\"{c['orig_line']}\" alt=\"original line\"><figcaption>original, its line</figcaption></figure>"
+            f"<figure><img src=\"{c['fake_line']}\" alt=\"fake line\"><figcaption>fake, its line</figcaption></figure>"
+            f"</div>{table}</section>")
+    options = lambda name, values: "".join(f"<option value=\"{esc(str(v))}\">{esc(str(v))}</option>" for v in values)
+    page = (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        f"<title>Style review: {esc(title)}</title><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        f"<style>{SHEET_CSS}</style></head><body>"
+        f"<header><h1>Style review: {esc(title)}</h1><div class=\"filters\">"
+        f"<label>file <select id=\"file\"><option value=\"\">all</option>{options('file', files)}</select></label>"
+        f"<label>page <select id=\"page\"><option value=\"\">all</option>{options('page', pages)}</select></label>"
+        f"<label><input type=\"checkbox\" id=\"flag\"> flagged only</label><span id=\"count\"></span></div>"
+        f"<p class=\"note\">{len(records)} replaced values, {judged} with a z-score, {flagged} flagged ({flagged / max(judged, 1):.0%}). Worst first. Each value is compared with the "
+        f"other unreplaced words of its block, after dividing each measure by the prediction for the same text in the "
+        f"block's style (docs/font_matching.md 10.6). The original values with nothing replaced are flagged at about 6 %, "
+        f"so a fake flagged in the same proportion is no worse than the original.</p></header>"
+        + "".join(parts) + f"<script>{SHEET_JS}</script></body></html>")
+    out.write_text(page, encoding="utf-8")
+    return flagged
+
+
+def cmd_sheet(args) -> int:
+    """The review sheet: the Test 17 scans (or the given files), or a user's folder (a copy, the scratch key)."""
+    os.environ["ANON_SECRET_FILE"] = str(TEST_KEY)
+    if not TEST_KEY.exists():
+        TEST_KEY.write_text(secrets.token_hex(32), encoding="utf-8")
+    sys.path.insert(0, str(ROOT))
+    from anonymizer.pii import load_ner
+
+    ner = load_ner(quiet=True)
+    work = Path(tempfile.mkdtemp(prefix="style_sheet_"))
+    try:
+        if args.folder:
+            parts = [folder_results(Path(args.folder), work / "folder", ner)]
+            title = f"folder {Path(args.folder).name}"
+        else:
+            parts = [process_file(file, work / Path(file).stem, ner, lambda *a: None, None, None, True)
+                     for file in (args.file or SET)]
+            title = "Dossier Test 17 (generated scans)" if not args.file else ", ".join(args.file)
+        records = [r for part in parts for r in part["records"]]
+        pools = {kind: {k: v for part in parts for k, v in part[key].items()}
+                 for kind, key in (("fake", "others"), ("orig", "others_orig"), ("ident", "others_id"))}
+        for kind, others in pools.items():
+            judge(records, others, kind)
+        flagged = render_sheet(records, Path(args.out), title)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print(f"{len(records)} values, {flagged} flagged -> {args.out}")
+    return 0
+
+
 def cmd_run(args) -> int:
     os.environ["ANON_SECRET_FILE"] = str(TEST_KEY)
     if not TEST_KEY.exists():
@@ -611,7 +842,13 @@ def main() -> int:
     p.add_argument("src")
     p.add_argument("work")
     p.add_argument("config", nargs="?")
+    sh = sub.add_parser("sheet", help="review sheet: every replaced value with its pictures (HTML)")
+    sh.add_argument("out")
+    sh.add_argument("--file", action="append", help="only this sample file of Dossier Test 17 (repeatable)")
+    sh.add_argument("--folder", help="a user's folder: a copy is anonymized with the scratch key, the originals are not touched")
     args = ap.parse_args()
+    if args.cmd == "sheet":
+        return cmd_sheet(args)
     if args.cmd == "pipeline":
         return cmd_pipeline(args)
     return cmd_run(args) if args.cmd == "run" else cmd_compare(args)
