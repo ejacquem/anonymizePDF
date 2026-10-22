@@ -477,6 +477,11 @@ Order must never change a result (`order_tests`): a value written with several s
   The fake keeps the length of the original: a long name ('BOULOGNE-BILLANCOURT') gets towns of the list joined by a hyphen
   (`fake._compound`, 'MONTAUBAN-CHAMBERY'), since a short town leaves a gap before what follows on the line (the same width
   in a digital text and in a scan: `town_size_tests`).
+- One postcode, one fake: a postcode written alone ('(91000)' after a street) takes the digits of the fake of the
+  '91000 EVRY' / 'EVRY (91000)' values (`engine._same_postcode`). A four-digit number from 1900 to 2100 is a year, never
+  a postcode (`pii._is_year`: '1987 Paris', '(2024)'). A town written alone that is a part of a hyphenated town of the
+  documents ('BILLANCOURT' of 'BOULOGNE-BILLANCOURT') gets the matching piece of that town's fake (the last part the last
+  piece, `Faker.town_parts`, `engine._town_parts`), with the compound's postcode. Test: `postcode_consistency_tests`.
 - Names: FR/BE/NL lists by length and **gender** (`gender_of`: lists, then the title, then French endings; the
   `Sexe` field wins on ID documents). Keys without case / accents (`_pkey`: `Élodie` = `elodie`, used in e-mails).
   `Faker.names` memory keeps consistency: initials follow the replaced first name (`initial`, preferring first names

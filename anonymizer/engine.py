@@ -528,6 +528,7 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
     person_values = [e["value"] for e in found.values() if e["type"] == "PERSON"]
     faker.aliases = name_aliases(tokens, person_values)
     faker.truncations = name_truncations(person_values)
+    faker.town_parts = _town_parts(found)
     active: list[dict] = []
     off: list[dict] = []
     tokens_added: set[str] = set()
@@ -746,6 +747,7 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
         known.add(norm_value(code.group()))
         active.append({"type": "POSTAL_CITY", "value": code.group(), "count": f["count"], "files": f["files"],
                        "pages": f["pages"], "replace": fake.group(), "note": f"postcode of '{f['value']}'"})
+    _same_postcode(active)
     _align_contained_numbers(active)
     # a value already replaced (e.g. a name under a label) is not suggested again as an uncertain NER guess
     active_values = {norm_value(a["value"]) for a in active}
@@ -765,6 +767,22 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
     log(f"Done: {len(active)} active replacement(s), {len(off)} suggestion(s) left commented out "
         f"({stats['seconds']}s)")
     return {"config": text, "stats": stats}
+
+
+def _town_parts(found: dict) -> dict[str, tuple[str, int, int]]:
+    """The hyphenated towns of the documents ('BOULOGNE-BILLANCOURT') and the rank of each of their parts, so that a part
+    written alone ('BILLANCOURT') is replaced by the matching part of the compound's fake."""
+    out: dict[str, tuple[str, int, int]] = {}
+    compounds = sorted({t for f in found.values() if f["type"] in ("POSTAL_CITY", "BIRTH_PLACE")
+                        for t in [_town_of(f["type"], f["value"])] if t and "-" in t})
+    whole = {_pkey(t) for t in compounds}
+    for town in compounds:
+        parts = town.split("-")
+        for rank, part in enumerate(parts):
+            key = _pkey(part)
+            if len(key) >= 4 and key not in whole and key not in out:
+                out[key] = (town, rank, len(parts))
+    return out
 
 
 def _start_reads(pdfs: list[Path], ocr_lang: str) -> tuple[dict, dict]:
@@ -919,6 +937,20 @@ def name_aliases(tokens: dict[str, int], names: list[str]) -> dict[str, str]:
         if root not in best or (counts[w], len(w)) > (counts[best[root]], len(best[root])):
             best[root] = w
     return {_pkey(w): _pkey(best[find(w)]) for w in counts if _pkey(best[find(w)]) != _pkey(w)}
+
+
+def _same_postcode(active: list[dict]) -> None:
+    """A postcode written alone ('(91000)' after a street) is replaced by the same digits as the postcode of the
+    '91000 EVRY' / 'EVRY (91000)' values of the documents: one code, one fake."""
+    codes: dict[str, str] = {}
+    for a in sorted((a for a in active if a["type"] == "POSTAL_CITY" and not re.fullmatch(r"\d{4,5}", a["value"])),
+                    key=lambda a: a["value"]):
+        code, fake = re.search(r"\d{4,5}", a["value"]), re.search(r"\d{4,5}", a["replace"])
+        if code and fake and len(code.group()) == len(fake.group()):
+            codes.setdefault(code.group(), fake.group())
+    for a in active:
+        if a["type"] == "POSTAL_CITY" and re.fullmatch(r"\d{4,5}", a["value"]) and a["value"] in codes:
+            a["replace"] = codes[a["value"]]
 
 
 def _align_contained_numbers(active: list[dict]):

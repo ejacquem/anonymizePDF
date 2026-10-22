@@ -264,7 +264,14 @@ def _v_vat_group(m):
     return m.start(1), m.end(1)
 
 
+def _is_year(code: str) -> bool:
+    """A four-digit number from 1900 to 2100 is a year, never a postcode ('1987 Paris', '(2024)')."""
+    return len(code) == 4 and code.isdigit() and 1900 <= int(code) <= 2100
+
+
 def _v_postal(m):
+    if _is_year(re.search(r"\d+", m.group()).group()):
+        return None
     city = re.sub(r"^\S+\s+", "", m.group()).split()[0].casefold()
     return None if city in _CITY_STOPLIST or city in _US_ADDRESS_WORDS else (m.start(), m.end())
 
@@ -290,7 +297,7 @@ def _v_town_code(m):
     town. The words before it (a label, a street type, an operation word) are left out; the town must not be a word
     of the documents' labels."""
     code = re.search(r"\((?:[A-Z]{1,2}-)?(\d+)\)", m.group()).group(1)
-    if len(code) == 4 and 1900 <= int(code) <= 2099:          # a year in brackets ('Mutation (2024)'), not a postcode
+    if _is_year(code):                                         # a year in brackets ('Mutation (2024)'), not a postcode
         return None
     # the words of a street before the town ('RUE DES LILAS (75020)': the street is the address, its code is the code)
     if _STREET_BEFORE_TOWN.search(m.string[:m.start(1)].rsplit("\n", 1)[-1]):

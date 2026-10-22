@@ -1627,6 +1627,38 @@ PAREN_ABSENT = [
 ]
 
 
+def postcode_consistency_tests():
+    """One postcode, one fake (a code alone in brackets = the code of '91000 EVRY'), years are no postcodes, and a town
+    written alone that is a part of a hyphenated town gets the matching part of that town's fake."""
+    print("\n== postcodes, years and compound towns")
+    work = Path(tempfile.mkdtemp(prefix="anon_post_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page()
+        lines = ["Monsieur Lucas MARTIN", "12 rue des Lilas", "91000 EVRY", "Agence : EVRY (91000)", "Mutation (2024) 1987 Paris",
+                 "92100 BOULOGNE-BILLANCOURT", "Antenne de Billancourt", "BILLANCOURT (92100)", "Lieu : 12 RUE DES LILAS (91000)",
+                 "Cet acte date de 2010 Paris centre"]
+        for i, line in enumerate(lines):
+            page.insert_text((50, 80 + 20 * i), line, fontsize=11)
+        doc.save(work / "t.pdf")
+        doc.close()
+        cfg = engine.parse_config(engine.scan_folder(work, "t", None, "fra+eng", lambda *a: None)["config"])
+        terms = cfg["terms"]
+        fake_code = lambda v: re.search(r"\d{4,5}", v).group()          # noqa: E731
+        check("a postcode alone, '91000 EVRY' and 'EVRY (91000)' share one fake code",
+              fake_code(terms["91000"]) == fake_code(terms["91000 EVRY"]) == fake_code(terms["EVRY (91000)"]), str(terms))
+        check("a year (1987, 2010, 2024) is never a postcode", not any(k in terms for k in ("1987", "2010", "2024", "1987 Paris", "2010 Paris")), str(sorted(terms)))
+        whole = terms.get("BOULOGNE-BILLANCOURT", "")
+        part = terms.get("BILLANCOURT", "")
+        check("'BILLANCOURT' alone is replaced by the last part of the fake of 'BOULOGNE-BILLANCOURT'",
+              whole.count("-") >= 1 and part and whole.split("-")[-1] == part, f"{whole} / {part}")
+        check("'BILLANCOURT (92100)' ends with the same town and code",
+              terms["BILLANCOURT (92100)"].startswith(part) and fake_code(terms["BILLANCOURT (92100)"]) == fake_code(terms["92100"]),
+              terms.get("BILLANCOURT (92100)", ""))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def parenthesised_town_tests():
     """A town followed by its postcode in brackets ('NANTERRE (92000)'), the form of many letters: the value is found,
     the fake keeps the form and the town, the town alone is the same fake, and a year or a street is no town."""
@@ -3593,7 +3625,7 @@ GROUPS = [
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
     "split_word_tests", "colon_tests", "street_name_tests", "second_pass_tests", "suspect_suggestion_tests",
     "incremental_report_tests", "scan_anonymize_batch_tests",
-    "first_letter_tests", "account_and_street_names_tests", "client_identifier_tests", "manual_text_tests", "rotated_tests", "town_tests",
+    "first_letter_tests", "account_and_street_names_tests", "client_identifier_tests", "manual_text_tests", "rotated_tests", "town_tests", "postcode_consistency_tests",
     "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
