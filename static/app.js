@@ -244,11 +244,11 @@ let pageObserver = null;
 // black boxes (state, see the section below)
 const boxes = { tool: false, textTool: false, selKey: null, drag: null, preview: null };
 const BOXES_OPEN_KEY = "anonymizePDF.boxesOpen";
-// black boxes changed and not applied yet (Apply button), per folder and file: { removed: [{page, kind, box}] } = the
+// black boxes changed and not applied yet, per folder and file: { removed: [{page, kind, box}] } = the
 // automatic boxes the user removed, sent with the next run and never written to the config
 const pendingBoxes = new Map();
 // the history of the black boxes and typed texts (Undo / Redo): one snapshot of a file's boxes before each change.
-// `epoch` counts the Apply runs: an undo back to a state that was not pending is only clean if no Apply came since.
+// `epoch` counts the runs that regenerate a file: an undo back to a state that was not pending is only clean if no run came since.
 const undo = { stack: [], redo: [], epoch: 0 };
 const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 // Scroll positions the program set itself, per pane. The scroll event they trigger is ignored, so syncing
@@ -1050,7 +1050,7 @@ function pagePoint(pageEl, e) {
   return [(e.clientX - r.left) / k, (e.clientY - r.top) / k];
 }
 
-// ---------- changes not applied yet (Apply) ----------
+// ---------- changes not applied yet ----------
 const pendKey = (name) => state.folder + "\u0001" + name;
 function pendingEntry(name) {
   if (!pendingBoxes.has(pendKey(name))) pendingBoxes.set(pendKey(name), { removed: [] });
@@ -1136,7 +1136,7 @@ async function saveBoxes(message) {
   renderTable();
   if (ok) {
     pendingEntry(currentFileName());
-    setStatus(message + " · press Apply to update the anonymized file", "ok");
+    setStatus(message + " · press Anonymize file to update it", "ok");
   }
   drawBoxes();
   updateToolbar();
@@ -1159,7 +1159,7 @@ function deleteBox(key) {
   pendingEntry(currentFileName()).removed.push({ page: e.page, kind: e.kind, box: e.box.map((v) => Math.round(v * 10) / 10) });
   drawBoxes();
   updateToolbar();
-  setStatus("Automatic black box removed · press Apply to update the anonymized file", "ok");
+  setStatus("Automatic black box removed · press Anonymize file to update it", "ok");
 }
 
 $("#btnText").onclick = async () => {
@@ -1246,36 +1246,6 @@ $("#btnBox").onclick = async () => {
   setBoxTool(!boxes.tool);
 };
 
-// Apply: the anonymized file is regenerated with the black boxes as they are now (the automatic boxes removed since
-// the last run are left out of this run only)
-async function applyBoxes() {
-  const cur = currentOriginalNode();
-  if (!cur || !state.hasConfig || state.running || !isPending(cur.name)) return;
-  if (state.dirty && !(await saveConfig())) return;
-  const box = viewers.anon.box;
-  const scroll = { x: box.scrollLeft, y: box.scrollTop };
-  const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      quality_offset: sentQuality() },
-    "Apply black boxes · " + cur.name, { quiet: true });
-  await loadTree();
-  await loadReport();
-  await reloadConfigIfSuggested();
-  updateReviewButton();
-  if (r && r.status === "done") {
-    clearPending(cur.name);
-    const now = currentOriginalNode();
-    if (now && now.anon) {                                   // show the new file, at the same place
-      await setViewer("anon", now.anon);
-      viewers.anon.box.scrollLeft = scroll.x;
-      viewers.anon.box.scrollTop = scroll.y;
-    }
-    setStatus("Black boxes applied to " + cur.name, "ok");
-  }
-  drawBoxes();
-  updateToolbar();
-}
-$("#btnApply").onclick = applyBoxes;
 $("#btnUndo").onclick = undoBoxes;
 $("#btnRedo").onclick = redoBoxes;
 
@@ -1861,8 +1831,6 @@ function updateToolbar() {
   $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur;
   const pending = !!cur && isPending(cur.name);
   $("#btnRunFile").classList.toggle("save-needed", pending);
-  $("#btnApply").disabled = state.running || !cur || !state.hasConfig || !pending;
-  $("#btnApply").classList.toggle("save-needed", pending);
   const changes = changedBoxes();
   const nChanges = changes.replaced.length + changes.removed.length;
   btnChanges.disabled = !nChanges;
