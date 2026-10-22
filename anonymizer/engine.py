@@ -1638,8 +1638,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                                          f"are right, then anonymize again.")
                 log(f"   WARNING: {len(entry['suspects'])} value(s) still readable in the output: {shown}")
         except Exception as e:  # noqa: BLE001
-            entry["error"] = str(e)
-            log(f"   ERROR: {e}")
+            entry["error"] = f"{type(e).__name__}: {e}"      # the type too: some exceptions have no message
+            log(f"   ERROR: {entry['error']}")
         timers.__exit__(None, None, None)
         entry["seconds"] = round(time.time() - t0, 1)
         entry["stages"] = tm.report(time.time() - t0)

@@ -47,7 +47,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from anonymizer import configmodel, engine, fields, ocr, pii, scanpaint, secret, verify  # noqa: E402
-from anonymizer.fake import Faker  # noqa: E402
 from anonymizer.fake import FEMALE_NAMES, LAST_NAMES, MALE_NAMES, Faker, _pkey  # noqa: E402
 from anonymizer.pii import digital_words, fitz, load_ner, words_to_text  # noqa: E402
 
@@ -243,11 +242,11 @@ EXPECT = {
     }),
 }
 
-RESULTS: list[tuple[bool, str]] = []
+RESULTS: list[tuple[bool, str, str]] = []           # (passed, name, detail of a failure)
 
 
 def check(name: str, ok, detail: str = ""):
-    RESULTS.append((bool(ok), name))
+    RESULTS.append((bool(ok), name, "" if ok else str(detail)))
     print(("  PASS " if ok else "  FAIL ") + name + (f"  [{detail}]" if detail and not ok else ""))
     return bool(ok)
 
@@ -3682,6 +3681,18 @@ def _names_model():
     return _NER
 
 
+JOB_LIMIT = 3600     # seconds a job may take in a pool process before it is given up (a process that died never answers)
+
+
+def _pool_result(handle, job: dict):
+    """The result of a job run by the pool. A job whose process died never answers: a failed check, not a wait for ever."""
+    try:
+        return handle.get(timeout=JOB_LIMIT)
+    except mp.TimeoutError:
+        detail = f"no result after {JOB_LIMIT} s: its process died or the job hangs"
+        return [(False, f"{job['label']}: no result", detail)], "", JOB_LIMIT
+
+
 def run_job(job: dict, capture: bool = True):
     """One job, in this process: returns (its results, what it printed, its seconds)."""
     t0 = time.time()
@@ -3697,11 +3708,11 @@ def run_job(job: dict, capture: bool = True):
                 full_run([job["folder"]], Path(job["tmp"]) / f"run{job['k']}", _names_model())
             elif job["kind"] == "options":
                 option_tests(Path(job["tmp"]) / "opts", _names_model())
-    except Exception:  # noqa: BLE001  (a crashing job is a failed check, the other jobs go on)
+    except Exception as e:  # noqa: BLE001  (a crashing job is a failed check, the other jobs go on)
         import traceback
         text = traceback.format_exc()
         out.write(text)
-        check(f"{job['label']}: the job ran to its end", False, text[-300:])
+        check(f"{job['label']}: the job raised {type(e).__name__}", False, text[-1500:])
     return RESULTS[start:], out.getvalue(), time.time() - t0
 
 
@@ -3723,7 +3734,7 @@ def build_jobs(args, tmp: Path, folders: list[str]) -> list[dict]:
     run_keys = [given] if given else [new_key(f"key{k}") for k in range(1 if args.quick else args.keys)]
     jobs = []
     for name in GROUPS:
-        if not (args.fast and name in SLOW_GROUPS):
+        if (not (args.fast and name in SLOW_GROUPS)) and (not args.only or name in args.only):
             jobs.append({"kind": "group", "name": name, "label": name, "key": group_key, "tmp": tmp,
                      "main": name in MAIN_GROUPS})
     for k, key_file in enumerate(run_keys):
@@ -3731,7 +3742,7 @@ def build_jobs(args, tmp: Path, folders: list[str]) -> list[dict]:
         for folder in folders:
             jobs.append({"kind": "folder", "k": k, "folder": folder, "label": f"{folder}, key {k + 1}",
                          "key": key_file, "tmp": tmp})
-    if not args.quick and not args.fast:
+    if not args.quick and not args.fast and not args.only:
         jobs.append({"kind": "options", "label": "config options", "key": given or new_key("key_opts"), "tmp": tmp})
     return jobs
 
@@ -3743,6 +3754,8 @@ def main():
     ap.add_argument("--fast", action="store_true", help="skips the long font / contract / "
                                                          "option runs, keeps every other check and all the folders")
     ap.add_argument("--folder", action="append", help="only this test folder (repeatable)")
+    ap.add_argument("--only", action="append", metavar="GROUP",
+                    help="only this group of unit tests (repeatable); with --only and no --folder, no folder runs")
     ap.add_argument("--keep", action="store_true", help="keep the temporary directory (outputs, configs, reports)")
     ap.add_argument("--key", help="run the folders with this secret key file (replays a failure; the file is only read)")
     ap.add_argument("--jobs", type=int, default=min(6, os.cpu_count() or 1),
@@ -3753,7 +3766,10 @@ def main():
     if not ocr.available():
         sys.exit("No OCR engine available: the scan checks cannot run.")
     sys.stdout.reconfigure(errors="replace")
-    folders = args.folder or list(EXPECT)
+    unknown = [g for g in (args.only or []) if g not in GROUPS]
+    if unknown:
+        sys.exit(f"--only: no such group: {', '.join(unknown)}")
+    folders = args.folder or ([] if args.only else list(EXPECT))
     tmp = Path(tempfile.mkdtemp(prefix="anon_check_"))
     saved = {k: os.environ.get(k) for k in ("ANON_SECRET_FILE", "ANON_OCR_CACHE_DIR", "OMP_NUM_THREADS",
                                            "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ANON_ORT_THREADS",
@@ -3781,11 +3797,14 @@ def main():
                 print(job["text"])
                 continue
             in_main = not pool or job.get("main")          # run here, while the pool runs the others
-            results, text, took = run_job(job, capture=False) if in_main else handles[i].get()
+            if in_main:
+                results, text, took = run_job(job, capture=False)
+            else:
+                results, text, took = _pool_result(handles[i], job)
             print(text, end="")
             RESULTS.extend(results) if not in_main else None
             seconds.append((took, job["label"]))
-            failed_here = [n for ok, n in results if not ok]
+            failed_here = [n for ok, n, _ in results if not ok]
             if failed_here and job["kind"] in ("folder", "options"):
                 note_key_failures(Path(job["key"]), failed_here, bad_keys, args.key is not None)
         if pool:
@@ -3801,11 +3820,13 @@ def main():
             print(f"\nkept: {tmp}")
         else:
             shutil.rmtree(tmp, ignore_errors=True)
-    failed = [n for ok, n in RESULTS if not ok]
+    failed = [(n, d) for ok, n, d in RESULTS if not ok]
     print(f"\n{len(RESULTS) - len(failed)} passed, {len(failed)} failed ({time.time() - t0:.0f}s)")
     print("  longest jobs: " + ", ".join(f"{label} {took:.0f}s" for took, label in sorted(seconds, reverse=True)[:5]))
-    for n in failed:
+    for n, d in failed:                              # the name and the end of the detail (the error, the last lines)
         print("  FAILED:", n)
+        for line in (d or "(no detail: the check failed without a message)").splitlines()[-8:]:
+            print("      " + line[:300])
     for path, names in bad_keys.values():
         print(f"  key of a run with {len(names)} failure(s): {path}")
         print(f'    replay: python tools/check_all.py --key "{path}"')
