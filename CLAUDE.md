@@ -1020,7 +1020,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   names, as `tools/scan_props.py` numbers them. `review_summary_tests`.
 - `python tools/scan_props.py <folder> [--out props.txt]` (docs/font_matching.md 10.7): the properties of the scanned
   pages of a folder, NO client data (no text, word, value, picture or file name; the guard checks it): per page the
-  images as drawn (filter, bits, colour, dpi, Interpolate), the native scale and the rule the model draws it with, the
+  images as placed (filter, bits, colour, dpi, the placed corner and size in points, not clipped to the page, Interpolate;
+  a DCT image: its JPEG quality and chroma sampling, read from the header), the native scale and the rule the model draws it with, the
   block test (grey change across the native pixel edges against inside them, along x and y, at the best phase and at
   phase 0, and the phase of the image's edge), the hardness (mid-tones on the native grid), the fit (blur, spread,
   black and white, error, grain), the strokes (median run in page and native px, the share of each run length) and the

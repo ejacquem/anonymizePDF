@@ -80,22 +80,101 @@ def _filter(value: str) -> str:
     return "+".join(FILTERS.get(n, n) for n in names) or "none (raw)"
 
 
+#: the zigzag order of a JPEG quantisation table: table entry k belongs to natural (row-major) position ZIGZAG[k]
+ZIGZAG = [0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14,
+          21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60,
+          61, 54, 47, 55, 62, 63]
+#: the luminance table of the JPEG standard (quality 50), row-major
+STD_LUMA = np.array([16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56,
+                     14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92,
+                     49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99], dtype=float)
+SUBSAMPLING = {(1, 1): "4:4:4", (2, 1): "4:2:2", (2, 2): "4:2:0"}
+
+
+def _jpeg_header(raw: bytes) -> dict:
+    """The quantisation table of the luminance (table 0) and the sampling factors of a JPEG stream: read from its
+    header only, no picture is decoded. {} when the stream is not a JPEG."""
+    info: dict = {}
+    if raw[:2] != b"\xff\xd8":
+        return info
+    i = 2
+    while i + 4 <= len(raw):
+        if raw[i] != 0xFF or raw[i + 1] in (0x00, 0xFF):
+            i += 1
+            continue
+        marker = raw[i + 1]
+        if marker == 0xDA or marker == 0xD9:                    # start of the scan (or end): the header is read
+            break
+        if marker in (0x01, 0xD8) or 0xD0 <= marker <= 0xD7:    # no length
+            i += 2
+            continue
+        length = int.from_bytes(raw[i + 2:i + 4], "big")
+        seg = raw[i + 4:i + 2 + length]
+        if marker == 0xDB and "table" not in info:
+            pos = 0
+            while pos < len(seg):
+                precision, ident = seg[pos] >> 4, seg[pos] & 15
+                size = 128 if precision else 64
+                if ident == 0 and precision == 0:
+                    info["table"] = list(seg[pos + 1:pos + 65])
+                pos += 1 + size
+        if marker in (0xC0, 0xC1, 0xC2) and "sampling" not in info:
+            ncomp = seg[5]
+            factors = [seg[6 + 3 * k + 1] for k in range(ncomp)]        # H in the high nibble, V in the low one
+            info["sampling"] = [(f >> 4, f & 15) for f in factors]
+        i += 2 + length
+    return info
+
+
+def jpeg_quality(table: list[int]) -> int:
+    """The IJG quality (1..100) whose luminance table is the nearest to the one in the file (exact for a standard
+    encoder, an estimate for another one)."""
+    observed = np.zeros(64)
+    observed[ZIGZAG] = table
+    best = (1e18, 50)
+    for q in range(1, 101):
+        scale = 5000 / q if q < 50 else 200 - 2 * q
+        std = np.clip(np.floor((STD_LUMA * scale + 50) / 100), 1, 255)
+        best = min(best, (float(np.abs(std - observed).sum()), q))
+    return best[1]
+
+
+def _jpeg_summary(doc, xref: int) -> str:
+    """'JPEG quality 75, 4:2:0' for a DCT image (the stream's header, nothing decoded); '' for any other image."""
+    try:
+        header = _jpeg_header(doc.xref_stream_raw(xref))
+    except Exception:
+        return ""
+    parts = []
+    if "table" in header:
+        parts.append(f"JPEG quality {jpeg_quality(header['table'])}")
+    if "sampling" in header and len(header["sampling"]) == 3:             # luma over chroma, in whole factors
+        (h, v), (ch, cv) = header["sampling"][0], header["sampling"][1]
+        parts.append(SUBSAMPLING.get((h // max(ch, 1), v // max(cv, 1)), "other sampling"))
+    return ", ".join(parts)
+
+
 def image_props(doc, page) -> list[dict]:
-    """The images of a page, as drawn: filter, bits, colour space, pixel size, drawn size (points), dpi, flags."""
+    """The images of a page, as placed: filter, bits, colour space, pixel size, placed corner and drawn size (points,
+    not clipped to the page: the grid of the picture starts at its placed corner), dpi, flags."""
     out = []
     for info in page.get_image_info(xrefs=True):
-        rect = fitz.Rect(info["bbox"]) & page.rect
-        w_in, h_in = rect.width / 72, rect.height / 72
+        placed = fitz.Rect(info["bbox"])
+        drawn = placed & page.rect
         xref = info.get("xref", 0)
+        filt = _filter(_entry(doc, xref, "Filter"))
+        w_in, h_in = placed.width / 72, placed.height / 72
         out.append({
-            "filter": _filter(_entry(doc, xref, "Filter")), "bpc": info.get("bpc", 0),
+            "filter": filt, "bpc": info.get("bpc", 0),
             "comp": COMPONENTS.get(info.get("colorspace", 0), f"{info.get('colorspace', 0)} components"),
             "px": (info["width"], info["height"]),
             "dpi": (info["width"] / w_in if w_in else 0.0, info["height"] / h_in if h_in else 0.0),
+            "drawn_pt": (placed.width, placed.height),
             "interpolate": _entry(doc, xref, "Interpolate") == "true",
             "mask": _entry(doc, xref, "ImageMask") == "true",
             "smask": bool(_entry(doc, xref, "SMask")),
-            "x0": rect.x0, "y0": rect.y0, "area": rect.get_area(),
+            "jpeg": _jpeg_summary(doc, xref) if filt == "DCT" else "",
+            "x0": placed.x0, "y0": placed.y0, "area": drawn.get_area(),
         })
     return out
 
@@ -233,9 +312,12 @@ def _pct(v: float) -> str:
 
 def _image_line(p: dict) -> str:
     w, h = p["px"]
-    return (f"    image    {p['filter']} | {p['bpc']} bit | {p['comp']} | {w} x {h} px | "
-            f"{p['dpi'][0]:.0f} x {p['dpi'][1]:.0f} dpi | interpolate {'yes' if p['interpolate'] else 'no'} | "
+    dw, dh = p["drawn_pt"]
+    line = (f"    image    {p['filter']} | {p['bpc']} bit | {p['comp']} | {w} x {h} px | "
+            f"{p['dpi'][0]:.2f} x {p['dpi'][1]:.2f} dpi | placed {dw:.2f} x {dh:.2f} pt at "
+            f"{p['x0'] * DPI / 72:.2f} x, {p['y0'] * DPI / 72:.2f} y px | interpolate {'yes' if p['interpolate'] else 'no'} | "
             f"mask {'yes' if p['mask'] else 'no'} | smask {'yes' if p['smask'] else 'no'}")
+    return line + (f" | {p['jpeg']}" if p["jpeg"] else "")
 
 
 def _blocks_line(b: dict, edge: tuple | None) -> str:
@@ -251,7 +333,7 @@ def _blocks_line(b: dict, edge: tuple | None) -> str:
 
 def _scan_lines(s: dict) -> list[str]:
     scale = s["scale"]
-    lines = [f"    native   {scale * DPI:.0f} dpi (scale {scale:.3f}) | the model draws it "
+    lines = [f"    native   {scale * DPI:.2f} dpi (scale {scale:.5f}) | the model draws it "
              f"{'as blocks' if scale < quality.NEAREST_BELOW else 'smooth'} (blocks below {quality.NEAREST_BELOW})"]
     if s["blocks"] is not None:
         lines.append(_blocks_line(s["blocks"], s.get("edge")))

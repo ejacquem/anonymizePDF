@@ -3742,6 +3742,25 @@ def scan_props_tests():
     check("scan props: strokes in page px and in native px (bars of 4 px at scale 0.5: 2 native px)",
           st is not None and st["px"] == 4.0 and st["native"] == 2.0 and st["share"]["4"] == 1.0, str(st))
 
+    # the JPEG header: quality from the luminance table, sampling from the factors; the placement is not clipped
+    gray_jpg, rgb_jpg = io.BytesIO(), io.BytesIO()
+    Image.fromarray(small).save(gray_jpg, "JPEG", quality=30)
+    Image.fromarray(small).convert("RGB").save(rgb_jpg, "JPEG", quality=92, subsampling=2)
+    check("scan props: the JPEG quality is read from the table of the stream (30 and 92 in gray)",
+          sp.jpeg_quality(sp._jpeg_header(gray_jpg.getvalue())["table"]) == 30
+          and sp.jpeg_quality(sp._jpeg_header(rgb_jpg.getvalue())["table"]) == 92)
+    sampled = sp._jpeg_header(rgb_jpg.getvalue())["sampling"]
+    check("scan props: the sampling factors of a colour JPEG (luma 2 x 2 when subsampled, chroma 1 x 1)",
+          sampled[0] == (2, 2) and sampled[1] == (1, 1) and sp.SUBSAMPLING[(2, 2)] == "4:2:0", str(sampled))
+    jdoc = fitz.open()
+    jpage = jdoc.new_page(width=595.2, height=841.9)
+    jpage.insert_image(fitz.Rect(-0.1, 0, 595.1, 841.9), stream=rgb_jpg.getvalue(), keep_proportion=False)
+    jdoc = fitz.open(stream=jdoc.tobytes(deflate=True), filetype="pdf")
+    jp = sp.image_props(jdoc, jdoc[0])[0]
+    check("scan props: a JPEG image reports its filter, quality and placement (not clipped: x0 -0.1 pt)",
+          jp["filter"] == "DCT" and jp["jpeg"] == "JPEG quality 92, 4:2:0" and jp["x0"] < 0
+          and abs(jp["drawn_pt"][0] - 595.2) < 0.2, str(jp))
+
     secrets = sp.secrets_of(Path("Dossier Dupontel"), [Path("releve_Dupontel_2024.pdf"), Path("scan_page.pdf")])
     check("scan props: the guard knows the folder and file names and their words, not the words the script prints",
           {"Dupontel", "Dossier", "releve_Dupontel_2024"} <= secrets and "page" not in secrets and "scan" not in secrets,
@@ -3764,7 +3783,8 @@ def scan_props_tests():
         buf = io.BytesIO()
         im.save(buf, format="PNG")
         doc = fitz.open()
-        doc.new_page(width=297.6, height=419.5).insert_image(fitz.Rect(0, 0, 297.6, 419.5), stream=buf.getvalue())
+        doc.new_page(width=297.6, height=419.5).insert_image(fitz.Rect(0, 0, 297.6, 419.5), stream=buf.getvalue(),
+                                                             keep_proportion=False)
         doc.new_page(width=297.6, height=419.5).insert_text((40, 60), "Virement SEPA numero 1234 montant 56,78 EUR")
         doc.save(folder / "releve_Dupontel_2024.pdf", deflate=True)
         doc.close()
@@ -3783,7 +3803,7 @@ def scan_props_tests():
         check("scan props: a scan page is read as a scan and a digital page as digital",
               "p1 | scan | rotation 0" in text and "p2 | digital | rotation 0" in text, text[:600])
         check("scan props: the image as drawn: Flate, 8 bit, gray, 150 dpi",
-              "Flate | 8 bit | gray | 620 x 874 px | 150 x 150 dpi" in text, text[:600])
+              "Flate | 8 bit | gray | 620 x 874 px | 150.00 x 150.01 dpi | placed 297.60 x 419.50 pt" in text, text[:600])
         check("scan props: the scan page has its block test, its fit and its strokes",
               "    blocks   x" in text and "    fit      blur" in text and "    strokes  median" in text, text[:900])
         check("scan props: a file that cannot be opened gives its exception only",
