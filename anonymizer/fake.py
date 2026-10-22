@@ -222,6 +222,10 @@ class Faker:
         # a cut form of a name word ('Gasp', 'Mo') -> the full word it is cut from ('Gaspard', 'Morin'): it gets the
         # replacement of the full word, cut the same way (see name_token)
         self.truncations: dict[str, str] = {}
+        # a town written alone that is one part of a hyphenated town of the documents ('BILLANCOURT' of
+        # 'BOULOGNE-BILLANCOURT'): key -> (the compound town, the rank of the part, the number of parts); it gets the
+        # matching part of the compound's fake (see town)
+        self.town_parts: dict[str, tuple[str, int, int]] = {}
         self.kind_seen: dict[str, str] = {}      # name word key -> the kind it was first replaced with
         # name word key -> the faces (fontmatch.Face) it is written in on the scanned pages: a replacement is chosen
         # among the candidates by the width it takes in those fonts (see _pick_name)
@@ -391,7 +395,10 @@ class Faker:
         best, score = None, 0.8 if len(key) >= 7 else 0.85
         for (k, other), new in self.names.items():
             if k == kind and abs(len(other) - len(key)) <= 2:
-                r = SequenceMatcher(None, key, other).ratio()
+                sm = SequenceMatcher(None, key, other)
+                if sm.real_quick_ratio() < score or sm.quick_ratio() < score:      # cannot reach the score: skip
+                    continue
+                r = sm.ratio()
                 if r >= score:
                     best, score = new, r
         return best
@@ -724,6 +731,14 @@ class Faker:
         """(fake town, its postcode) for a town name. The same name gives the same town whatever form it is written
         in ('PARIS' alone, '75017 PARIS'): the town only depends on the name. Belgian towns stay Belgian, the others
         are French."""
+        part = self.town_parts.get(_pkey(name))
+        if part is not None:
+            compound, rank, count = part
+            fake, code = self.town(compound)
+            pieces = fake.split("-")
+            if len(pieces) > 1:
+                # the first part of the original takes the first piece, the last part the last piece
+                return pieces[-1 if rank == count - 1 else min(rank, len(pieces) - 1)], code
         towns = BE_TOWNS if _pkey(name) in {_pkey(t) for t in BE_TOWNS} else FR_TOWNS
         rng = self.rng("town", _norm(name))
         # a town whose postcode holds digits of an original value would look like a leak: not chosen

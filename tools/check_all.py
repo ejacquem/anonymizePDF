@@ -513,6 +513,27 @@ def option_tests(work_root: Path, ner):
         black = float((pages[p][y0:y1, x0:x1] < 20).mean())
         check(f"visages_scan.pdf: removed photo p{p} is not blacked out", black < 0.5, f"{black:.0%} black in its box")
 
+    doc.close()                                               # the folder is made again below
+
+    # the same removal written in the config (manual_blackouts, removed: true): it stays removed on every run, with no `removed` sent
+    def removed_in_config(cfg):
+        lines = ["", "manual_blackouts:"] + [
+            "  - {file: \"visages_scan.pdf\", page: %d, box: [%s], origin: \"photo\", replaces: [%s], removed: true}"
+            % (b["page"], ", ".join(f"{v:.1f}" for v in b["box"]), ", ".join(f"{v:.1f}" for v in b["box"])) for b in first]
+        return cfg.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+
+    cfg_text, rep = run_folder("Dossier Test 06", work_root, ner, edit=removed_in_config, files_only=["visages_scan.pdf"])
+    kinds = [b["kind"] for b in rep["files"][0]["blackouts"]]
+    check("visages_scan.pdf: photos removed in the config stay removed (no box drawn for them)", "photo" not in kinds, str(kinds))
+    parsed = engine.parse_config(cfg_text)
+    check("removed automatic boxes of the config: read as removed, not drawn as hand-drawn boxes",
+          all(b.get("removed") for b in parsed["manual_blackouts"]) and not engine._manual_boxes(parsed, "visages_scan.pdf")
+          and len(engine._removed_boxes(parsed, {}, "visages_scan.pdf").get(1, [])) + sum(
+              len(v) for k, v in engine._removed_boxes(parsed, {}, "visages_scan.pdf").items() if k != 1) == len(first))
+    again = configmodel.to_yaml(configmodel.to_model(cfg_text), "Dossier Test 06")
+    check("removed automatic boxes survive the config round trip",
+          [b.get("removed") for b in engine.parse_config(again)["manual_blackouts"]] == [True] * len(first))
+
 
 def detector_tests():
     """The detectors on the strings the real files showed (fast, no OCR, no file)."""
@@ -522,6 +543,16 @@ def detector_tests():
         return [(m.type, m.value) for m in pii.detect_structured(text)]
 
     check("'MONSIEUR' is no BIC", not any(t == "BIC" for t, _ in found("MONSIEUR")))
+    # reported on real files: an IBAN and a phone number with wide gaps between their groups, a greeting is no name,
+    # a SEPA creditor identifier written 'ZZZ' (the OCR read its 2 as Z, or split it)
+    check("IBAN with wide gaps between the groups", any(t == "IBAN" and v.replace(" ", "") == "FR7630006000011234567890189"
+                                                        for t, v in found("IBAN FR76  3000  6000  0112  3456  7890  189")))
+    check("phone with two spaces between the pairs", any(t == "PHONE" and re.sub(r"\D", "", v) == "0147362121"
+                                                         for t, v in found("Tél.:  01  47  36  21  21 - Fax: 01 47 36 21 22")))
+    check("'Bonjour' is no name", not engine.accept_person("Bonjour", False, True))
+    check("SEPA creditor id with the ZZZ business code", ("SEPA_CREDITOR_ID", "FR16ZZZ001001M1200015436665")
+          in found("++FR16ZZZ001001M1200015436665"))
+    check("OCR keeps the ZZZ business code (not read as 222)", ocr.fix_digits("FRI 6ZZZ001001 Ml") == "FRI 6ZZZ001001 Ml")
     check("'MONSIEUR JEAN DUPONT' gives no BIC", not any(t == "BIC" for t, _ in found("MONSIEUR JEAN DUPONT")))
     check("BIC after its label", ("BIC", "GEBABEBB") in found("BIC : GEBABEBB"))
     check("BIC just after an IBAN", ("BIC", "BNPAFRPP") in found("IBAN FR76 3000 6000 0112 3456 7890 189  BIC BNPAFRPP"))
@@ -1596,6 +1627,38 @@ PAREN_ABSENT = [
 ]
 
 
+def postcode_consistency_tests():
+    """One postcode, one fake (a code alone in brackets = the code of '91000 EVRY'), years are no postcodes, and a town
+    written alone that is a part of a hyphenated town gets the matching part of that town's fake."""
+    print("\n== postcodes, years and compound towns")
+    work = Path(tempfile.mkdtemp(prefix="anon_post_"))
+    try:
+        doc = fitz.open()
+        page = doc.new_page()
+        lines = ["Monsieur Lucas MARTIN", "12 rue des Lilas", "91000 EVRY", "Agence : EVRY (91000)", "Mutation (2024) 1987 Paris",
+                 "92100 BOULOGNE-BILLANCOURT", "Antenne de Billancourt", "BILLANCOURT (92100)", "Lieu : 12 RUE DES LILAS (91000)",
+                 "Cet acte date de 2010 Paris centre"]
+        for i, line in enumerate(lines):
+            page.insert_text((50, 80 + 20 * i), line, fontsize=11)
+        doc.save(work / "t.pdf")
+        doc.close()
+        cfg = engine.parse_config(engine.scan_folder(work, "t", None, "fra+eng", lambda *a: None)["config"])
+        terms = cfg["terms"]
+        fake_code = lambda v: re.search(r"\d{4,5}", v).group()          # noqa: E731
+        check("a postcode alone, '91000 EVRY' and 'EVRY (91000)' share one fake code",
+              fake_code(terms["91000"]) == fake_code(terms["91000 EVRY"]) == fake_code(terms["EVRY (91000)"]), str(terms))
+        check("a year (1987, 2010, 2024) is never a postcode", not any(k in terms for k in ("1987", "2010", "2024", "1987 Paris", "2010 Paris")), str(sorted(terms)))
+        whole = terms.get("BOULOGNE-BILLANCOURT", "")
+        part = terms.get("BILLANCOURT", "")
+        check("'BILLANCOURT' alone is replaced by the last part of the fake of 'BOULOGNE-BILLANCOURT'",
+              whole.count("-") >= 1 and part and whole.split("-")[-1] == part, f"{whole} / {part}")
+        check("'BILLANCOURT (92100)' ends with the same town and code",
+              terms["BILLANCOURT (92100)"].startswith(part) and fake_code(terms["BILLANCOURT (92100)"]) == fake_code(terms["92100"]),
+              terms.get("BILLANCOURT (92100)", ""))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def parenthesised_town_tests():
     """A town followed by its postcode in brackets ('NANTERRE (92000)'), the form of many letters: the value is found,
     the fake keeps the form and the town, the town alone is the same fake, and a year or a street is no town."""
@@ -2189,6 +2252,183 @@ def speedup_tests():
     one = [fontmatch.compare(ref, t, soft) for soft in (0.0, 1.4) for t in cands]
     many = [v for soft in (0.0, 1.4) for v in fontmatch.compare_many(ref, cands, soft)]
     check("faces of a word compared as a stack = one by one, bit for bit", one == many)
+
+
+def memo_tests():
+    """What the app remembers between two measures of a page (anonymizer/memo.py) is what the measure gives: a hit is
+    never different from a fresh computation, and the lean forms of the cached data give the same numbers."""
+    print("\n== memos and lean data")
+    import math
+    from PIL import Image, ImageDraw
+    from anonymizer import faces, fontmatch, memo, quality, regions, scanpaint
+
+    # the Gaussian blur adds its taps in place: the same products added in the same order as the plain form
+    def blur_plain(a, sigma):
+        r = max(int(math.ceil(3 * sigma)), 1)
+        x = np.arange(-r, r + 1)
+        k = np.exp(-x * x / (2 * sigma * sigma))
+        k /= k.sum()
+        pad = np.pad(a.astype(float), ((0, 0), (r, r), (r, r)), mode="edge")
+        n, h, w = a.shape
+        rows = k[0] * pad[:, :, 0:w]
+        for i in range(1, 2 * r + 1):
+            rows += k[i] * pad[:, :, i:i + w]
+        out = k[0] * rows[:, 0:h, :]
+        for i in range(1, 2 * r + 1):
+            out += k[i] * rows[:, i:i + h, :]
+        return out
+
+    rng = np.random.default_rng(5)
+    stack = rng.random((9, 24, 61)) ** 2
+    same = all(np.array_equal(quality.blur_stack(stack, sg), blur_plain(stack, sg)) for sg in (0.4, 1.0, 1.7, 3.1))
+    big = rng.random((60, 90)) ** 2
+    same_2d = all(np.array_equal(quality.blur(big, sg), blur_plain(big[None], sg)[0]) for sg in (0.5, 1.0, 2.2))
+    check("blur and blur_stack with the taps added in place = the plain form, bit for bit", same and same_2d)
+
+    # the probe renderings are kept as 8-bit coverage: the float coverage made from them, and the resize that reads
+    # them, are what the float arrays gave
+    ok = n = 0
+    for fc in fontmatch.faces()[:12]:
+        for text in ("Jacquemin", "Élodie 12", "IBAN"):
+            u, a = fontmatch.template_u8(fc, text), fontmatch.template(fc, text)
+            if u is None:
+                continue
+            n += 1
+            ok += (u.dtype == np.uint8 and np.array_equal(a, u.astype(float) / 255.0)
+                   and np.array_equal((a * 255).astype(np.uint8), u)
+                   and np.array_equal(fontmatch._resize(a, 57, 24), fontmatch._resize(u, 57, 24)))
+    check(f"probe renderings kept as 8-bit coverage: the float coverage and the resize are unchanged ({ok}/{n})",
+          n >= 20 and ok == n)
+
+    # a candidate brought to a width is remembered: the second ask gives the same array (read-only), not a new one
+    fc = fontmatch.face("Arial")
+    u = fontmatch.template_u8(fc, "Jacquemin")
+    one, two = fontmatch._resized(u, 70), fontmatch._resized(u, 70)
+    check("a candidate resized to a width is remembered", one is two and np.array_equal(one, fontmatch._resize(u, 70, 24)))
+
+    # PageFonts of a page: the same page and words give the remembered one, and it measures what a fresh one does
+    memo.clear_all()
+    fc = fontmatch.face("Verdana") or fontmatch.face("Arial")
+    page = Image.new("L", (900, 160), 240)
+    draw = ImageDraw.Draw(page)
+    words, x = [], 30
+    for text in ("Jacquemin", "Lucas", "Avenue", "Closiere"):
+        draw.text((x, 100), text, font=fc.font(48), anchor="ls", fill=40)
+        l, t, r, b = fc.font(48).getbbox(text, anchor="ls")
+        words.append({"text": text, "box": (x + l, 100 + t, x + r, 100 + b), "line": ("w", 0), "conf": 100.0})
+        x += int(r) + 40
+    gray = np.asarray(page)
+    cfg = {"style": {"mode": "replace", "font_match": True, "quality_match": True}}
+    first = scanpaint.page_fonts(gray, words, cfg, 1.0)
+    again = scanpaint.page_fonts(gray.copy(), [dict(w) for w in words], cfg, 1.0)
+    fresh = fontmatch.PageFonts(gray, words, 1.0)
+    same_scores = all(first.scores(i) == fresh.scores(i) and first.raw_scores(i) == fresh.raw_scores(i)
+                      for i in range(len(words)))
+    check("the PageFonts of a page is remembered by its pixels and words, and measures what a fresh one does",
+          first is again and same_scores and first.page_quality() == fresh.page_quality())
+    moved = [dict(w, box=(w["box"][0] + 1, *w["box"][1:])) for w in words]
+    check("another box, another PageFonts", scanpaint.page_fonts(gray, moved, cfg, 1.0) is not first)
+    memo.clear_all()
+    check("clear_all forgets the pages", scanpaint.page_fonts(gray, words, cfg, 1.0) is not first)
+
+    # faces and codes are remembered by the pixels of the image, and the caller may change what it gets back
+    img = Image.new("RGB", (640, 480), (235, 235, 235))
+    ImageDraw.Draw(img).rectangle((200, 150, 420, 330), fill=(20, 20, 20))
+    for finder, name in ((faces.find_faces, "faces"), (lambda i, d: regions.find_codes(i, d), "codes")):
+        memo.clear_all()
+        a = finder(img, 300)
+        b = finder(img, 300)
+        a.append("changed by the caller")
+        c = finder(img, 300)
+        hits = memo.stats()[name][1]
+        check(f"{name} found on an image are remembered by its pixels (a hit, and a caller's change does not reach it)",
+              b == c and "changed by the caller" not in c and hits >= 2)
+    other = img.copy()
+    other.putpixel((3, 3), (0, 0, 0))
+    check("another image, another key", memo.image_key(other) != memo.image_key(img))
+
+    # face detection: the image is turned by PIL, not resized when the scale is 1, cut into windows converted one by one,
+    # and the windows run on threads: the detections are the ones of the plain loops, bit for bit
+    def detect_plain(rgb):
+        h, w = rgb.shape[:2]
+        m = max(h, w)
+        session = faces._load()
+        names = [o.name for o in session.get_outputs()]
+        found = []
+        for k in range(4):
+            turned = np.ascontiguousarray(np.rot90(rgb, k))
+            for sc in sorted(set([faces.WINDOW / m, 2 * faces.WINDOW / m] + ([1.0] if k == 0 else []))):
+                th, tw = turned.shape[:2]
+                h2, w2 = max(round(th * sc), 1), max(round(tw * sc), 1)
+                small = np.asarray(Image.fromarray(turned).resize((w2, h2), Image.BILINEAR))
+                bgr = small[:, :, ::-1].astype(np.float32)
+                dets_all = []
+                for y0 in faces._starts(h2):
+                    for x0 in faces._starts(w2):
+                        window = np.zeros((faces.WINDOW, faces.WINDOW, 3), dtype=np.float32)
+                        patch = bgr[y0:y0 + faces.WINDOW, x0:x0 + faces.WINDOW]
+                        window[:patch.shape[0], :patch.shape[1]] = patch
+                        outs = session.run(None, {"input": window.transpose(2, 0, 1)[None]})
+                        dets = faces._decode(dict(zip(names, outs)))
+                        if len(dets):
+                            dets[:, [0, 2]] += x0
+                            dets[:, [1, 3]] += y0
+                            dets_all.append(dets)
+                if dets_all:
+                    dets = np.concatenate(dets_all)
+                    dets[:, :4] /= sc
+                    found.append(faces._unrotate(dets, k, h, w))
+        return faces._nms(np.concatenate(found)) if found else np.zeros((0, 5))
+
+    same_faces, n_faces = [], 0
+    for rgb in (np.asarray(Image.open(ROOT / "tools" / "test_faces" / "couple.jpg").convert("RGB")),
+                (np.random.default_rng(1).random((701, 523, 3)) * 255).astype(np.uint8)):
+        a, b = detect_plain(rgb), faces.detect(rgb)
+        from concurrent.futures import ThreadPoolExecutor
+        faces._load()
+        saved_pool, faces._pool = faces._pool, ThreadPoolExecutor(3)       # the windows side by side, whatever the env
+        try:
+            c = faces.detect(rgb)
+        finally:
+            faces._pool.shutdown()
+            faces._pool = saved_pool
+        same_faces.append(a.shape == b.shape == c.shape and np.array_equal(a, b) and np.array_equal(a, c))
+        n_faces = n_faces or len(a)
+    check(f"face detection: PIL turns, windows run on threads = the plain loops, bit for bit ({n_faces} face(s) in the portrait)",
+          all(same_faces) and n_faces >= 1)
+
+    # the fuzzy comparisons of the scan skip the pairs difflib's cheap bounds rule out: the same answers
+    import random
+    from difflib import SequenceMatcher
+    rnd = random.Random(7)
+    words = ["reyes", "reys", "reye", "morin", "moran", "gaspard", "gasp", "succession", "successon", "compte", "comtpes",
+             "lucas", "lucia", "jacquemin", "jaquemin", "x", "", "monsieur", "monsieul", "virement", "virements"]
+    words += ["".join(rnd.choice("abcdeilmnorstu") for _ in range(rnd.randint(3, 11))) for _ in range(60)]
+    same = all((engine.alike(a, b, c) is not None) == (SequenceMatcher(None, a, b).ratio() >= c) and
+               (engine.alike(a, b, c) in (None, SequenceMatcher(None, a, b).ratio()))
+               for a in words for b in words for c in (0.8, 0.85))
+    stop = {k for k in engine._STOP_KEYS}
+    plain = lambda key: len(key) >= 5 and any(len(x) >= 5 and abs(len(x) - len(key)) <= 2 and    # noqa: E731
+                                              SequenceMatcher(None, key, x).ratio() >= 0.85 for x in stop)
+    same_label = all(engine.is_label_word(w) == (bool(w) and (engine._pkey(w) in engine._STOP_KEYS or
+                                                              engine._ocr_m(engine._pkey(w)) in engine._STOP_KEYS or
+                                                              plain(engine._pkey(w)))) for w in words if w.isalpha())
+    check("alike() = SequenceMatcher's ratio at the cutoff, and is_label_word keeps its answers", same and same_label)
+
+    # the names model is kept when the browser sends the same settings again (it did reload it at every page load)
+    import app as app_module
+    saved = dict(app_module.STATE)
+    try:
+        client = app_module.app.test_client()
+        app_module.STATE.update(spacy_models=None, ner="the loaded model")
+        client.post("/api/settings", json={"ocr_engine": "auto", "ner_models": None})
+        kept = app_module.STATE["ner"] == "the loaded model"
+        client.post("/api/settings", json={"ocr_engine": "auto", "ner_models": []})
+        dropped = app_module.STATE["ner"] is None and app_module.STATE["spacy_models"] == []
+        check("the same settings sent again keep the names model, a new choice drops it", kept and dropped)
+    finally:
+        app_module.STATE.update(saved)
+        ocr.set_engine("auto")
 
 
 def _synthetic_page(f, q, lines, size=42, ink=(40, 40, 40), paper=(240, 238, 230), key=0):
@@ -2882,6 +3122,80 @@ def quality_offset_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def parallel_tests():
+    """The pages of a document done by worker processes give the config, the files and the reports of one process, byte
+    for byte: a searchable scan (pages only), a mixed file (digital pages and a scanned one), and a config that numbers
+    its replacements ('{n}': the numbers follow the page order, so the pages are not split)."""
+    print("\n== pages in parallel processes")
+    import snapshot_results
+    from anonymizer import workers
+
+    names = ("releve_scan_cherchable.pdf", "releve_annexe_scannee.pdf")
+    work = Path(tempfile.mkdtemp(prefix="anon_par_"))
+    saved = os.environ.get("ANON_WORKERS")
+    ner = _names_model()
+    # a client folder of one-page files: two scans, a digital statement (the files go to the workers beside each other)
+    singles = (("Dossier Test 03", "passeport_scan.pdf"), ("Dossier Test 04", "carte_identite_scan.pdf"),
+               ("Dossier Test 01", "releve_banque_mosane.pdf"))
+
+    def run(n: str, tag: str, numbered: bool = False, sources=None):
+        os.environ["ANON_WORKERS"] = n
+        folder = work / f"{tag}{n}"
+        folder.mkdir()
+        for src_folder, name in sources or [("Dossier Test 05", x) for x in names]:
+            shutil.copy(ROOT / "sample_data" / src_folder / name, folder / name)
+        scan = engine.scan_folder(folder, "par", ner, "fra+eng", lambda m: None)
+        cfg = scan["config"]
+        if numbered:
+            cfg, hit = re.subn(r'(- \{find: "[^"]+", replace: )"[^"]+"(, type: PERSON\})', r'\1"Personne {n}"\2', cfg, count=1)
+            assert hit, "no PERSON entry to number"
+        stable = "\n".join(l for l in cfg.splitlines() if not l.startswith(("# edited", "# generated")))
+        rep = engine.run_anonymize(folder, "par", cfg, "fra+eng", False, lambda m: None)
+        files = {}
+        for e in rep["files"]:
+            data = (folder / e["output"]).read_bytes()
+            files[e["file"]] = (snapshot_results.sha(snapshot_results.ID_RX.sub(b"", data)),
+                                {k: v for k, v in e.items() if k not in ("seconds", "stages", "worker_stages")})
+        return stable, files
+
+    try:
+        before = dict(workers.stats)
+        cfg1, one = run("1", "plain")
+        used_one = workers.stats.get("scan_page", 0) - before.get("scan_page", 0)
+        cfg3, three = run("3", "plain")
+        pages_given = workers.stats.get("scan_page", 0) - before.get("scan_page", 0) - used_one
+        check("one process: no page given to a worker", used_one == 0)
+        check("three workers: the scanned pages went to the workers", pages_given >= 3 or workers.stats.get("fallbacks", 0) > 0 or workers._broken,
+              f"{pages_given} page(s)")
+        check("the config of a scan is the same with three workers", cfg1 == cfg3)
+        for name in names:
+            check(f"{name}: the same output file with three workers", one[name][0] == three[name][0])
+            check(f"{name}: the same report with three workers", one[name][1] == three[name][1])
+        check("no error with three workers", all(not e[1].get("error") for e in three.values()))
+        # several one-page files: each one is a task, they run beside each other, and the results are the same
+        mark = workers.stats.get("scan_page", 0)
+        cfg_s1, one_s = run("1", "singles", sources=singles)
+        cfg_s3, three_s = run("3", "singles", sources=singles)
+        check("a folder of one-page files: the scans went to the workers", workers.stats.get("scan_page", 0) - mark >= 2
+              or workers.stats.get("fallbacks", 0) > 0 or workers._broken)
+        check("a folder of one-page files: the same config with three workers", cfg_s1 == cfg_s3)
+        check("a folder of one-page files: the same files and reports with three workers",
+              all(one_s[n] == three_s[n] for _, n in singles) and len(one_s) == len(singles))
+        # a config that numbers its replacements is not split, whatever the number of workers
+        mark = workers.stats.get("scan_page", 0)
+        _, num1 = run("1", "num", numbered=True)
+        _, num3 = run("3", "num", numbered=True)
+        check("a config with '{n}': the scanned pages stay in this process", workers.stats.get("scan_page", 0) == mark)
+        check("a config with '{n}': the same files and reports with three workers",
+              all(num1[n] == num3[n] for n in names))
+    finally:
+        if saved is None:
+            os.environ.pop("ANON_WORKERS", None)
+        else:
+            os.environ["ANON_WORKERS"] = saved
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def key_and_fake_tests(tmp: Path):
     print("\n== secret key and fake values")
     use_key(tmp / "k" / "secret.key")
@@ -3343,13 +3657,14 @@ GROUPS = [
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
     "split_word_tests", "colon_tests", "street_name_tests", "second_pass_tests", "suspect_suggestion_tests",
     "incremental_report_tests", "scan_anonymize_batch_tests",
-    "first_letter_tests", "account_and_street_names_tests", "client_identifier_tests", "manual_text_tests", "rotated_tests", "town_tests",
+    "first_letter_tests", "account_and_street_names_tests", "client_identifier_tests", "manual_text_tests", "rotated_tests", "town_tests", "postcode_consistency_tests",
     "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
-    "speedup_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
+    "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests",
 ]
-SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "paragraph_scan_tests"}     # left out by --fast
+SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
+MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own
 # seconds a job took on a sequential run (group or folder name): the longest jobs are started first
 WEIGHT = {"paragraph_scan_tests": 160, "font_scan_tests": 152, "config options": 105, "quality_offset_tests": 80, "Dossier Test 17": 71,
           "Dossier Test 05": 68, "Dossier Test 01": 46, "Dossier Test 00": 45, "contract_tests": 42,
@@ -3409,7 +3724,8 @@ def build_jobs(args, tmp: Path, folders: list[str]) -> list[dict]:
     jobs = []
     for name in GROUPS:
         if not (args.fast and name in SLOW_GROUPS):
-            jobs.append({"kind": "group", "name": name, "label": name, "key": group_key, "tmp": tmp})
+            jobs.append({"kind": "group", "name": name, "label": name, "key": group_key, "tmp": tmp,
+                     "main": name in MAIN_GROUPS})
     for k, key_file in enumerate(run_keys):
         jobs.append({"kind": "header", "text": f"\n######## {'given' if given else 'random'} key {k + 1}"})
         for folder in folders:
@@ -3440,13 +3756,15 @@ def main():
     folders = args.folder or list(EXPECT)
     tmp = Path(tempfile.mkdtemp(prefix="anon_check_"))
     saved = {k: os.environ.get(k) for k in ("ANON_SECRET_FILE", "ANON_OCR_CACHE_DIR", "OMP_NUM_THREADS",
-                                           "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ANON_ORT_THREADS")}
+                                           "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ANON_ORT_THREADS",
+                                           "ANON_WORKERS")}
     bad_keys: dict = {}
     seconds: list[tuple[float, str]] = []
     t0 = time.time()
     try:
         (tmp / "ocr_cache").mkdir()
         os.environ["ANON_OCR_CACHE_DIR"] = str(tmp / "ocr_cache")
+        os.environ["ANON_WORKERS"] = "1"           # the jobs already run in parallel processes: no pool inside a job
         if args.jobs > 1:                          # several processes: each one on its own core (numpy, onnxruntime)
             for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ANON_ORT_THREADS"):
                 os.environ[name] = "1"
@@ -3456,14 +3774,16 @@ def main():
         if args.jobs > 1:
             pool = mp.get_context("spawn").Pool(args.jobs)
             for i in sorted(runnable, key=lambda i: -WEIGHT.get(jobs[i].get("folder") or jobs[i]["label"], 5)):     # the longest first
-                handles[i] = pool.apply_async(run_job, (jobs[i],))
+                if not jobs[i].get("main"):
+                    handles[i] = pool.apply_async(run_job, (jobs[i],))
         for i, job in enumerate(jobs):
             if job["kind"] == "header":
                 print(job["text"])
                 continue
-            results, text, took = handles[i].get() if pool else run_job(job, capture=False)
+            in_main = not pool or job.get("main")          # run here, while the pool runs the others
+            results, text, took = run_job(job, capture=False) if in_main else handles[i].get()
             print(text, end="")
-            RESULTS.extend(results) if pool else None
+            RESULTS.extend(results) if not in_main else None
             seconds.append((took, job["label"]))
             failed_here = [n for ok, n in results if not ok]
             if failed_here and job["kind"] in ("folder", "options"):

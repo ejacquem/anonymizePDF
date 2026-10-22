@@ -22,7 +22,7 @@ from dataclasses import replace
 import numpy as np
 from PIL import ImageDraw
 
-from . import faces, fields, fontmatch, quality, regions, render
+from . import faces, fields, fontmatch, memo, quality, regions, render, timing
 from .fake import match_case
 from .ocr import ocr_words, render_page
 from .ocrpage import page_words
@@ -102,7 +102,27 @@ def page_fonts(gray, words, cfg: dict, scale: float, angles: dict | None = None)
     if style["mode"] == "blackbox" or not (style["font_match"] or style["quality_match"]):
         return None
     slanted = [i for i, w in enumerate(words) if abs((angles or {}).get(tuple(w["box"]), 0.0)) >= TILT_MIN]
-    return fontmatch.PageFonts(gray, words, scale, skip=slanted)
+    # the measures of a page (scores of its words, its quality...) are functions of its pixels and its words: the same
+    # page read again (the scan, then the anonymization, then an anonymization run again) keeps them
+    key = (memo.array_key(gray), memo.words_key(words), scale, tuple(slanted))
+    pf = _PAGE_FONTS.get(key)
+    if pf is None:
+        pf = _PAGE_FONTS.put(key, fontmatch.PageFonts(gray, [dict(w) for w in words], scale, skip=slanted))
+    return pf
+
+
+_PAGE_FONTS = memo.lru("page_fonts", 8)         # each holds its grey page (~9 MB at 300 dpi) and the scores measured
+_ANGLES = memo.lru("angles", 16)
+
+
+def word_angles(img_key: str, gray, words: list[dict], skew: dict) -> dict:
+    """regions.line_angles, remembered by the pixels of the page and its words (`skew`: the measures of the crops, shared
+    by the two calls of a page)."""
+    key = (img_key, memo.words_key(words))
+    got = _ANGLES.get(key)
+    if got is None:
+        got = _ANGLES.put(key, regions.line_angles(gray, words, skew))
+    return dict(got)
 
 
 def font_advance(pf, cfg: dict):
@@ -205,7 +225,8 @@ PIXEL_MIN_AREA = 0.02        # a digital page whose images cover >= 2 % of it al
 def _pixel_words(page, visible: list[dict], ocr_lang: str, dpi: int = 300):
     """OCR of the rendered page minus what the VISIBLE text layer already covers: the text that only exists as
     pixels (images, scanned parts). Returns (image, words with boxes in image pixels)."""
-    img = render_page(page, dpi)
+    with timing.stage("render"):
+        img = render_page(page, dpi)
     k = 72 / dpi
     boxes = [(b[0] - 1.5, b[1] - 1.5, b[2] + 1.5, b[3] + 1.5) for b in (w["box"] for w in visible)]
     keep = []
@@ -259,11 +280,13 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
     # the picture under the first word read: its resolution is the native one of the text in it
     at = ((words[0]["box"][0] + words[0]["box"][2]) / 2 * k, (words[0]["box"][1] + words[0]["box"][3]) / 2 * k)
     pf = page_fonts(gray, words, cfg, native_scale(page, dpi, at))
-    plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
+    with timing.stage("text"):
+        plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
     todo, erased = [], []                              # erased: every redacted box (all lines of every value)
     bold = render.BoldMeter(img, words)
     covered = black_px + ([zone] if zone else [])
     looks = page_looks(img, pf, plan, cfg, bold.is_bold, covered)
+    paint_stage = timing.stage("paint")
     for (m, boxes), look in zip(plan, looks):
         m.replacement = _adjust(cfg, m)
         rec = {"page": pno, "original": m.value, "replacement": m.replacement, "box": _union_box(boxes, k),
@@ -291,6 +314,7 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
                               fill=tuple(c / 255 for c in render.background_color(img, zone)))
         _note(extras, pno, [v * k for v in zone], "MRZ zone erased (pixels)")
     if not todo and not zone:
+        paint_stage.done()
         return
     page.apply_redactions(images=2, graphics=1, text=0)    # image pixels under the values are overwritten
     if zone:
@@ -332,6 +356,7 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
             page.insert_text((mrz["x"] * k, (mrz["lines"][0][3] + j * pitch) * k), line, fontsize=size,
                              fontname="cour", color=(0.08, 0.08, 0.08))
         extras["mrz"].append({"page": pno, "action": "regenerated", "format": mrz["format"], "lines": lines})
+    paint_stage.done()
     log(f"   page {pno}: {len(todo)} value(s) replaced in images (OCR)" + (", MRZ regenerated" if zone else ""))
 
 
@@ -482,26 +507,33 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     """One scanned page -> its anonymized image (values repainted, MRZ rebuilt, black boxes)."""
     blackbox = cfg["style"]["mode"] == "blackbox"
     t0 = time.time()
-    img = render_page(page, 300)
-    gray = np.asarray(img.convert("L"))                  # the page is not painted before the end: one grey copy
+    with timing.stage("render"):
+        img = render_page(page, 300)
+        gray = np.asarray(img.convert("L"))              # the page is not painted before the end: one grey copy
+        img_key = memo.image_key(img)                    # the pixels before anything is painted
     words = page_words(img, ocr_lang)
     skew = {}                                            # measures of the crops, shared by both passes
-    angles = regions.line_angles(gray, words, skew)      # slant of each word, before painting
-    words = _refine_slanted(img, words, angles, ocr_lang)                  # exact boxes of the slanted lines
-    angles = regions.line_angles(gray, words, skew)
+    with timing.stage("angles"):
+        angles = word_angles(img_key, gray, words, skew)  # slant of each word, before painting
+        words = _refine_slanted(img, words, angles, ocr_lang)              # exact boxes of the slanted lines
+        angles = word_angles(img_key, gray, words, skew)
     pf = page_fonts(gray, words, cfg, native_scale(page, 300), angles)
-    plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
+    with timing.stage("text"):
+        plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
     draw = ImageDraw.Draw(img)
     pad = 3
     # areas handled as a whole (found before anything is painted): MRZ, photos, signatures
     bo = cfg["blackout"]
-    mrz = fields.find_mrz(words, gray)
-    zone = fields.mrz_zone(mrz) if mrz else None
-    id_page = fields.is_id_document(words, bool(mrz))
+    with timing.stage("mrz"):
+        mrz = fields.find_mrz(words, gray)
+        zone = fields.mrz_zone(mrz) if mrz else None
+        id_page = fields.is_id_document(words, bool(mrz))
     want_photos = bo["photos"] and (id_page or not bo["photos_only_on_id_documents"])
-    found_photos = faces.find_faces(img, 300)
+    with timing.stage("faces"):
+        found_photos = faces.find_faces(img, 300)
     photos = found_photos if want_photos else []
-    codes = regions.find_codes(img, 300) if bo["qr_codes"] else []
+    with timing.stage("codes"):
+        codes = regions.find_codes(img, 300) if bo["qr_codes"] else []
     # photos / codes / MRZ are not signature ink (a photo often sits right above the signature label);
     # photos count for this even when they are not blacked out on this page
     # a face, with its hair and its shoulders (the photo around it): not signature ink either
@@ -511,7 +543,8 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     typed = [(tuple(v * 300 / 72 for v in b), t) for b, t in cfg.get("manual_texts", {}).get(pno, [])]
     typed_inks = [render.text_ink(img, box) for box, _ in typed]     # before anything is painted over
     not_ink = ([zone] if zone else []) + codes + photo_area + manual
-    signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
+    with timing.stage("signatures"):
+        signs = regions.find_signatures(img, words, not_ink) if bo["signatures"] else []
     removed = cfg.get("removed_boxes", {}).get(pno, [])     # automatic boxes the user removed: not painted
     if removed:
         def _pt(b):
@@ -540,6 +573,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
         face = pf.face_for(box)[0] if pf is not None and cfg["style"]["font_match"] else None
         typed_looks.append((face, replace(page_q, grain=quality.grain(gray, box)) if page_q is not None else None))
     fonts_used: dict = {}
+    paint_stage = timing.stage("paint")
     for k, ((m, boxes), (ink, is_bold, look)) in enumerate(zip(plan, looks)):
         face = look.face if look is not None else None
         q = look.quality if look is not None else None
@@ -607,6 +641,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     for k, ((box, text), ink) in enumerate(zip(typed, typed_inks)):     # typed by hand: painted over the page
         face, q = typed_looks[k]
         render.paint_text_box(img, box, text, ink, face.bold if face is not None else False, face, q, (pno, k))
+    paint_stage.done()
     log(f"   page {pno}/{n_pages} (scan): OCR {len(words)} words, {len(plan)} replacement(s)"
         f"{f' ({n_bold} in bold)' if n_bold else ''} ({time.time() - t0:.0f}s)")
     if fonts_used:

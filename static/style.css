@@ -165,13 +165,18 @@ button.lfind { font: inherit; font-size: 12px; text-align: left; padding: 1px 4p
 .row .badges { display: flex; gap: 3px; overflow: hidden; flex: 0 100 auto; min-width: 0; }
 .row .badge { flex: none; }
 .row .caret { width: 8px; flex: none; color: var(--muted); font-size: 10px; transform: scale(1.8); }
-.row.anon .name { color: var(--ok); }
+/* the dot at the left of a file: red = leak / error, orange = warning, yellow = config changed, green = reviewed */
+.row .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-right: 2px; }
+.row .dot.red { background: #e5484d; }
+.row .dot.orange { background: #f08c00; }
+.row .dot.yellow { background: #f5d90a; }
+.row .dot.green { background: var(--ok); }
+.row .fico { flex: none; }
 .badge { font-size: 10px; padding: 0 4px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
 .badge.cfg { color: var(--accent); border-color: var(--accent); }
 .badge.done { color: var(--ok); border-color: var(--ok); font-weight: 700; padding: 0 5px; }
 .badge.rev { color: var(--muted); }
 .badge.rev.all { color: var(--ok); border-color: var(--ok); }
-.row .rev-mark { color: var(--ok); font-weight: 700; }
 button.review { margin-left: auto; flex: none; }
 button.review.on { color: var(--ok); border-color: var(--ok); font-weight: 600; }
 /* batch overview */
@@ -199,8 +204,14 @@ table.ov tr.click:hover { background: var(--sel); }
 .seg, .viewmode { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex: none; }
 .seg button, .viewmode button { border: 0; border-radius: 0; padding: 3px 10px; font-size: 12px; }
 .seg button.on, .viewmode button.on { background: var(--accent); color: var(--accent-text); }
-#cfgSearch { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--line);
-  border-radius: 6px; background: var(--panel); color: var(--text); }
+.searchbox { position: relative; flex: 1; min-width: 0; display: flex; }
+.searchbox[hidden] { display: none !important; }
+#cfgSearch { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 3px 22px 3px 8px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--panel); color: var(--text); -webkit-appearance: none; appearance: none; }
+#cfgSearch::-webkit-search-cancel-button { display: none; }
+#cfgSearchClear { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); border: 0; background: none;
+  color: var(--muted, #888); font-size: 16px; line-height: 1; padding: 0 4px; cursor: pointer; }
+#cfgSearchClear:hover { color: var(--text); }
 .cfgtable { flex: 1; overflow: auto; padding: 6px 8px; font-size: 12.5px; }
 .cfgtable[hidden], #cfgSearch[hidden], #configText[hidden] { display: none !important; }
 .cfgsum { margin: 6px 2px 8px; }

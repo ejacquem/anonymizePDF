@@ -64,6 +64,11 @@ anonymizer/
   regions.py           find_codes, find_signatures (+ *_digital variants), is_signature_label, line_angles (skew)
   layout.py            lines and blocks of the OCR words (blocks = the surroundings a value's style is taken from, 10b)
   morph.py             square max / min / closing on arrays, two 1-D passes (same result as PIL's rank filters)
+  timing.py            stage timers (ocr, fonts, paint, ocr_check...): exclusive time per stage, one collector per file
+  workers.py           pages in parallel processes: worker pool (one process per slot, sticky routing), the tasks
+                       scan_page / read_scan / name_faces_page / read_page, ANON_WORKERS; slot chosen by load
+  memo.py              in-memory memos keyed by the pixels of a page (bounded LRU, never on disk): faces, codes, line
+                       angles, the PageFonts of a page; image_key / array_key / words_key, by_image, clear_all
   faces.py             faces of people (YuNet, ONNX Runtime, offline): detect, find_faces, find_faces_digital
   models/              face_detection_yunet_2023mar.onnx (OpenCV zoo, MIT; sha256 checked at load)
   configmodel.py       anon_config.yaml <-> review-table model (settings, entries incl. the commented suggestions)
@@ -109,6 +114,7 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12); key_hunt.py (many random keys on one file);
                        snapshot_results.py (before / after comparison of the results, section 11b);
                        style_bench.py (scoreboard of the replaced text against its block, section 12c);
+                       bench.py (time by document and by stage, before / after, section 11b);
                        check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
                        section 12b: the PDFs are downloaded, never committed)
 ```
@@ -116,7 +122,9 @@ The original numbered CLI scripts were removed long ago.
 
 Run: `python app.py --root <folder with client folders>` → http://127.0.0.1:5000.
 Options: `--port`, `--ocr-lang fra+eng`, `--ocr-engine auto|tesseract|windows`, `--spacy-model` (repeatable).
-Env: `ANON_SECRET_FILE` (key path), `ANON_OCR_ENGINE`, `TESSERACT_CMD`, `TESSDATA_PREFIX`.
+Env: `ANON_SECRET_FILE` (key path), `ANON_OCR_ENGINE`, `TESSERACT_CMD`, `TESSDATA_PREFIX`, `ANON_WORKERS` (pages in
+parallel processes: 1 = never, default = the cores minus one, at most 6, fewer when the free memory is short),
+`ANON_WORKER_MB` (memory expected per worker, default 800: a worker peaks near 500 MB on a 3-page A4 scan).
 
 ## 4. UI
 
@@ -128,7 +136,7 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   not a requestAnimationFrame lock (rAF does not run in hidden tabs; scroll events are not dispatched either).
 - "Viewer / PDF" switch (Original pane head): PDF = the browser's own PDF viewer in an iframe (`/api/pdf`, selectable
   text); Viewer = the page images, synced. Kept in localStorage (`anonymizePDF.sync`). The header has two lines: name,
-  then the tools (zoom, Changes, switch, Black box, Apply, Mark as reviewed).
+  then the tools (zoom, Changes, switch, Black box, Text, Undo / Redo, Mark as reviewed).
 - Changes (Original pane head, `#btnChanges`, remembered in localStorage `anonymizePDF.changes`, off by default): a
   frame (`.chg`, `drawChanges`) around each value replaced in the selected file, in both panes, from `items[].boxes`
   of the report. Disabled while the report has no box for the file (anonymize it again: reports made before the
@@ -154,17 +162,19 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   `/api/batch` does each folder's scan then its anonymization before the next folder), **Anonymize file** (either file of the pair; the
   report keeps the other entries). ↑ / ↓ switch file (wraps, also while a job runs; not while typing in a text field, a checkbox
   does not keep the arrows), Ctrl+↑ / Ctrl+↓ the previous / next folder that holds PDFs (`pdfFolders`, wraps, opens its first
-  file). The header counts the file: 'Working folder: x · 2/3 PDFs'. **Save** (Ctrl+S) is in the Config tab; the "OCR check
-  for digital PDFs" option is in Config › Settings (persisted in localStorage).
+  file). The header counts the file: 'Working folder: x · 2/3 PDFs'. **Save** (Ctrl+S) is in the Config tab; it stays
+  enabled while an anonymization runs (`state.runKeepsConfig`: the run does not rewrite the config) and is disabled
+  while a scan runs (the scan writes the config when it ends). The "OCR check for digital PDFs" option is in
+  Config › Settings (persisted in localStorage).
 - Black boxes by hand: **▭ Black box** in the Anonymized pane (drag to draw, drag / handles to move and resize,
   Delete to remove; the box is see-through while a handle is dragged, class `resizing`). Each change is saved at once
-  in `manual_blackouts` (kind `manual`), but the anonymized file is NOT regenerated by it: the **Apply** button (Anonymized
-  pane, `#btnApply`, lit while the file has changes not applied; `pendingBoxes` in app.js) regenerates it. Anonymize
-  file / folder also apply them.
+  in `manual_blackouts` (kind `manual`), but the anonymized file is NOT regenerated by it: the file's dot in the tree turns yellow (config newer than the
+  output) and **Anonymize file** (lit while the file has changes not applied: `pendingBoxes` in app.js) or Anonymize
+  folder regenerates it. There is no separate Apply button any more.
 - Typed texts: **▤ Text** (next to ▭ Black box) draws a box, then a field appears in it: type the text and press Enter
   (Escape cancels). The text is written over the page, stretched to the box, on a white background taken around the box
   (the lines it crosses are covered). Listed in the Config tab under Typed texts (`manual.texts`, `manual_texts:` in the
-  YAML, `engine.parse_config`, `_manual_texts`); Apply regenerates the anonymized file. A typed text is shown stretched in the
+  YAML, `engine.parse_config`, `_manual_texts`); Anonymize file regenerates the anonymized file. A typed text is shown stretched in the
   viewer and while it is typed (`textFit`, same metrics as the PDF); double-click a typed text to edit it; the ✕ of a box
   removes it. The text takes the colour of the text under its box. A typed text is edited by a double-click on it, with or
   without the Text tool (the place is found from the pointer: `viewers.anon.box` dblclick, the texts are drawn only while
@@ -173,18 +183,24 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   With a box tool on, the right button drags the view (the left one draws), and the context menu is off there.
   Shortcuts with the mouse over a viewer: T toggles the Text tool, B the Black box tool, F shows the Config tab and
   focuses its search (`focusConfigSearch`).
-- Undo / Redo (Anonymized pane head, `#btnUndo` / `#btnRedo`, Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z): every change of the black
+- Undo / Redo (Anonymized pane head, `#btnUndo` / `#btnRedo`, icons ↶ / ↷ only, Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z): every change of the black
   boxes and typed texts of the selected file (draw, move, resize, delete, edit a text, remove an automatic box) is one
   step. `rememberBoxes()` takes a snapshot BEFORE the change (the file's `manual.blackouts` and `manual.texts`, and its
   pending removed automatic boxes); `stepBoxes` puts a snapshot back, saves the config and keeps the opposite stack.
-  One history per folder and file, in memory (a reload forgets it). `undo.epoch` counts the Apply runs: going back to a
-  state that was not pending is clean (Apply off) only if no Apply came since, else Apply is lit.
+  One history per folder and file, in memory (a reload forgets it). `undo.epoch` counts the runs that regenerate a file: going
+  back to a state that was not pending is clean only if no run came since, else Anonymize file stays lit.
 - Black boxes list: Config tab, under Manual data, for the selected file. One row per box with its origin tag
   (Hand-drawn / Photo / face / QR code / Signature; "· edited" when an automatic box was moved). Click a row = select
-  its box in the viewer (dashed overlay for automatic boxes), click a box = select its row; ✕ or Delete removes it.
-  Automatic boxes are never written to the config: removing one leaves it out of the next run only (the list of
-  removed boxes is sent with the run, `removed`; the next run detects them again). Moving one adds a `manual_blackouts`
-  entry with `origin` and `replaces` (the detected box): that box is skipped on every run.
+  its box in the viewer and centre the anonymized pane on it (`focusBox`, as a replaced value centres the original;
+  the typed texts list works the same way), dashed overlay for automatic boxes; click a box = select its row; ✕ or Delete
+  removes it.
+  Removing an automatic box writes a `manual_blackouts` entry with `origin`, `replaces` (the detected box, also its
+  `box`) and `removed: true`: the box is skipped on EVERY run, it is not drawn as a hand-drawn box, and the config is
+  newer than the output so the file's dot turns yellow (nothing is pending outside the config any more). The black
+  boxes list shows these under 'Removed automatic boxes' with a ↺ that puts one back (`restoreBox`); undo / redo cover
+  both. Moving one adds the same entry without `removed`: that box is skipped on every run too. (`engine._manual_boxes`
+  leaves the removed entries out, `_removed_boxes` uses all of them; the old per-run `removed` list of the API still
+  works but the app no longer sends anything in it.)
 - Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format;
   a note with a button to the Config tab when the second check's values were offered there as suggestions.
 - The OCR engine and the names models are chosen in ⚙ Settings (`POST /api/settings`, sent again at each start from
@@ -193,7 +209,16 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - App settings (⚙ Settings in the header, kept in localStorage `anonymizePDF.app`): pop-up messages on/off and their
   duration (`notify` / `toast`, top centre, 3 s by default; off = the status line), the border width of the Changes frames
   (`--chg-w`), the OCR second pass (same value as the OCR check of Config › Settings), and the fake text quality
-  (`qualityOffset`, -1 .. +1, sent with every anonymization as `quality_offset`, see section 10b).
+  (`qualityOffset`, -1 .. +1, sent with every anonymization as `quality_offset`, see section 10b), and the lowest fake
+  text quality allowed (`qualityFloor`, default -0.5, -1 = no limit): the value sent is the slider not below it
+  (`sentQuality()`). The tree (directory): each original has a dot at its left (`file_states` in app.py): red = an
+  error or a leftover (an original value still found in the output); green = reviewed by hand (wins over the next two);
+  orange = a warning of the last run or a second-check suspect; yellow = the config was saved after the output (or no
+  output yet): anonymize. The icon is a file, or a lock once an
+  anonymized file exists; the anonymized output has no row of its own.
+- A folder anonymization leaves reviewed files alone, except those with black boxes / typed texts / removed boxes not
+  applied yet: the client sends them in `include` (`folderPendingFiles`), so a new box always reaches the output.
+- Typed texts are shown with or without the Text tool; with the tool off a text is not moved (the view pans on it).
 - Session (localStorage `anonymizePDF.session`): folder, file, zoom, scroll of both panes, tab and viewer mode are saved
   (`saveSession`, `scheduleSave`) and put back on reload (`restoreSession`, after the tree is loaded).
 - Frames placed in page points (the red leftovers, the blue value frame) are redrawn on every zoom (`sizePages`).
@@ -206,6 +231,8 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   `original` and `was_active` (`configmodel.auto_flag`, `to_model`, `to_yaml`). A new scan keeps them
   (`configmodel.keep_edits`): a value still found keeps its change, a removed one stays out, a value the scan no longer
   finds keeps its change. The scan no longer asks for a confirmation about this (`check: config_edit_tests`).
+- Ticking / unticking a value does the same to the parts the scan made from it (their info says "part of 'value'", and the parts of
+  those parts): `setActiveWithParts` in app.js.
 - Review flag: 'Mark as reviewed' in the Anonymized pane head; `anon_review.json` per folder = {original name: {at,
   sha256 of the output}}; a flag counts only while the output's hash matches (regenerated or edited -> not reviewed);
   `run_anonymize` also clears the flag of each file it regenerates. Tree badges `✓` (file) and `✓ r/n` (folder).
@@ -261,6 +288,8 @@ console running `app.py` and the last 12 lines in the job log.
      selected original (`locateTerm`, `GET /api/find`, `verify.find_hits`: the text layer of every page, plus the OCR of the
      pages that are scans or have pictures, without the words already counted) and frames them in blue (`.tlbox`). The
      count is per file; the `found N times` of the config counts the whole folder. Zoom on the word is an app setting (off).
+     The blue frame belongs to the original it was found in: opening another original forgets the search
+     (`resetTermSearch`, called by `setViewer`), so a zoom does not draw the old frame on the new file.
    - Verify (`verify.verify_output`): searches the output for each original value (metadata, text layer, and OCR with the
      tolerant regex whenever the file is not purely digital, or when "OCR check" is ticked). If a scanned file has
      leftovers, `run_anonymize` runs a second pass on its output (the per-file config `fcfg`: a list in the whole
@@ -315,7 +344,7 @@ manual_blackouts:                   # black boxes drawn in the Anonymized pane: 
 ```
 `auto_changes:` (written by the app) keeps the automatic values changed by hand: `{find, type, original, was_active, removed}`.
 `manual_texts:` (written by the app): texts typed by hand, `{file, page, box, text}` in PDF points.
-There is no list of removed automatic boxes in the config: they are only sent with an anonymization run.
+An automatic box removed by hand is `{file, page, box, origin, replaces, removed: true}` in `manual_blackouts` (stays removed on every run).
 Missing keys in older configs get the safe defaults (everything on). `find` matching (`pii.term_regex`): case-
 insensitive, flexible whitespace, word boundaries; on scans `ocr=True` also accepts 0/O/D, 1/l/I, 5/S, 8/B, 2/Z,
 missing accents and a space inside a number. Overlaps (`pii.resolve`): terms beat regex, then the rank, then the longer
@@ -377,6 +406,12 @@ Order must never change a result (`order_tests`): a value written with several s
   it is an ordinary word of the documents, `engine.accept_person(role=)`; a pronoun or article after the role word is no
   name). Test: `detector_tests`.
 - Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid.
+- IBAN and phone numbers accept wide gaps between their groups ('FR76  3000  6000 ...', '01  47  36  21  21'): the
+  separators are `[ \t]{0,3}` / `[ .\-/]{0,3}`, and `_v_iban` measures the span on the text, not on single spaces.
+- SEPA creditor identifiers with the business code ZZZ ('FR16ZZZ001001M1200015436665') are detected by their shape
+  (`_v_sepa_zzz`), also when the OCR splits them ('FRI 6ZZZ001001 Ml 200015436665'); `ocr.fix_digits` leaves a token
+  holding 'ZZZ' alone (it read the Z as 2). Greetings ('Bonjour', 'Cher', ...) are stop words: never a name.
+- A BIC stays a suggestion by default (bank identifier, kept readable in Dossier 01 / 02 / 08 by design).
 - A word cut across two lines ('JACQUEM' / 'IN LUCAS') is joined in the page text (`pii._cut_words`, used by
   `words_to_text`) only when the joined word (6 letters or more, letters only) is written whole elsewhere on the same page
   ('JACQUEMIN LUCAS'). Without that evidence the lines stay apart. Tests: `split_word_tests`. A real
@@ -446,6 +481,11 @@ Order must never change a result (`order_tests`): a value written with several s
   The fake keeps the length of the original: a long name ('BOULOGNE-BILLANCOURT') gets towns of the list joined by a hyphen
   (`fake._compound`, 'MONTAUBAN-CHAMBERY'), since a short town leaves a gap before what follows on the line (the same width
   in a digital text and in a scan: `town_size_tests`).
+- One postcode, one fake: a postcode written alone ('(91000)' after a street) takes the digits of the fake of the
+  '91000 EVRY' / 'EVRY (91000)' values (`engine._same_postcode`). A four-digit number from 1900 to 2100 is a year, never
+  a postcode (`pii._is_year`: '1987 Paris', '(2024)'). A town written alone that is a part of a hyphenated town of the
+  documents ('BILLANCOURT' of 'BOULOGNE-BILLANCOURT') gets the matching piece of that town's fake (the last part the last
+  piece, `Faker.town_parts`, `engine._town_parts`), with the compound's postcode. Test: `postcode_consistency_tests`.
 - Names: FR/BE/NL lists by length and **gender** (`gender_of`: lists, then the title, then French endings; the
   `Sexe` field wins on ID documents). Keys without case / accents (`_pkey`: `Élodie` = `elodie`, used in e-mails).
   `Faker.names` memory keeps consistency: initials follow the replaced first name (`initial`, preferring first names
@@ -724,6 +764,110 @@ Order must never change a result (`order_tests`): a value written with several s
   also bit for bit). 33 s -> 23.5 s. A value that ends under a black box or in the MRZ gets no look measured
   (`page_looks(covered=)`, scan pages and pictures). Left: the face detector windows (~1.6 s a page at 300 dpi, the
   model's cost), the probe renderings (`_rendered`, PIL text drawing of every word in ~46 faces), page quality fit.
+- Stage timers (`anonymizer/timing.py`): `with timing.stage("fonts"):` adds the time of a block to a stage, EXCLUSIVE
+  (a stage opened inside another pauses the outer one, so the stages add up to the wall time; 'other' is what no stage
+  covers). One collector per file in `run_anonymize` (`entry['stages']` in the report, and the job log line 'done in
+  ...s (fonts 32.1s, faces 10.4s, ...)') and one per `scan_folder` (`stats['stages']`, a 'time by stage' log line).
+  Stages: render, ocr (the engine, cache hits included), ocr_check (OCR of the output pages), angles, mrz, faces,
+  codes, signatures, text (detection and matching, spaCy included), fonts (every `PageFonts` measure), paint, digital
+  (the edits of a digital page), save, check (verify), config (the aggregation at the end of a scan). A stage outside a
+  collector costs nothing. `tools/snapshot_results.py` leaves `stages` out of the compared reports.
+- Benchmark (`tools/bench.py run <out.json> [--repeat 2] [--doc NAME] [--code <root>]`, then `compare a.json b.json`):
+  Test 17 `contrat_assurance_scan` and `paragraphes_scan`, Test 01 `releve_banque_mosane` (digital and scan), Test 03
+  `passeport_scan`, Test 05 mixed files; each one alone in a temporary folder, a fixed scratch key (not the user's),
+  scan then anonymize in one process like the app, caches emptied before every run, the best of `--repeat` runs kept.
+  Per document and phase: wall time, CPU time, time by stage, the share of the machine other programs used, the peak
+  memory of the process. A number taken on a busy machine is good for proportions only: run it when nothing else heavy
+  runs. `--code` benchmarks an exported commit.
+- Memos (`anonymizer/memo.py`, all in memory, bounded, emptied by `memo.clear_all()`, never written next to the
+  documents): what is measured on a page is a function of its pixels (and of its OCR words), so it is remembered by
+  them and the next job on the same page reads it back: the faces (`faces.find_faces`) and the codes
+  (`regions.find_codes`) found on an image, the slant of the words (`scanpaint.word_angles`), and the whole `PageFonts`
+  of a page (`scanpaint.page_fonts`: key = sha1 of the grey page, of the words, the native scale, the skipped words; the
+  scores of its words, its quality fit, its bold scores, its colours: `_page_cols` is keyed by the pixels of the page
+  image). The scan of a folder (`_name_faces`) and the anonymization read the same `PageFonts`, and so does an
+  anonymization run again (a changed config, a box added). `PageFonts.advance` is keyed by the box and text of the word, not
+  by `id()` (a reused instance meets new dicts). A hit is never different from the computation (`memo_tests`).
+- Lean data: the probe renderings of `fontmatch._rendered_u8` are kept as 8-bit coverage (8 times smaller; the float
+  coverage is `u / 255.0` as before, and `(u / 255.0 * 255)` gives back `u` for the 256 values, so the resize reads `u`
+  itself); a candidate brought to a word's width is remembered (`_resized`, keyed by the identity of the rendering it
+  keeps alive); `blur` / `blur_stack` add their taps in place (`np.multiply(..., out=)`: the same products added in the
+  same order, bit for bit). The peak memory of the benchmark process was 5.8 GB before (the float renderings), see
+  tools/bench.py.
+- The names model is loaded once per app process (a background thread at start-up, `app.preload_ner`, and `NER_LOCK`);
+  the settings the browser sends again at every start no longer drop it (`save_settings` drops it only when the choice
+  of models changes).
+- Pages in parallel processes (`anonymizer/workers.py`): PyMuPDF is not thread-safe and the work holds the GIL, so the
+  pages of a document go to worker PROCESSES, one task per page, and the main process puts the results back in page order.
+  The tasks: `scan_page` (a scanned page from its file: render, OCR, faces / codes / signatures, fonts and quality,
+  paint -> the JPEG, the records, the extras, the log lines of the page), `read_scan` + `name_faces_page` (the scan of a
+  folder: OCR and grey image of each scanned page, then the fonts of the names per page), `read_page` (the OCR of the
+  output pages for the checks). Used by `engine._scan_pdf`, the scanned pages of `_digital` (a mixed file: the scans go
+  to the workers while the digital pages are done here, `_start_pages(beside=)`), `_scan_folder` (`_start_reads`,
+  `_name_faces`) and `verify.read_output`. Everything is assembled in page order (records, extras, trace, log lines), so
+  the output is byte for byte the one process gives: `_finish_page`, and `_name_faces` replays the one-process rule
+  (3 faces per name word over the pages, the first found) on the faces the workers measured.
+  Rules: a worker opens the PDF by path (an image file, a one-page document with nothing beside it, ANON_WORKERS=1:
+  done here); a config with '{n}' in a replacement is not split (`workers.splittable`: `pii.Numberer` numbers in page
+  order); a worker that dies or cannot start gives the page back to the main process (`Task.result()` is None); a
+  process that cannot have children (a daemonic worker of check_all) turns the pool off for its life (`_broken`). The
+  pool is created on first use, each worker in its own single-process executor (a slot), started together
+  (`workers.warm`). A page goes to the slot that did it last time (`workers._choose`: `_assigned`, else a pick from the
+  file name), unless that slot has more tasks waiting than the least busy one: then to the least busy. So the worker
+  that read a page in the scan usually also anonymizes it and keeps its OCR, fonts and faces in memory (the memos of
+  `memo.py`, per worker), and a folder of one-page files does not pile up on one slot.
+  `run_anonymize` gives the scanned pages of ALL the files of the run to the workers ahead (`engine._Feeder`: the next
+  files are prepared while fewer tasks are waiting than there are workers), so the files run beside each other, and the
+  checks of a file (output written, OCR, second check) happen while the workers already do the next ones. A lone
+  one-page file stays in this process (no reason to leave it).
+  `pool_size()` (fixed per configured value) leaves a core to the app and 800 MB per worker out of the free memory.
+  The initializer imports onnxruntime FIRST (importing it after the winrt OCR packages crashes the process on this PC,
+  a segfault), loads the face model and the font catalog; one thread per worker for numpy / onnxruntime
+  (`ANON_ORT_THREADS`). Each task carries the OCR engine chosen in the app (`workers._call`). Nothing is written to disk.
+  `entry['stages']` is the time of the main process (the stage 'wait' = blocked on a worker), `entry['worker_stages']`
+  the work of the workers added up (more than the wall time). `workers.clear_caches()` empties the workers' memos (the
+  benchmark starts cold). Pool start: ~1.5 s for 2 workers started together (once per app process).
+- Measured with tools/bench.py (best of 2, each run cold, seconds, scan + anonymize of each document alone; the machine
+  was shared with other programs, 40-70 % busy, so read the proportions): step 0 = the timers only (the reference),
+  step 1 = memos + lean data, step 2 = pages in parallel processes (6 workers on 4 cores / 8 threads).
+
+  | document                         | step 0 | step 1 | step 2 |
+  |----------------------------------|-------:|-------:|-------:|
+  | contrat_assurance_scan (3 pages) |   42.6 |   26.9 |   16.7 |
+  | paragraphes_scan (4 pages)       |   42.1 |   34.4 |   16.7 |
+  | releve_banque_mosane_scan (2)    |   54.8 |   42.8 |   27.9 |
+  | releve_banque_mosane (digital)   |    4.5 |    4.0 |    3.5 |
+  | passeport_scan (1 page)          |    8.9 |    8.3 |    7.9 |
+  | releve_scan_cherchable (3)       |   51.7 |   38.6 |   20.3 |
+  | releve_annexe_scannee (mixed)    |   17.1 |   13.1 |   14.5 |
+  | contrat_image_collee (mixed)     |    6.1 |    4.3 |    4.5 |
+  | total                            |  227.7 |  172.3 |  111.9 |
+
+  The whole sample corpus (`snapshot_results.py save`, 42 files, 68 pages, scan + anonymize): 599 s for the code before
+  the timers, 409 s after step 1, 249 s after step 2, IDENTICAL in configs, reports, output hashes, page pixels and text
+  layers each time. By stage, summed over the 8 documents (scan + anonymize): fonts 114 -> 78 s (step 1), faces 43 -> 40 s,
+  OCR of the output 10 -> 4 s, peak memory of the benchmark process 5.8 GB -> 1.9 GB (step 1) -> 1.0 GB (step 2, the
+  main process; each worker peaks near 0.5 GB). The first scan or anonymization of a run of the app also starts the
+  workers (about 1 s for 3 workers started together). A one-page scan is not split (the passport: 7.9 s, fonts 3.2 s and
+  face detection 2.0 s are the left).
+- Final state (face detection on threads, slot by load, files fed ahead; same method, 6 workers): contrat_assurance_scan
+  16.7 s, paragraphes_scan 15.0, releve_banque_mosane_scan 29.9, releve_banque_mosane (digital) 3.1, passeport_scan 7.7,
+  releve_scan_cherchable 22.7, releve_annexe_scannee 13.7, contrat_image_collee 5.0: total 113.8 s against 227.7 s for
+  step 0 (-50 %). A folder of 7 files (5 one-page scans, a digital invoice, a mixed statement): scan 13.0 -> 5.3 s,
+  anonymize 36.7 -> 18.6 s. Face detection: 300 dpi page 2.2 -> 1.5 s (PIL turns, no resize at full size, windows on
+  threads; the model's own run is only ~0.4 s, the page preparation was the rest).
+- Tried and NOT kept (accuracy gates of Dossier Test 17, `font_scan_tests`: family 47/48, written 47/48, output same
+  font 48/48, weights 48/48 / 233/234): (3a) comparing the words of a page with the families that explain its 20 longest
+  words only (K = 8, 12, 16 families, fallback to the whole catalog when a word's best score is 0.05 / 0 / -0.05 under
+  the sample's median): family 44-47/48 and output same font 42-47/48 - the calibration shows 54 % of the words falling
+  back at gap 0 and 4 % unflagged look-alike swaps; regular faces only: 45/48; no italics: 46/48. (3b) the mass
+  reference on the 20 quality-sample words instead of 40 (one raw scoring less): same accuracy but no measurable gain
+  (fonts 42.7 -> 40.0 s, within noise). (3c) not tried: the four readings of a page (`ocrpage.py`, `ALT_READINGS`) came in with the merge of
+  fix/coarse-scans-fonts after these measurements (they are a privacy measure; dropping one is a decision for the owner). (3d) face windows:
+  skipping blank windows (pixel std < 4: 18 % of the windows, no detection lost in 150 on the test pages, the weakest
+  detecting window has std 16) saves ~0.07 s a page, as the model run is not the cost; the overlap and the quarter
+  turns are kept (privacy first). Exact alternatives examined and dropped: `getmask2` for the probe renderings (same
+  pixels, twice slower), pre-pruning faces by predicted width (the far faces' scores need their exact widths).
 - Every speed-up keeps the results identical. Check it with `tools/snapshot_results.py`: `save` before and after a
   change (`--code <root>` runs an exported older commit), then `compare` prints IDENTICAL (configs, reports, output
   hashes without PyMuPDF's random document ID, page pixels, text layers) and the time of both runs. The random ID is
@@ -770,6 +914,12 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Towns and postcodes (`town_tests`): one fake town per name, the postcode belongs to the fake town, a Swiss postcode
   keeps its length. Detector tests: a BIC of any country after its label, an account with a slash, an address on two
   lines, a postcode that is not the street number.
+- Pages in parallel (`parallel_tests`, run by the main process of check_all: a pool worker is a daemon and may not start
+  workers; every other job runs with ANON_WORKERS=1): a searchable scan, a mixed file and a config with '{n}' give the same
+  config, output file (without the random ID) and report with ANON_WORKERS=1 and 3.
+- Memos and lean data (`memo_tests`): the blur with its taps added in place = the plain form, the 8-bit renderings =
+  the float ones, a remembered PageFonts / faces / codes = a fresh computation, `clear_all`, the names model kept when the
+  same settings are sent again.
 - Secret key and fake values: key creation / reuse / corrupt file, determinism, gender, initials, e-mails, OCR
   misreadings, never the original without accents, a wrong key does not single out the true name.
 - Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements,

@@ -21,7 +21,7 @@ import re
 import numpy as np
 from PIL import Image
 
-from . import morph
+from . import memo as _memo, morph
 from .fields import lines_of
 from .ocr import DIGITAL_DPI
 
@@ -245,6 +245,7 @@ def _code_structure(region: np.ndarray) -> bool:
     return sum(corners) >= 2 or datamatrix
 
 
+@_memo.by_image("codes")
 def find_codes(img: Image.Image, dpi: int) -> list[tuple]:
     """Boxes (image pixels) of QR codes / 2D barcodes (Data Matrix, the French '2D-Doc' seal...): a square of
     small black and white modules - dense, high contrast and full of transitions, unlike text, photos or logos."""

@@ -3,7 +3,7 @@
 const $ = (s) => document.querySelector(s);
 const state = {
   tree: null, nodes: {}, folder: null, file: null,
-  open: new Set([""]), dirty: false, running: false, hasConfig: false, report: null, status: null,
+  open: new Set([""]), dirty: false, running: false, runKeepsConfig: false, hasConfig: false, report: null, status: null,
 };
 
 // ---------- helpers ----------
@@ -55,6 +55,8 @@ function syncAppMenu() {
   $("#appAutoZoom").checked = !!state.app.autoZoom;
   $("#appQuality").value = state.app.qualityOffset || 0;
   $("#appQualityVal").textContent = qualityLabel(state.app.qualityOffset || 0);
+  $("#appQualityFloor").value = state.app.qualityFloor;
+  $("#appQualityFloorVal").textContent = floorLabel(state.app.qualityFloor);
   renderEngineChoices();
 }
 
@@ -122,6 +124,15 @@ $("#appQuality").ondblclick = (e) => {
   $("#appQualityVal").textContent = qualityLabel(0);
   saveApp();
 };
+// the lowest quality the fake text may get: the slider above never goes below it (-1 = no limit)
+function floorLabel(v) { return v <= -1 ? "no limit" : v.toFixed(2); }
+$("#appQualityFloor").oninput = (e) => {
+  state.app.qualityFloor = Math.round(+e.target.value * 100) / 100;
+  $("#appQualityFloorVal").textContent = floorLabel(state.app.qualityFloor);
+  saveApp();
+};
+// the quality sent with a run: the slider, not below the limit
+function sentQuality() { return Math.max(state.app.qualityOffset || 0, state.app.qualityFloor ?? -1); }
 $("#appOcrEngine").onchange = async (e) => {
   state.app.ocrEngine = e.target.value;
   saveApp();
@@ -168,6 +179,12 @@ function unfoldAbove(path) {
   path.split("/").forEach((_, i, parts) => state.open.add(parts.slice(0, i + 1).join("/")));
 }
 
+const DOT_TITLE = {
+  red: "An error, or an original value still readable in the output: see the Recap",
+  orange: "Warning or value to check from the last anonymization: see the Recap",
+  yellow: "Config changed since the last anonymization: anonymize again",
+  green: "Reviewed by hand",
+};
 function renderTree() {
   const box = $("#tree");
   box.innerHTML = "";
@@ -199,11 +216,14 @@ function renderNode(node, parent, depth) {
     parent.appendChild(row);
     if (open) node.children.forEach((c) => renderNode(c, parent, depth + 1));
   } else {
+    if (node.anonymized) return;                       // the anonymized output has no row: its original is the row
     const row = document.createElement("div");
-    row.className = "row" + (node.anonymized ? " anon" : "") + (pairSelected(node) ? " selected" : "");
+    row.className = "row" + (pairSelected(node) ? " selected" : "");
     row.style.paddingLeft = 6 + depth * 10 + 12 + "px";
-    row.innerHTML = `<span>${node.anonymized ? "🔒" : "📄"}</span><span class="name" title="${esc(node.name)}">${esc(node.name)}</span>` +
-      (node.reviewed ? `<span class="rev-mark" title="anonymized file reviewed by hand">✓</span>` : "");
+    // [dot] [file / lock] [name]: the lock = an anonymized file exists
+    row.innerHTML = `<span class="dot ${node.status || ""}" title="${esc(DOT_TITLE[node.status] || "")}"></span>` +
+      `<span class="fico" title="${node.anon ? "anonymized file generated" : "not anonymized yet"}">${node.anon ? "🔒" : "📄"}</span>` +
+      `<span class="name" title="${esc(node.name)}">${esc(node.name)}</span>`;
     row.onclick = () => openFile(node.path);
     parent.appendChild(row);
   }
@@ -224,11 +244,11 @@ let pageObserver = null;
 // black boxes (state, see the section below)
 const boxes = { tool: false, textTool: false, selKey: null, drag: null, preview: null };
 const BOXES_OPEN_KEY = "anonymizePDF.boxesOpen";
-// black boxes changed and not applied yet (Apply button), per folder and file: { removed: [{page, kind, box}] } = the
+// black boxes changed and not applied yet, per folder and file: { removed: [{page, kind, box}] } = the
 // automatic boxes the user removed, sent with the next run and never written to the config
 const pendingBoxes = new Map();
 // the history of the black boxes and typed texts (Undo / Redo): one snapshot of a file's boxes before each change.
-// `epoch` counts the Apply runs: an undo back to a state that was not pending is only clean if no Apply came since.
+// `epoch` counts the runs that regenerate a file: an undo back to a state that was not pending is only clean if no run came since.
 const undo = { stack: [], redo: [], epoch: 0 };
 const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 // Scroll positions the program set itself, per pane. The scroll event they trigger is ignored, so syncing
@@ -313,6 +333,7 @@ async function setViewer(which, path) {
   v.pages = [];
   v.stamp = Date.now();
   v.list.innerHTML = "";
+  if (which === "orig") resetTermSearch();
   v.box.scrollTop = 0;
   v.box.scrollLeft = 0;
   name.textContent = path ? baseName(path) : "";
@@ -801,6 +822,14 @@ function redrawTermFrame() {
   if (termSel.i >= 0 && termSel.hits[termSel.i]) drawTermFrame(termSel.hits[termSel.i]);
 }
 
+// the blue frame belongs to the original it was found in: a new original (or folder) forgets the search
+function resetTermSearch() {
+  termSel.key = null;
+  termSel.hits = [];
+  termSel.i = -1;
+  viewers.orig.list.querySelectorAll(".tlbox").forEach((n) => n.remove());
+}
+
 function drawTermFrame(h) {
   viewers.orig.list.querySelectorAll(".tlbox").forEach((n) => n.remove());
   const pageEl = viewers.orig.list.children[h.page - 1];
@@ -841,7 +870,7 @@ function boxEntries() {
   if (!name || !state.model || !state.model.manual) return [];
   const man = state.model.manual, out = [];
   man.blackouts.forEach((b, i) => {
-    if (b.file !== name) return;
+    if (b.file !== name || b.removed) return;                 // a removed automatic box is listed apart (removedBoxes)
     out.push({ key: "m|" + i, type: "manual", idx: i, page: b.page, box: b.box,
       kind: b.origin || "manual",
       label: b.origin ? `${BOX_KIND_LABEL[b.origin] || b.origin} · edited` : BOX_KIND_LABEL.manual });
@@ -862,6 +891,14 @@ function boxEntries() {
   return out;
 }
 
+// the automatic boxes removed by hand on the selected file: kept in the config (manual_blackouts, removed: true), they
+// stay out of every anonymization until they are restored
+function removedBoxes() {
+  const name = currentFileName(), man = state.model && state.model.manual;
+  if (!name || !man) return [];
+  return man.blackouts.map((b, idx) => ({ b, idx })).filter((x) => x.b.file === name && x.b.removed);
+}
+
 function drawBoxes() {
   const v = viewers.anon;
   const k = pageScale();
@@ -878,7 +915,7 @@ function drawBoxes() {
         width: (h.box[2] - h.box[0]) * k + "px", height: (h.box[3] - h.box[1]) * k + "px" });
       el.appendChild(d);
     });
-    entries.filter((e) => e.page === i + 1 && (e.type !== "text" || boxes.textTool)).forEach((e) => {
+    entries.filter((e) => e.page === i + 1).forEach((e) => {          // the typed texts show with or without the Text tool
       const bx = boxes.preview && boxes.preview.key === e.key ? boxes.preview.box : e.box;
       const d = document.createElement("div");
       const resizing = boxes.drag && boxes.drag.ent && boxes.drag.ent.key === e.key && boxes.drag.mode !== "move";
@@ -928,8 +965,14 @@ function boxListInner() {
   const name = currentFileName();
   if (!name) return `<div class="muted small">Select a file to see its black boxes.</div>`;
   const entries = boxEntries();
+  const gone = removedBoxes();
+  const removedHtml = !gone.length ? "" : `<div class="muted small" style="margin-top:6px">Removed automatic boxes: they stay removed on every anonymization (↺ puts one back).</div>`
+    + gone.map(({ b, idx }) => `<div class="brow removedbox" title="Removed by hand">
+      <span class="btag k-${BOX_KIND_CLASS[b.origin] || "hand"}">${esc((BOX_KIND_LABEL[b.origin] || b.origin) + " · removed")}</span>
+      <span class="bname">p.${b.page} · ${Math.round(b.box[2] - b.box[0])}×${Math.round(b.box[3] - b.box[1])} pt</span>
+      <button class="mdel" data-brestore="${idx}" title="Put this automatic box back">↺</button></div>`).join("");
   if (!entries.length) {
-    return `<div class="muted small">No black box on ${esc(name)}.</div>`;
+    return `<div class="muted small">No black box on ${esc(name)}.</div>` + removedHtml;
   }
   return entries.filter((e) => e.type !== "text").map((e) => {
     const w = Math.round(e.box[2] - e.box[0]), h = Math.round(e.box[3] - e.box[1]);
@@ -937,7 +980,7 @@ function boxListInner() {
       <span class="btag k-${BOX_KIND_CLASS[e.kind] || "hand"}">${esc(e.label)}</span>
       <span class="bname">p.${e.page} · ${w}×${h} pt</span>
       <button class="mdel" data-bdel="${esc(e.key)}" title="Remove this black box">✕</button></div>`;
-  }).join("");
+  }).join("") + removedHtml;
 }
 
 function boxPanelHtml() {
@@ -994,6 +1037,14 @@ function selectBox(key) {
   drawBoxes();
 }
 
+// a row of the black boxes or of the typed texts: select its box and centre the anonymized pane on it, as a click
+// on a replaced value centres the original (locateTerm)
+function focusBox(key) {
+  const e = boxEntries().find((x) => x.key === key);
+  selectBox(key);
+  if (e) centerOn("anon", e);
+}
+
 function setBoxTool(on) {
   boxes.tool = on;
   if (on) boxes.textTool = false;
@@ -1013,7 +1064,7 @@ function pagePoint(pageEl, e) {
   return [(e.clientX - r.left) / k, (e.clientY - r.top) / k];
 }
 
-// ---------- changes not applied yet (Apply) ----------
+// ---------- changes not applied yet ----------
 const pendKey = (name) => state.folder + "\u0001" + name;
 function pendingEntry(name) {
   if (!pendingBoxes.has(pendKey(name))) pendingBoxes.set(pendKey(name), { removed: [] });
@@ -1099,7 +1150,7 @@ async function saveBoxes(message) {
   renderTable();
   if (ok) {
     pendingEntry(currentFileName());
-    setStatus(message + " · press Apply to update the anonymized file", "ok");
+    setStatus(message + " · press Anonymize file to update it", "ok");
   }
   drawBoxes();
   updateToolbar();
@@ -1118,11 +1169,18 @@ function deleteBox(key) {
     state.model.manual.blackouts.splice(e.idx, 1);
     return saveBoxes("Black box removed");
   }
-  // an automatic box: left out of the next run only, the next anonymization detects it again
-  pendingEntry(currentFileName()).removed.push({ page: e.page, kind: e.kind, box: e.box.map((v) => Math.round(v * 10) / 10) });
-  drawBoxes();
-  updateToolbar();
-  setStatus("Automatic black box removed · press Apply to update the anonymized file", "ok");
+  // an automatic box: written to the config as removed, so it stays removed on every anonymization (↺ restores it)
+  const box = e.box.map((v) => Math.round(v * 10) / 10);
+  state.model.manual.blackouts.push({ file: currentFileName(), page: e.page, box, origin: e.kind, replaces: [...box], removed: true });
+  return saveBoxes("Automatic black box removed (it stays removed)");
+}
+
+function restoreBox(idx) {
+  const b = state.model.manual.blackouts[idx];
+  if (!b || !b.removed) return;
+  rememberBoxes();
+  state.model.manual.blackouts.splice(idx, 1);
+  return saveBoxes("Automatic black box put back");
 }
 
 $("#btnText").onclick = async () => {
@@ -1209,36 +1267,6 @@ $("#btnBox").onclick = async () => {
   setBoxTool(!boxes.tool);
 };
 
-// Apply: the anonymized file is regenerated with the black boxes as they are now (the automatic boxes removed since
-// the last run are left out of this run only)
-async function applyBoxes() {
-  const cur = currentOriginalNode();
-  if (!cur || !state.hasConfig || state.running || !isPending(cur.name)) return;
-  if (state.dirty && !(await saveConfig())) return;
-  const box = viewers.anon.box;
-  const scroll = { x: box.scrollLeft, y: box.scrollTop };
-  const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      quality_offset: state.app.qualityOffset || 0 },
-    "Apply black boxes · " + cur.name, { quiet: true });
-  await loadTree();
-  await loadReport();
-  await reloadConfigIfSuggested();
-  updateReviewButton();
-  if (r && r.status === "done") {
-    clearPending(cur.name);
-    const now = currentOriginalNode();
-    if (now && now.anon) {                                   // show the new file, at the same place
-      await setViewer("anon", now.anon);
-      viewers.anon.box.scrollLeft = scroll.x;
-      viewers.anon.box.scrollTop = scroll.y;
-    }
-    setStatus("Black boxes applied to " + cur.name, "ok");
-  }
-  drawBoxes();
-  updateToolbar();
-}
-$("#btnApply").onclick = applyBoxes;
 $("#btnUndo").onclick = undoBoxes;
 $("#btnRedo").onclick = redoBoxes;
 
@@ -1251,6 +1279,7 @@ viewers.anon.list.addEventListener("pointerdown", (e) => {
   const handle = e.target.closest(".bhandle"), box = e.target.closest(".bbox");
   const page = +pageEl.dataset.page;
   if (e.target.closest(".btextinput")) return;                 // typing in a new text box: no pan, no new box
+  if (box && box.classList.contains("text") && !boxes.textTool) return;   // shown, not editable: the view pans (dblclick edits)
   if (box || boxes.tool || boxes.textTool) {
     e.preventDefault();
     e.stopPropagation();                                        // no pan while a box is drawn or edited
@@ -1485,6 +1514,7 @@ async function saveConfig() {
     setDirty(false);
     msg.className = "muted small";
     msg.textContent = "Saved " + new Date().toLocaleTimeString();
+    loadTree().catch(() => {});                                // the dots: a saved config is newer than the outputs
     return true;
   } catch (e) {
     msg.className = "err small";
@@ -1527,7 +1557,7 @@ state.model = null;
 state.ocrVerify = (() => { try { return localStorage.getItem(OCR_KEY) === "1"; } catch (e) { return false; } })();
 // app settings (the menu ⚙ in the header): kept in this browser
 const APP_KEY = "anonymizePDF.app";
-const APP_DEFAULT = { popup: true, popupSeconds: 3, changesWidth: 2, autoZoom: false, qualityOffset: 0 };
+const APP_DEFAULT = { popup: true, popupSeconds: 3, changesWidth: 2, autoZoom: false, qualityOffset: 0, qualityFloor: -0.5 };
 state.app = (() => { try { return { ...APP_DEFAULT, ...JSON.parse(localStorage.getItem(APP_KEY) || "{}") }; } catch (e) { return { ...APP_DEFAULT }; } })();
 function saveApp() { try { localStorage.setItem(APP_KEY, JSON.stringify(state.app)); } catch (e) { /* no storage */ } }
 function applyAppSettings() {
@@ -1671,8 +1701,7 @@ $("#cfgTable").addEventListener("change", (ev) => {
   }
   if (t.classList.contains("echk")) {
     const i = +t.closest(".erow").dataset.i;
-    markOrig(m.entries[i]);
-    m.entries[i].active = t.checked;
+    setActiveWithParts(m, m.entries[i], t.checked);
     tableChanged();
     return renderTable();
   }
@@ -1697,11 +1726,24 @@ $("#cfgTable").addEventListener("input", (ev) => {
     refreshRowFlag(t.closest(".erow"));
   }
 });
+// ticking or unticking a value does the same to the parts the scan made from it (their info says "part of 'value'"), and to
+// the parts of those parts: "D'un office notaire" unticked takes "d'un", "office notaire", "office", "notaire" with it
+function setActiveWithParts(m, entry, on, seen = new Set()) {
+  if (seen.has(entry)) return;
+  seen.add(entry);
+  markOrig(entry);
+  entry.active = on;
+  const tag = `part of '${entry.find}'`;
+  m.entries.forEach((e) => {
+    if (!e.removed && (e.info || "").includes(tag)) setActiveWithParts(m, e, on, seen);
+  });
+}
 $("#cfgTable").addEventListener("click", (ev) => {
   const t = ev.target;
   if (t.dataset && t.dataset.bdel) { ev.stopPropagation(); return deleteBox(t.dataset.bdel); }
+  if (t.dataset && t.dataset.brestore) { ev.stopPropagation(); return restoreBox(+t.dataset.brestore); }
   const row = t.closest && t.closest(".brow");
-  if (row) { selectBox(row.dataset.bkey); return; }
+  if (row) { focusBox(row.dataset.bkey); return; }
   if (t.classList.contains("gchk")) { ev.stopPropagation(); return; }    // do not fold the group
   if (t.classList.contains("edel")) {                         // removed by hand: flagged, kept out of the next scan
     const e = state.model.entries[+t.closest(".erow").dataset.i];
@@ -1750,7 +1792,17 @@ $("#cfgTable").addEventListener("toggle", (ev) => {
     if (d.open) state.openGroups.add(d.dataset.type); else state.openGroups.delete(d.dataset.type);
   }
 }, true);
-$("#cfgSearch").addEventListener("input", renderTable);
+function syncSearchClear() { $("#cfgSearchClear").hidden = !$("#cfgSearch").value; }
+$("#cfgSearch").addEventListener("input", () => { syncSearchClear(); renderTable(); });
+$("#cfgSearchClear").addEventListener("click", () => {
+  $("#cfgSearch").value = "";
+  syncSearchClear();
+  renderTable();
+  $("#cfgSearch").focus();
+});
+$("#cfgSearch").addEventListener("keydown", e => {
+  if (e.key === "Escape" && $("#cfgSearch").value) { e.preventDefault(); $("#cfgSearchClear").click(); }
+});
 
 function openTypes() {
   return new Set([...document.querySelectorAll("#cfgTable details.grp[open]")].map((d) => d.dataset.type));
@@ -1761,7 +1813,7 @@ function showConfigView() {
   const table = state.cfgView === "table";
   document.querySelectorAll(".cfgbar .seg button").forEach((b) => b.classList.toggle("on", b.dataset.view === state.cfgView));
   $("#cfgTable").hidden = !table;
-  $("#cfgSearch").hidden = !table;
+  $("#cfgSearch").parentElement.hidden = !table;
   $("#configText").hidden = table;
 }
 
@@ -1806,14 +1858,13 @@ function updateToolbar() {
     : "Scan this folder, then anonymize it right away, without reviewing the new config in between";
   $("#btnBoth").disabled = state.running || (!n && !batch);
   $("#btnScan").disabled = state.running || (!n && !batch);
-  $("#btnSave").disabled = state.running || !state.hasConfig || !state.dirty;
+  const scanning = state.running && !state.runKeepsConfig;    // a scan rewrites the config when it ends: no save meanwhile
+  $("#btnSave").disabled = scanning || !state.hasConfig || !state.dirty;
   $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
   const cur = currentOriginalNode();                          // either file of the pair works
   $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur;
   const pending = !!cur && isPending(cur.name);
   $("#btnRunFile").classList.toggle("save-needed", pending);
-  $("#btnApply").disabled = state.running || !cur || !state.hasConfig || !pending;
-  $("#btnApply").classList.toggle("save-needed", pending);
   const changes = changedBoxes();
   const nChanges = changes.replaced.length + changes.removed.length;
   btnChanges.disabled = !nChanges;
@@ -1869,6 +1920,7 @@ async function runJob(kind, url, body, label, opts = {}) {
   let started;
   try { started = await post(url, body); } catch (e) { alert(e.message); return null; }
   state.running = true;
+  state.runKeepsConfig = kind === "anonymize" || !!opts.keepsConfig;   // a scan writes the config when it ends
   updateToolbar();
   setStatus(label + "…", "busy");
   showProgress({ done: 0, total: 0 });
@@ -1886,6 +1938,7 @@ async function runJob(kind, url, body, label, opts = {}) {
     if (j.status !== "running") { last = j; break; }
   }
   state.running = false;
+  state.runKeepsConfig = false;
   if (last) showProgress(last.progress);
   if (last && last.status === "done") setStatus(label + ": done", "ok");
   else setStatus(label + ": failed", "err");
@@ -1912,11 +1965,17 @@ $("#btnScan").onclick = async () => {
 };
 
 // anonymize every file of the working folder (the config is saved first when it has edits)
+// the originals of the working folder whose black boxes / typed texts / removed boxes are not applied yet
+function folderPendingFiles() {
+  const node = state.folder !== null ? state.nodes[state.folder] : null;
+  return node ? (node.children || []).filter((c) => c.type === "file" && !c.anonymized && isPending(c.name)).map((c) => c.name) : [];
+}
+
 async function anonymizeFolder() {
   if (state.dirty && !(await saveConfig())) return null;
   const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      quality_offset: state.app.qualityOffset || 0 }, "Anonymize");
+    { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(), include: folderPendingFiles(),
+      quality_offset: sentQuality() }, "Anonymize");
   await loadTree();
   await loadReport();
   await reloadConfigIfSuggested();
@@ -1952,7 +2011,7 @@ $("#btnRunFile").onclick = async () => {
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("anonymize", "/api/anonymize",
     { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      quality_offset: state.app.qualityOffset || 0 }, "Anonymize file");
+      quality_offset: sentQuality() }, "Anonymize file");
   await loadTree();
   await loadReport();
   await reloadConfigIfSuggested();
@@ -2023,9 +2082,9 @@ async function runBatch(action) {
   if (action === "scan_anonymize" && !confirm("Scan every client folder below and anonymize it right away, folder by folder, without reviewing the new configs? Your edits are kept, reviewed files are left alone.")) return;
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify,
-    quality_offset: state.app.qualityOffset || 0 },
+    quality_offset: sentQuality() },
     { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize",
-      scan_anonymize: "Batch scan & anonymize" }[action]);
+      scan_anonymize: "Batch scan & anonymize" }[action], { keepsConfig: action === "anonymize" });
   if (r && r.status === "done" && action !== "scan") pendingBoxes.clear();      // every file of the batch is regenerated
   await loadTree();
   await loadConfig();

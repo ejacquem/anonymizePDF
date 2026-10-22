@@ -55,11 +55,11 @@ def _iban_ok(s: str) -> bool:
 
 
 def _v_iban(m):
-    tokens = m.group().split(" ")
+    tokens = [t.group() for t in re.finditer(r"\S+", m.group())]
+    ends = [t.end() for t in re.finditer(r"\S+", m.group())]
     for k in range(len(tokens), 0, -1):  # drop trailing groups until checksum is valid
-        cand = " ".join(tokens[:k])
-        if _iban_ok(cand):
-            return m.start(), m.start() + len(cand)
+        if _iban_ok(" ".join(tokens[:k])):
+            return m.start(), m.start() + ends[k - 1]
     return None
 
 
@@ -89,6 +89,11 @@ def _sepa_creditor_ok(s: str) -> bool:
 
 def _v_sepa_creditor(m):
     return (m.start(), m.end()) if _sepa_creditor_ok(m.group()) else None
+
+
+def _v_sepa_zzz(m):
+    """'XX kk ZZZ ...' with a digit after the business code: a SEPA creditor identifier as the OCR reads it."""
+    return (m.start(), m.end()) if re.search(r"\d", m.group()) else None
 
 
 def _luhn_ok(digits: str) -> bool:
@@ -259,7 +264,14 @@ def _v_vat_group(m):
     return m.start(1), m.end(1)
 
 
+def _is_year(code: str) -> bool:
+    """A four-digit number from 1900 to 2100 is a year, never a postcode ('1987 Paris', '(2024)')."""
+    return len(code) == 4 and code.isdigit() and 1900 <= int(code) <= 2100
+
+
 def _v_postal(m):
+    if _is_year(re.search(r"\d+", m.group()).group()):
+        return None
     city = re.sub(r"^\S+\s+", "", m.group()).split()[0].casefold()
     return None if city in _CITY_STOPLIST or city in _US_ADDRESS_WORDS else (m.start(), m.end())
 
@@ -285,7 +297,7 @@ def _v_town_code(m):
     town. The words before it (a label, a street type, an operation word) are left out; the town must not be a word
     of the documents' labels."""
     code = re.search(r"\((?:[A-Z]{1,2}-)?(\d+)\)", m.group()).group(1)
-    if len(code) == 4 and 1900 <= int(code) <= 2099:          # a year in brackets ('Mutation (2024)'), not a postcode
+    if _is_year(code):                                         # a year in brackets ('Mutation (2024)'), not a postcode
         return None
     # the words of a street before the town ('RUE DES LILAS (75020)': the street is the address, its code is the code)
     if _STREET_BEFORE_TOWN.search(m.string[:m.start(1)].rsplit("\n", 1)[-1]):
@@ -355,9 +367,10 @@ _ROLE = (r"titulaire|cotitulaire|co-titulaire|b[ée]n[ée]ficiaire|mandataire|ma
 _NOT_NAME = r"nous|vous|il|elle|ils|elles|le|la|les|un|une|ce|cet|cette|ces|pour|par|dans|sur|avec|sans|est|sont|ont|aura|doit"
 
 DETECTORS = [
-    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban),
+    # the groups may be spaced widely ('FR76  3000  6000 ...': a layout with gaps between the groups)
+    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?:[ \t]{0,3}[A-Z0-9]{4}){2,7}(?:[ \t]{0,3}[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban),
     # the same shape, the checksum not required ('BE 70 0016 9028 4173' read with a space after the country, a garbled digit)
-    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2} ?\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban_shape),
+    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2} ?\d{2}(?:[ 	]{0,3}[A-Z0-9]{4}){2,7}(?:[ 	]{0,3}[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban_shape),
     ("CREDIT_CARD", re.compile(r"(?<!\d)(?:\d[ \-]?){13,19}(?!\d)"), _v_card),
     # masked card number: '6703 **** **** 4471', '4975 XXXX XXXX 1234', 'Carte x4412'
     # the mask may be any run of stars or X ('495321XXXXXX7425' is a card as well as '6703 **** 4471')
@@ -374,6 +387,10 @@ DETECTORS = [
     # SEPA creditor identifier (direct debit): 'BE79ZZZ0404484654', 'FR12ZZZ123456'
     ("SEPA_CREDITOR_ID", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28}(?![A-Za-z0-9])"),
      _v_sepa_creditor),
+    # the business code ZZZ marks a creditor identifier ('FR16ZZZ001001M1200015436665'). The OCR may split it ('FRI 6ZZZ001001
+    # Ml 200015436665') and its check digits may not add up, so the shape is enough here (privacy first)
+    ("SEPA_CREDITOR_ID", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}(?:[ \t]?[0-9IlO]){2}[ \t]?ZZZ(?:[ \t]?[0-9A-Za-z]){6,30}(?![A-Za-z0-9])"),
+     _v_sepa_zzz),
     ("SEPA_CREDITOR_ID", re.compile(r"(?i:identifiant(?:\s+(?:du\s+)?cr[ée]ancier)?|identifiant\s+sepa|\bics\b|\bid\.?\s*cr[ée]ancier|"
                                     r"creditor\s+id(?:entifier)?|schuldeiser(?:s)?-?id(?:entificatie)?)\s*[:\-]?\s*"
                                     r"([A-Z]{2}\d{2}[A-Z0-9]{3}[A-Z0-9]{5,28})(?![A-Za-z0-9])"), _v_group1),
@@ -397,7 +414,7 @@ DETECTORS = [
     # the same after an OCR that lost the '+': '32 81 22 40 17' (the country code of Belgium, France, the Netherlands, and
     # the groups in twos)
     ("PHONE", re.compile(r"(?<![\w+.,/\-])(?:32|33|31)[ ]\d{1,2}(?:[ ]\d{2}){3,4}(?![\d.,/\-])"), _v_phone),
-    ("PHONE", re.compile(r"(?<![\w+])0[1-9]\d{0,2}(?:[ .\-/]?\d{2,3}){2,4}(?!\d)"), _v_phone),
+    ("PHONE", re.compile(r"(?<![\w+])0[1-9]\d{0,2}(?:[ .\-/]{0,3}\d{2,3}){2,4}(?!\d)"), _v_phone),
     # a North American number: '1 202 111-2222', '(202) 111-2222', '202.111.2222'
     ("PHONE", re.compile(r"(?<![\w+])(?:1[ .\-])?\(?\d{3}\)?[ .\-]\d{3}[ .\-]\d{4}(?!\d)"), None),
     # Street addresses (heuristic): "Kerkstraat 12", "Grote Markt 5", "Rue de la Loi 16"

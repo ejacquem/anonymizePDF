@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from . import configmodel, faces, fields, ocr, quality, regions, render, verify
+from . import configmodel, faces, fields, ocr, quality, regions, render, timing, verify, workers
 from .fake import Faker, _norm as fake_norm, _pkey, is_town_name
 from .ocr import DIGITAL_DPI, render_page
 from .ocrpage import page_words
@@ -49,6 +49,7 @@ SPLIT_TYPES = {"ACCOUNT_NUMBER": 5, "BANK_CODE": 5, "CARD_NUMBER": 4}
 TYPE_ORDER = ["PERSON"] + ACTIVE_TYPES + ["DATE", "ORG", "LOCATION"]
 
 _STOP = set("""
+bonjour bonsoir salut cher chère chers chères hello dear hallo goedendag beste hoi
 janvier février fevrier mars avril mai juin juillet août aout septembre octobre novembre décembre
 january february march april may june july august september october november december jan feb apr jun jul aug sep sept oct nov dec
 bill payment payments interest interests capital income amount amounts rate rates gross net account accounts maturity
@@ -84,6 +85,23 @@ _CONNECTORS = {"de", "la", "le", "les", "des", "du", "et", "a", "à", "au", "aux
 _NAME_CONNECTORS = {"and", "et", "und", "y", "&", "of", "de", "la", "le", "du", "des", "van", "von", "der", "den"}
 
 
+def alike(a: str, b: str, cutoff: float) -> float | None:
+    """SequenceMatcher(None, a, b).ratio() when it is at least `cutoff`, else None. The cheap upper bounds of difflib
+    (length, then letters in common) rule most pairs out before the real ratio is computed: the same answer, much faster
+    (the scan compared every word of the documents with every stop word and every name word)."""
+    sm = SequenceMatcher(None, a, b)
+    if sm.real_quick_ratio() < cutoff or sm.quick_ratio() < cutoff:
+        return None
+    r = sm.ratio()
+    return r if r >= cutoff else None
+
+
+@functools.lru_cache(maxsize=8192)
+def _near_stop_word(key: str) -> bool:
+    """Is this word (a key without accents or case, 5 letters or more) one or two letters away from a stop word?"""
+    return any(len(s) >= 5 and abs(len(s) - len(key)) <= 2 and alike(key, s, 0.85) is not None for s in _STOP_KEYS)
+
+
 @functools.lru_cache(maxsize=8192)
 def _ocr_m(key: str) -> str:
     """The letter m as OCR misreads it on a scan ('Nlonsieur', 'rnadame', 'Niadame'), written back as an m."""
@@ -98,8 +116,7 @@ def is_label_word(token: str) -> bool:
         return False
     if key in _STOP_KEYS or _ocr_m(key) in _STOP_KEYS:
         return True
-    return len(key) >= 5 and any(len(s) >= 5 and abs(len(s) - len(key)) <= 2 and
-                                 SequenceMatcher(None, key, s).ratio() >= 0.85 for s in _STOP_KEYS)
+    return len(key) >= 5 and _near_stop_word(key)
 
 
 def trim_name_edges(value: str) -> str:
@@ -324,6 +341,8 @@ def parse_config(text: str) -> dict:
         if isinstance(item.get("replaces"), list) and len(item["replaces"]) == 4 and item.get("origin"):
             out["replaces"] = [float(v) for v in item["replaces"]]                    # a moved automatic box:
             out["origin"] = str(item["origin"])                                         # its kind and detected box
+            if item.get("removed") is True:
+                out["removed"] = True                       # removed by hand: not drawn at all, and not detected again
         manual_boxes.append(out)
     texts = []
     for i, item in enumerate(data.get("manual_texts") or [], start=1):
@@ -375,6 +394,7 @@ def parse_config(text: str) -> dict:
 # 1. scan a folder -> draft config
 # ---------------------------------------------------------------------------
 
+@timing.timed("text")
 def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict], ocr_page: bool, ner, file: str,
                   pno: int):
     """Detections of one set of words (a page's text layer, its OCR, or the OCR of its images) into `found`.
@@ -444,6 +464,17 @@ def _report(progress, done: int, total: int, name: str = ""):
 
 def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None,
                 progress=None) -> dict:
+    """Detect the personal data of every file of ONE folder -> {'config': YAML text, 'stats': {...}}; stats['stages']
+    is the time by stage (timing)."""
+    with timing.collecting() as tm:
+        res = _scan_folder(folder, rel, ner, default_ocr_lang, log, secret_key, progress)
+    res["stats"]["stages"] = tm.report()
+    log("   time by stage: " + timing.format_stages(res["stats"]["stages"]))
+    return res
+
+
+def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None,
+                 progress=None) -> dict:
     t0 = time.time()
     pdfs = list_sources(folder)
     if not pdfs:
@@ -455,10 +486,11 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     tokens: dict[str, int] = {}
     sequences: dict[str, dict] = {}
     seen_pages: list[dict] = []        # the scanned pages as read (grey image, words): the fonts of the names are measured on them
+    classified, reads = _start_reads(pdfs, default_ocr_lang) if can_ocr else ({}, {})   # scanned pages read by the workers
     for fi, pdf in enumerate(pdfs, start=1):
         _report(progress, fi - 1, len(pdfs), pdf.name)
         doc = open_source(pdf)
-        layouts = [page_layout(p) for p in doc]
+        layouts = classified.get(fi) or [page_layout(p) for p in doc]
         modes = sorted({page_mode_name(l) for l in layouts})
         log(f"[{fi}/{len(pdfs)}] {pdf.name}: {len(doc)} page(s), {', '.join(modes)}")
         for pno, (page, lay) in enumerate(zip(doc, layouts), start=1):
@@ -466,10 +498,10 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                 if not can_ocr:
                     log(f"   page {pno}: no visible text and no OCR engine available -> skipped")
                     continue
-                img = render_page(page, 300)
-                words = page_words(img, default_ocr_lang)
+                words, gray, scale = _read_scan_page(reads.get((fi, pno - 1)), page, default_ocr_lang)
                 log(f"   page {pno}: OCR ({len(words)} words)")
-                seen_pages.append({"gray": np.asarray(img.convert("L")), "words": words, "scale": native_scale(page, 300)})
+                seen_pages.append({"gray": gray, "words": words, "scale": scale,
+                                   "ref": (str(pdf), pno - 1) if (fi, pno - 1) in reads else None})
                 _detect_words(found, tokens, sequences, words, True, ner, pdf.name, pno)
                 if lay["words"]:                       # a scanner's invisible OCR layer: read it too
                     _detect_words(found, tokens, sequences, lay["words"], False, ner, pdf.name, pno)
@@ -479,10 +511,13 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
                 pimg, pw = _pixel_words(page, lay["visible"], default_ocr_lang)
                 if pw:
                     log(f"   page {pno}: OCR of the images ({len(pw)} words)")
-                    seen_pages.append({"gray": np.asarray(pimg.convert("L")), "words": pw, "scale": native_scale(page, 300)})
+                    with timing.stage("render"):
+                        seen_pages.append({"gray": np.asarray(pimg.convert("L")), "words": pw,
+                                           "scale": native_scale(page, 300)})
                     _detect_words(found, tokens, sequences, pw, True, ner, pdf.name, pno)
 
     _report(progress, len(pdfs), len(pdfs))
+    aggregate = timing.stage("config")
     for e in found.values():
         # one value, several spellings ('30002 / 05871', '30002/ 05871'): the one written most often is kept, ties by
         # alphabetical order, so that the order of the files does not change the config
@@ -493,6 +528,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     person_values = [e["value"] for e in found.values() if e["type"] == "PERSON"]
     faker.aliases = name_aliases(tokens, person_values)
     faker.truncations = name_truncations(person_values)
+    faker.town_parts = _town_parts(found)
     active: list[dict] = []
     off: list[dict] = []
     tokens_added: set[str] = set()
@@ -606,8 +642,9 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         key = _pkey(word)
         if key in known_words or norm_value(word) in tokens_added or not word[:1].isupper() or is_label_word(word):
             continue
-        ratio, best = max(((SequenceMatcher(None, key, k).ratio(), k) for k in known_words
-                           if abs(len(k) - len(key)) <= 2), default=(0.0, ""))
+        # (a word that is not alike at 0.85 never wins: only the ones that are alike are compared)
+        ratio, best = max(((r, k) for k in known_words if abs(len(k) - len(key)) <= 2
+                           for r in [alike(key, k, 0.85)] if r is not None), default=(0.0, ""))
         if ratio < 0.85:
             continue
         tokens_added.add(norm_value(word))
@@ -710,6 +747,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
         known.add(norm_value(code.group()))
         active.append({"type": "POSTAL_CITY", "value": code.group(), "count": f["count"], "files": f["files"],
                        "pages": f["pages"], "replace": fake.group(), "note": f"postcode of '{f['value']}'"})
+    _same_postcode(active)
     _align_contained_numbers(active)
     # a value already replaced (e.g. a name under a label) is not suggested again as an uncertain NER guess
     active_values = {norm_value(a["value"]) for a in active}
@@ -718,6 +756,7 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     old = folder / CONFIG_NAME                              # a new scan keeps the changes made by hand
     if old.exists():
         text = configmodel.keep_edits(text, old.read_text(encoding="utf-8"))
+    aggregate.done()
     stats = {"files": len(pdfs), "active": len(active), "inactive": len(off), "seconds": round(time.time() - t0, 1)}
     if faker.width_error:                  # the gain of the pick by width, on the name words written on scans
         before = sum(b for b, _ in faker.width_error) / len(faker.width_error)
@@ -730,23 +769,102 @@ def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_
     return {"config": text, "stats": stats}
 
 
+def _town_parts(found: dict) -> dict[str, tuple[str, int, int]]:
+    """The hyphenated towns of the documents ('BOULOGNE-BILLANCOURT') and the rank of each of their parts, so that a part
+    written alone ('BILLANCOURT') is replaced by the matching part of the compound's fake."""
+    out: dict[str, tuple[str, int, int]] = {}
+    compounds = sorted({t for f in found.values() if f["type"] in ("POSTAL_CITY", "BIRTH_PLACE")
+                        for t in [_town_of(f["type"], f["value"])] if t and "-" in t})
+    whole = {_pkey(t) for t in compounds}
+    for town in compounds:
+        parts = town.split("-")
+        for rank, part in enumerate(parts):
+            key = _pkey(part)
+            if len(key) >= 4 and key not in whole and key not in out:
+                out[key] = (town, rank, len(parts))
+    return out
+
+
+def _start_reads(pdfs: list[Path], ocr_lang: str) -> tuple[dict, dict]:
+    """Give the scanned pages of the PDF files of a folder to the workers (OCR, grey image): ({file index: layouts},
+    {(file index, page index): task}). No task when the pages are read here: one worker only, or fewer than two scanned
+    pages in the whole folder."""
+    if workers.configured_workers() <= 1:
+        return {}, {}
+    classified: dict[int, list] = {}
+    wanted = []
+    for fi, pdf in enumerate(pdfs, start=1):
+        if pdf.suffix.lower() != ".pdf":
+            continue
+        doc = open_source(pdf)
+        try:
+            classified[fi] = [page_layout(p) for p in doc]
+        finally:
+            doc.close()
+        wanted += [(fi, i) for i, lay in enumerate(classified[fi]) if lay["kind"] == "scan"]
+    if len(wanted) < 2:
+        return classified, {}                  # nothing to split: the layouts are kept, the pages are read here
+    workers.warm(len(wanted))
+    tasks = {(fi, i): workers.submit(str(pdfs[fi - 1]), i, workers.read_scan, str(pdfs[fi - 1]), i, ocr_lang)
+             for fi, i in wanted}
+    return classified, tasks
+
+
+def _read_scan_page(task, page, ocr_lang: str):
+    """(OCR words, grey image, native scale) of a scanned page: from its worker, else read here."""
+    got = None
+    if task is not None:
+        with timing.stage("wait"):
+            got = task.result()
+    if got is not None:
+        if timing.current() is not None:
+            timing.current().add_workers(got["stages"])
+        return got["words"], got["gray"], got["scale"]
+    with timing.stage("render"):
+        img = render_page(page, 300)
+    words = page_words(img, ocr_lang)
+    with timing.stage("render"):
+        return words, np.asarray(img.convert("L")), native_scale(page, 300)
+
+
 def _name_faces(pages: list[dict], keys: set[str], aliases: dict[str, str]) -> dict[str, list]:
     """The faces (fontmatch.Face) the name words are written in on the scanned pages read: name word key (through the
-    aliases) -> one face per occurrence measured. Only the pages that hold a name word are measured."""
+    aliases) -> one face per occurrence measured. Only the pages that hold a name word are measured. The pages that
+    came from a worker are measured by it (the occurrences of each page, at most NAME_FACES_PER_WORD of a name), and the
+    pages are then taken in order with the same rule as one process: the same faces."""
     cfg = {"style": {"mode": "replace", "font_match": True, "quality_match": True}}
+    named = [[i for i, w in enumerate(pg["words"]) if _pkey(w["text"].strip(",.;:()")) in keys] for pg in pages]
+    measured: dict[int, object] = {}
+    sent = [k for k, pg in enumerate(pages) if pg.get("ref") and named[k]]
+    if len(sent) >= 2 and workers.configured_workers() > 1:
+        for k in sent:
+            pg = pages[k]
+            wanted = [(i, _alias(aliases, pg["words"][i])) for i in named[k]]
+            measured[k] = workers.submit(pg["ref"][0], pg["ref"][1], workers.name_faces_page, pg["gray"],
+                                         pg["words"], pg["scale"], wanted, NAME_FACES_PER_WORD)
     out: dict[str, list] = {}
-    for pg in pages:
+    for k, pg in enumerate(pages):
         words = pg["words"]
-        idx = [i for i, w in enumerate(words) if _pkey(w["text"].strip(",.;:()")) in keys]
-        idx = [i for i in idx if len(out.get(_alias(aliases, words[i]), [])) < NAME_FACES_PER_WORD]
+        idx = [i for i in named[k] if len(out.get(_alias(aliases, words[i]), [])) < NAME_FACES_PER_WORD]
         if not idx:
             continue
-        pf = page_fonts(pg["gray"], words, cfg, pg["scale"])       # no slant measure here: a rough face is enough
+        answer = None
+        if k in measured:
+            with timing.stage("wait"):
+                answer = measured[k].result()
+            if answer is not None and timing.current() is not None:
+                timing.current().add_workers(answer["stages"])
+        pf = None
         for i in idx:
             key = _alias(aliases, words[i])
             if len(out.get(key, [])) >= NAME_FACES_PER_WORD:      # a name is written in one or two fonts: a few are enough
                 continue
-            face = pf.quick_face(words[i]["box"])
+            if answer is not None and i in answer["faces"]:
+                face = answer["faces"][i]
+            else:
+                if pf is None:                                    # measured here: this page, or a worker that failed
+                    pf = page_fonts(pg["gray"], words, cfg, pg["scale"])   # no slant measure: a rough face is enough
+                face = pf.quick_face(words[i]["box"])
             if face is not None:
                 out.setdefault(key, []).append(face)
     return out
@@ -811,7 +929,7 @@ def name_aliases(tokens: dict[str, int], names: list[str]) -> dict[str, str]:
             kb = _pkey(b)
             if len(kb) - len(ka) > 2:
                 break
-            if SequenceMatcher(None, ka, kb).ratio() >= 0.85:
+            if alike(ka, kb, 0.85) is not None:
                 parent[find(a)] = find(b)
     best: dict[str, str] = {}
     for w in counts:
@@ -819,6 +937,20 @@ def name_aliases(tokens: dict[str, int], names: list[str]) -> dict[str, str]:
         if root not in best or (counts[w], len(w)) > (counts[best[root]], len(best[root])):
             best[root] = w
     return {_pkey(w): _pkey(best[find(w)]) for w in counts if _pkey(best[find(w)]) != _pkey(w)}
+
+
+def _same_postcode(active: list[dict]) -> None:
+    """A postcode written alone ('(91000)' after a street) is replaced by the same digits as the postcode of the
+    '91000 EVRY' / 'EVRY (91000)' values of the documents: one code, one fake."""
+    codes: dict[str, str] = {}
+    for a in sorted((a for a in active if a["type"] == "POSTAL_CITY" and not re.fullmatch(r"\d{4,5}", a["value"])),
+                    key=lambda a: a["value"]):
+        code, fake = re.search(r"\d{4,5}", a["value"]), re.search(r"\d{4,5}", a["replace"])
+        if code and fake and len(code.group()) == len(fake.group()):
+            codes.setdefault(code.group(), fake.group())
+    for a in active:
+        if a["type"] == "POSTAL_CITY" and re.fullmatch(r"\d{4,5}", a["value"]) and a["value"] in codes:
+            a["replace"] = codes[a["value"]]
 
 
 def _align_contained_numbers(active: list[dict]):
@@ -940,8 +1072,10 @@ def page_mode_name(lay: dict) -> str:
     return "scan" if lay["kind"] == "scan" else "digital+images" if lay["pixels"] else "digital"
 
 
-def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[dict]) -> tuple[list, dict]:
-    """Any document with at least one digital page. Each page is processed in its own mode."""
+def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[dict],
+             tasks: dict | None = None) -> tuple[list, dict]:
+    """Any document with at least one digital page. Each page is processed in its own mode. `tasks`: its scanned pages
+    already given to the workers (page index -> task), else they are given here."""
     doc = fitz.open(pdf)
     pc = pii_cfg(cfg)
     blackbox = cfg["style"]["mode"] == "blackbox"
@@ -950,15 +1084,19 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
     fonts = render.FontBook(doc)
     numberer, records = Numberer(), []
     extras: dict = {"blackouts": [], "mrz": [], "trace": []}
+    scans = [i for i, lay in enumerate(layouts) if lay["kind"] == "scan"]
+    if tasks is None:
+        tasks = _start_pages(pdf, scans, len(layouts), cfg, ocr_lang, beside=len(scans) < len(layouts))
     for i, lay in enumerate(layouts):
         pno, page = i + 1, doc[i]
         if lay["kind"] == "scan":
             # rebuilt as an image, like a scanned file: nothing of the original page (image, invisible text) is kept
-            img = _scan_page(page, pno, len(doc), cfg, pc, ocr_lang, numberer, records, extras, log)
+            jpeg = _finish_page(tasks.get(i), page, pno, len(doc), cfg, pc, ocr_lang, numberer, records, extras, log)
             rect = page.rect
             doc.delete_page(i)
-            newp = doc.new_page(pno=i, width=rect.width, height=rect.height)
-            newp.insert_image(newp.rect, stream=_jpeg(img))
+            with timing.stage("save"):
+                newp = doc.new_page(pno=i, width=rect.width, height=rect.height)
+                newp.insert_image(newp.rect, stream=jpeg)
             continue
         words = lay["words"]
         typed = cfg.get("manual_texts", {}).get(pno, [])
@@ -967,21 +1105,28 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         bo = cfg["blackout"]
         want_photos = bo["photos"] and (not bo["photos_only_on_id_documents"] or fields.is_id_document(words))
         # faces and codes are both looked for on one render of the page, taken before it is redacted
-        page_rgb = render_page(page, DIGITAL_DPI) if (want_photos or bo["qr_codes"]) else None
-        black = [("photo", r) for r in (faces.find_faces_digital(page_rgb) if want_photos else [])]
-        black += [("qr code", r) for r in (regions.find_codes_digital(page_rgb) if bo["qr_codes"] else [])]
-        black += [("signature", r) for r in
-                  (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
+        with timing.stage("render"):
+            page_rgb = render_page(page, DIGITAL_DPI) if (want_photos or bo["qr_codes"]) else None
+        with timing.stage("faces"):
+            black = [("photo", r) for r in (faces.find_faces_digital(page_rgb) if want_photos else [])]
+        with timing.stage("codes"):
+            black += [("qr code", r) for r in (regions.find_codes_digital(page_rgb) if bo["qr_codes"] else [])]
+        with timing.stage("signatures"):
+            black += [("signature", r) for r in
+                      (regions.find_signatures_digital(page, words, [r for _, r in black]) if bo["signatures"] else [])]
         removed = cfg.get("removed_boxes", {}).get(pno, [])
         black = [(k, r) for k, r in black if not _is_removed(removed, k, r)]     # removed by the user
         manual = cfg.get("manual_boxes", {}).get(pno, [])
         black += [("manual", r) for r in manual]
-        plan = [(m, bx) for m, bx in plan_page(words, pc, [], numberer) if not _inside(bx[0], manual)]
-        _mark_invisible(plan, words)
+        with timing.stage("text"):
+            plan = [(m, bx) for m, bx in plan_page(words, pc, [], numberer) if not _inside(bx[0], manual)]
+            _mark_invisible(plan, words)
         if plan:
-            _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, extras)
+            with timing.stage("digital"):
+                _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno, extras)
         if lay["pixels"]:
             _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, [r for _, r in black], log, fonts)
+        black_stage = timing.stage("digital")
         if black:
             before_black = render.glyphs(page)
             hidden_black = invisible_chars(page)
@@ -994,6 +1139,7 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
         for (box, text), color in zip(typed, typed_colors):              # typed by hand, after the boxes
             render.paint_text_box_pdf(page, box, text, color)
             _note(extras, pno, box, "typed text (manual)", "", text)
+        black_stage.done()
     if fonts.used:
         log("   fonts: " + ", ".join(f"{n} {k}" for k, n in sorted(fonts.used.items()))
             + "  (embedded = same font as the PDF, system = same font from this PC, standard = closest PDF font)")
@@ -1076,6 +1222,7 @@ def _digital_replace(page, plan, words, cfg, fill, blackbox, fonts, records, pno
                     render.insert_replacement(page, b, part, line_style, fonts)
 
 
+@timing.timed("save")
 def _finish_digital(doc, out: Path):
     for page in doc:
         for annot in list(page.annots() or []):
@@ -1096,6 +1243,100 @@ def _finish_digital(doc, out: Path):
     doc.close()
 
 
+def _file_cfg(cfg: dict, session: dict, name: str) -> dict:
+    """The config of one file of a run: the whole config and what is drawn or typed by hand on that file."""
+    return {**cfg, "manual_boxes": _manual_boxes(cfg, name), "removed_boxes": _removed_boxes(cfg, session, name),
+            "manual_texts": _manual_texts(cfg, name)}
+
+
+class _Feeder:
+    """Gives the scanned pages of the files of a run to the workers ahead of time: while a file is being finished here
+    (its output written and checked), the pages of the next files are already being done, and the files that are one page
+    long do not wait one after the other. The pages of the next files are given while fewer tasks are waiting than there
+    are workers. A file it could not prepare (it does not open) is left to the run, which reports the error."""
+
+    def __init__(self, pdfs: list[Path], cfg: dict, session: dict, ocr_lang: str):
+        self.pdfs, self.cfg, self.session, self.ocr_lang = pdfs, cfg, session, ocr_lang
+        self.active = (workers.configured_workers() > 1 and workers.splittable(cfg) and ocr.available()
+                       and sum(p.suffix.lower() == ".pdf" for p in pdfs) >= 1)
+        self.prepared: dict[int, dict] = {}
+
+    def _prepare(self, j: int) -> None:
+        if j in self.prepared:
+            return
+        entry = self.prepared[j] = {"layouts": None, "tasks": None}
+        pdf = self.pdfs[j]
+        try:
+            doc = open_source(pdf)
+            try:
+                layouts = [page_layout(p) for p in doc]
+            finally:
+                doc.close()
+        except Exception:  # noqa: BLE001
+            return
+        entry["layouts"] = layouts
+        scans = [k for k, lay in enumerate(layouts) if lay["kind"] == "scan"]
+        if pdf.suffix.lower() != ".pdf" or not scans:
+            return
+        if len(self.pdfs) == 1 and len(layouts) == 1:       # one page and nothing beside it: no reason to leave this process
+            return
+        workers.warm(self.waiting() + len(scans))
+        fcfg = _file_cfg(self.cfg, self.session, pdf.name)
+        entry["tasks"] = {k: workers.submit(str(pdf), k, workers.scan_page, str(pdf), k, len(layouts), fcfg, self.ocr_lang)
+                          for k in scans}
+
+    def waiting(self) -> int:
+        """Tasks given to the workers and not finished."""
+        return sum(1 for e in self.prepared.values() for t in (e["tasks"] or {}).values() if not t.done())
+
+    def top_up(self, i: int) -> dict | None:
+        """Prepare file i, and the next ones while the workers have less waiting than they can do. Returns file i's
+        {'layouts': ..., 'tasks': ...} (None when the feeder is not active)."""
+        if not self.active:
+            return None
+        self._prepare(i)
+        j = i + 1
+        while j < len(self.pdfs) and self.waiting() < workers.pool_size():
+            self._prepare(j)
+            j += 1
+        return self.prepared[i]
+
+
+def _start_pages(pdf: Path, pages: list[int], n_pages: int, cfg: dict, ocr_lang: str, beside: bool = False) -> dict:
+    """Give the scanned pages of a PDF file (page indexes) to the workers: {index: task}. {} when the pages are done
+    here: an image file, one worker only, a config that numbers its replacements (the numbers follow the page order), or
+    a single page with nothing else to do meanwhile (`beside`: the digital pages of the same file are done here while the
+    workers do the scans)."""
+    if pdf.suffix.lower() != ".pdf" or not pages or not workers.splittable(cfg) or workers.configured_workers() <= 1:
+        return {}
+    if workers.worker_count(len(pages)) <= 1 and not beside:
+        return {}
+    workers.warm(len(pages))
+    return {i: workers.submit(str(pdf), i, workers.scan_page, str(pdf), i, n_pages, cfg, ocr_lang) for i in pages}
+
+
+def _finish_page(task, page, pno: int, n_pages: int, cfg: dict, pc: dict, ocr_lang: str, numberer, records: list,
+                 extras: dict, log) -> bytes:
+    """The JPEG of an anonymized scanned page: from its worker (its records, extras and log lines are added in page
+    order, as if the page had been done here), else done here."""
+    answer = None
+    if task is not None:
+        with timing.stage("wait"):
+            answer = task.result()
+    if answer is None:
+        img = _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log)
+        with timing.stage("save"):
+            return _jpeg(img)
+    records.extend(answer["records"])
+    for key in ("blackouts", "mrz", "trace"):
+        extras.setdefault(key, []).extend(answer["extras"].get(key, []))
+    for line in answer["log"]:
+        log(line)
+    if timing.current() is not None:
+        timing.current().add_workers(answer["stages"])
+    return answer["jpeg"]
+
+
 def _scan_image(src: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list, dict]:
     """A scanned image: the anonymized page is saved as an image of the same kind (not a PDF)."""
     pc = pii_cfg(cfg)
@@ -1110,25 +1351,30 @@ def _scan_image(src: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[li
     return records, extras
 
 
-def _scan_source(src: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list, dict]:
+def _scan_source(src: Path, out: Path, cfg: dict, ocr_lang: str, log, tasks: dict | None = None) -> tuple[list, dict]:
     """Scanned source -> anonymized output: an image for an image, a new PDF for a PDF."""
     if src.suffix.lower() in IMAGE_SUFFIXES:
         return _scan_image(src, out, cfg, ocr_lang, log)
-    return _scan_pdf(src, out, cfg, ocr_lang, log)
+    return _scan_pdf(src, out, cfg, ocr_lang, log, tasks)
 
 
-def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log) -> tuple[list, dict]:
-    """A document made only of scanned pages: a brand new PDF with one new image per page."""
+def _scan_pdf(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, tasks: dict | None = None) -> tuple[list, dict]:
+    """A document made only of scanned pages: a brand new PDF with one new image per page. `tasks`: its pages already
+    given to the workers (page index -> task), else they are given here."""
     src, dst = open_source(pdf), fitz.open()
     pc = pii_cfg(cfg)
     numberer, records = Numberer(), []
     extras: dict = {"blackouts": [], "mrz": [], "trace": []}
+    if tasks is None:
+        tasks = _start_pages(pdf, list(range(len(src))), len(src), cfg, ocr_lang)   # one page each, in the workers
     for pno, page in enumerate(src, start=1):
-        img = _scan_page(page, pno, len(src), cfg, pc, ocr_lang, numberer, records, extras, log)
-        newp = dst.new_page(width=page.rect.width, height=page.rect.height)
-        newp.insert_image(newp.rect, stream=_jpeg(img))
-    dst.set_metadata({})
-    dst.save(out, garbage=4, deflate=True)
+        jpeg = _finish_page(tasks.get(pno - 1), page, pno, len(src), cfg, pc, ocr_lang, numberer, records, extras, log)
+        with timing.stage("save"):
+            newp = dst.new_page(width=page.rect.width, height=page.rect.height)
+            newp.insert_image(newp.rect, stream=jpeg)
+    with timing.stage("save"):
+        dst.set_metadata({})
+        dst.save(out, garbage=4, deflate=True)
     return records, extras
 
 
@@ -1180,7 +1426,7 @@ def _manual_boxes(cfg: dict, name: str) -> dict:
     """{page: [box in PDF points]} of the black boxes drawn by hand on one file."""
     out: dict = {}
     for b in cfg.get("manual_blackouts") or []:
-        if b["file"] == name:
+        if b["file"] == name and not b.get("removed"):
             out.setdefault(int(b["page"]), []).append(tuple(b["box"]))
     return out
 
@@ -1314,6 +1560,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         + (f" Fake text quality {quality_offset:+.2f} from the detected one." if quality_offset else ""))
     # the entries of the other files of the folder (a run on some files keeps theirs): read before the report is saved
     kept = _kept_entries(folder, only)
+    feeder = _Feeder(pdfs, cfg, session, ocr_lang)         # the scanned pages of the files go to the workers ahead
     files = []
     for i, pdf in enumerate(pdfs, start=1):
         _report(progress, i - 1, len(pdfs), pdf.name)
@@ -1322,10 +1569,16 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         t0 = time.time()
         entry = {"file": pdf.name, "output": out.name, "mode": "?", "pages": 0, "replaced": 0, "items": [],
                  "leftovers": [], "warnings": [], "error": None, "seconds": 0}
+        timers = timing.collecting()                   # the time of this file by stage (kept in the report)
+        tm = timers.__enter__()
         try:
-            doc = open_source(pdf)
-            layouts = [page_layout(p) for p in doc]
-            doc.close()
+            ahead = feeder.top_up(i - 1)
+            layouts = ahead["layouts"] if ahead and ahead["layouts"] is not None else None
+            if layouts is None:
+                doc = open_source(pdf)
+                layouts = [page_layout(p) for p in doc]
+                doc.close()
+            tasks = ahead["tasks"] if ahead else None
             kinds = {l["kind"] for l in layouts}
             mode = "scan" if kinds == {"scan"} else "digital" if not any(l["pixels"] for l in layouts) \
                 and kinds == {"digital"} else "mixed"
@@ -1336,12 +1589,11 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 if not ocr.available():
                     raise RuntimeError("scanned pages / images but no OCR engine is available (Tesseract or Windows OCR)")
                 log(f"   OCR engine: {ocr.describe(ocr_lang)}")
-            fcfg = {**cfg, "manual_boxes": _manual_boxes(cfg, pdf.name), "removed_boxes": _removed_boxes(cfg, session, pdf.name),
-                    "manual_texts": _manual_texts(cfg, pdf.name)}
+            fcfg = _file_cfg(cfg, session, pdf.name)
             if mode == "scan":
-                records, extras = _scan_source(pdf, out, fcfg, ocr_lang, log)
+                records, extras = _scan_source(pdf, out, fcfg, ocr_lang, log, tasks)
             else:
-                records, extras = _digital(pdf, out, fcfg, ocr_lang, log, layouts)
+                records, extras = _digital(pdf, out, fcfg, ocr_lang, log, layouts, tasks)
             entry["items"] = summarize(records, cfg)
             entry["blackouts"] = extras["blackouts"]
             entry["mrz"] = extras["mrz"]
@@ -1353,7 +1605,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
             use_ocr = mode != "digital" or ocr_verify            # a digital file is checked on its text, unless asked
             log("   checking the output " + ("(OCR)" if use_ocr else "(text layer; OCR check off for digital PDFs)") + "...")
             read = verify.read_output(out, ocr_lang, use_ocr)    # read once: both checks work on this reading
-            entry["leftovers"] = verify.verify_output(read, cfg)
+            with timing.stage("check"):
+                entry["leftovers"] = verify.verify_output(read, cfg)
             if mode == "scan" and not entry["leftovers"]:
                 log("   second pass: not needed, no original value left in the output")
             if entry["leftovers"] and mode == "scan":
@@ -1372,10 +1625,12 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 entry["replaced"] = len(records)
                 entry["items"] = summarize(records, cfg)
                 read = verify.read_output(out, ocr_lang, use_ocr=True)
-                entry["leftovers"] = verify.verify_output(read, cfg)
+                with timing.stage("check"):
+                    entry["leftovers"] = verify.verify_output(read, cfg)
             if entry["leftovers"]:
                 log(f"   WARNING: {len(entry['leftovers'])} original value(s) still found in the output")
-            entry["suspects"] = verify.leak_suspects(read, cfg)
+            with timing.stage("check"):
+                entry["suspects"] = verify.leak_suspects(read, cfg)
             if entry["suspects"]:
                 shown = ", ".join(f"{s['type']} '{s['value']}' p.{s['page']}" for s in entry["suspects"][:8])
                 entry["warnings"].append(f"{len(entry['suspects'])} value(s) still readable in the output, not replaced: "
@@ -1385,8 +1640,13 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
         except Exception as e:  # noqa: BLE001
             entry["error"] = str(e)
             log(f"   ERROR: {e}")
+        timers.__exit__(None, None, None)
         entry["seconds"] = round(time.time() - t0, 1)
-        log(f"   done in {entry['seconds']}s")
+        entry["stages"] = tm.report(time.time() - t0)
+        if tm.workers:
+            entry["worker_stages"] = tm.worker_report()          # seconds of work done in the worker processes, added
+        log(f"   done in {entry['seconds']}s (" + timing.format_stages(entry["stages"]) + ")"
+            + (f"; in the workers: {timing.format_stages(entry['worker_stages'], 5)}" if entry.get("worker_stages") else ""))
         files.append(entry)
         # saved after every file: a batch that stops keeps the analysis of the files it has done
         report = _save_report(folder, rel, kept + files, t_all, ocr_verify, quality_offset)

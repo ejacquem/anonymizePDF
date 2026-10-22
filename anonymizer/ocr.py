@@ -23,6 +23,8 @@ from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
 
+from . import memo, timing
+
 ENGINES = ("auto", "tesseract", "windows")
 _choice = os.environ.get("ANON_OCR_ENGINE", "auto").lower()
 
@@ -114,13 +116,14 @@ def ocr_words(img, lang: str = "fra+eng") -> list[dict]:
     e = engine()
     if e not in ("tesseract", "windows"):
         raise RuntimeError("no OCR engine: install Tesseract, or the Windows OCR packages (pip install -r requirements.txt)")
-    key = _cache_key(img, e, lang)
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
-    words = tesseract_words(img, lang) if e == "tesseract" else windows_words(img, lang)
-    _cache_put(key, words)
-    return [dict(w) for w in words]
+    with timing.stage("ocr", keep=True):
+        key = _cache_key(img, e, lang)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        words = tesseract_words(img, lang) if e == "tesseract" else windows_words(img, lang)
+        _cache_put(key, words)
+        return [dict(w) for w in words]
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +194,9 @@ def clear_cache() -> None:
     with _cache_lock:
         _cache.clear()
         _cache_size = 0
+
+
+memo.on_clear(clear_cache)
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +350,8 @@ def fix_digits(text: str) -> str:
     digits, or short letter-only tokens between two numbers, are touched."""
     def tok(m):
         t = m.group()
+        if "ZZZ" in t:                  # the business code of a SEPA creditor identifier ('FR16ZZZ0010...'): not a 2
+            return t
         digits = sum(c.isdigit() for c in t)
         mostly_digits = digits >= sum(c.isalpha() for c in t) or len(t) >= 4   # '3OOO' yes, 'B2B' no
         return t.translate(_DIGIT_LIKE) if digits and mostly_digits else t

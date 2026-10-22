@@ -96,6 +96,11 @@ Open http://127.0.0.1:5000. Options: `--port 5000`, `--ocr-lang fra+eng` (e.g. `
 `--ocr-engine auto|tesseract|windows`, `--spacy-model nl_core_news_md` (repeatable).
 At start the app prints the OCR engine in use and the location of the secret key.
 
+**Speed.** The pages of a scanned document are processed by several worker processes at once (one per page, up to the
+number of cores minus one, at most 6, fewer when the PC is short of free memory; about 0.5 GB each). The files are
+byte for byte the ones a single process writes. `ANON_WORKERS=1` turns it off (`set ANON_WORKERS=1` before starting
+the app), `ANON_WORKERS=3` caps it. The names model is loaded once, in the background, when the app starts.
+
 Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder gets its own config.
 
 ## Workflow

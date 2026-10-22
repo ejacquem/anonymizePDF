@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import fields, ocr
+from . import fields, ocr, timing, workers
 from .ocr import render_page
 from .ocrpage import page_words
 from .pii import (NAME_TYPES, PERSON_RANKS, _repeated_digits, detect_structured, digital_words, fitz, norm_value, strip_operations,
@@ -53,11 +53,32 @@ def read_output(path: Path, ocr_lang: str, use_ocr: bool) -> OutputRead:
     try:
         read.metadata = [(k, str(v)) for k, v in (doc.metadata or {}).items()
                          if v and k not in ("format", "encryption")]
-        for page in doc:
-            layer_words = digital_words(page)
-            words = page_words(render_page(page, 300), ocr_lang) if ocr_on else layer_words
-            read.pages.append(PageRead(layer=words_to_text(layer_words)[0], words=words, ocr=ocr_on,
-                                       layer_words=layer_words))
+        tasks = {}
+        if ocr_on and len(doc) >= 2 and path.suffix.lower() == ".pdf" and workers.configured_workers() > 1:
+            if workers.worker_count(len(doc)) > 1:      # the pages are read by the workers, in page order here
+                workers.warm(len(doc))
+                tasks = {i: workers.submit(str(path), i, workers.read_page, str(path), i, ocr_lang)
+                         for i in range(len(doc))}
+        for i, page in enumerate(doc):
+            with timing.stage("check"):
+                layer_words = digital_words(page)
+            if ocr_on:
+                answer = None
+                if i in tasks:
+                    with timing.stage("wait"):
+                        answer = tasks[i].result()
+                if answer is not None:
+                    words = answer["words"]
+                    if timing.current() is not None:
+                        timing.current().add_workers(answer["stages"])
+                else:
+                    with timing.stage("ocr_check"):
+                        words = page_words(render_page(page, 300), ocr_lang)
+            else:
+                words = layer_words
+            with timing.stage("check"):
+                read.pages.append(PageRead(layer=words_to_text(layer_words)[0], words=words, ocr=ocr_on,
+                                           layer_words=layer_words))
     finally:
         doc.close()
     return read

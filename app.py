@@ -111,9 +111,41 @@ def save_settings():
         ocr.set_engine(engine_id)
     except ValueError as e:
         return bad(str(e))
-    STATE["spacy_models"] = models
-    STATE["ner"] = None                    # loaded again with the new choice, on the next scan
+    if models != STATE["spacy_models"]:    # the browser sends its settings again at each start: same choice, same model
+        STATE["spacy_models"] = models
+        STATE["ner"] = None                # loaded again with the new choice, on the next scan
     return info()
+
+
+def file_states(d: Path, own: list[dict]) -> None:
+    """The dot of each original in the tree (`status`): 'red' = an error, or an original value still found in the output
+    (a leftover); 'green' = reviewed by hand (the review is of the current output, so it wins over what follows);
+    'orange' = a warning of the last run or a value the second check still reads (offered as a suggestion);
+    'yellow' = the config was saved after the output (or there is no output yet): anonymize; None = nothing to say."""
+    files = {}
+    rep = d / eng.REPORT_NAME
+    if rep.exists():
+        try:
+            files = {f.get("file"): f for f in json.loads(rep.read_text(encoding="utf-8")).get("files", [])}
+        except (OSError, ValueError):
+            files = {}
+    cfg = d / eng.CONFIG_NAME
+    cfg_time = cfg.stat().st_mtime if cfg.exists() else None
+    for c in own:
+        if c["anonymized"]:
+            continue
+        f = files.get(c["name"]) or {}
+        out = eng.output_of(d / c["name"])
+        if f.get("error") or f.get("leftovers"):
+            c["status"] = "red"
+        elif c["reviewed"]:
+            c["status"] = "green"
+        elif f.get("warnings") or f.get("suspects"):
+            c["status"] = "orange"
+        elif cfg_time is not None and (not out.exists() or cfg_time > out.stat().st_mtime):
+            c["status"] = "yellow"
+        else:
+            c["status"] = None
 
 
 def build_tree(d: Path) -> dict | None:
@@ -140,6 +172,7 @@ def build_tree(d: Path) -> dict | None:
         c["reviewed"] = not c["anonymized"] and c["name"] in reviewed
         if c["anonymized"] and c["original"]:
             c["reviewed"] = Path(c["original"]).name in reviewed
+    file_states(d, own_pdfs)
     if not children and d != STATE["root"]:
         return None
     return {"type": "dir", "name": d.name if d != STATE["root"] else (d.name or str(d)), "path": rel_of(d),
@@ -491,16 +524,32 @@ def job_progress(job) -> dict:
     return {**p, "elapsed": round(elapsed, 1), "eta": None if eta is None else round(eta, 1)}
 
 
+NER_LOCK = threading.Lock()
+
+
 def get_ner(log):
+    """The names model, loaded once per app process (5-20 s) and kept; a scan that starts while the start-up load is
+    still running waits for it."""
     if STATE["spacy_models"] == []:        # the user chose no names model: rules only
         return []
-    if STATE["ner"] is None:
-        log("Loading name-detection model (first time only)...")
-        STATE["ner"] = load_ner(STATE["spacy_models"], quiet=True)
-        if not STATE["ner"]:
-            log("No spaCy model installed: names will only be found by the rule-based detectors. "
-                "Install one, e.g.: python -m spacy download fr_core_news_md")
+    with NER_LOCK:
+        if STATE["ner"] is None:
+            log("Loading name-detection model (first time only)...")
+            STATE["ner"] = load_ner(STATE["spacy_models"], quiet=True)
+            if not STATE["ner"]:
+                log("No spaCy model installed: names will only be found by the rule-based detectors. "
+                    "Install one, e.g.: python -m spacy download fr_core_news_md")
     return STATE["ner"]
+
+
+def preload_ner():
+    """Load the names model in the background at start-up: the first scan does not wait for it."""
+    def run():
+        try:
+            get_ner(lambda m: None)
+        except Exception as e:  # noqa: BLE001  (the scan loads it again and reports the error itself)
+            print(f"Names model not preloaded: {e}", file=sys.stderr, flush=True)
+    threading.Thread(target=run, daemon=True, name="ner-preload").start()
 
 
 @app.post("/api/scan")
@@ -541,7 +590,10 @@ def anonymize():
     quality_offset = _quality_offset(data)
     only = [Path(str(data["file"])).name] if data.get("file") else None     # one file, or the whole folder
     if only is None:
-        only = files_to_anonymize(folder)                 # a folder run leaves the reviewed files alone
+        # a folder run leaves the reviewed files alone, except those whose black boxes / typed texts changed and are not
+        # applied yet (the client names them in `include`): their new boxes must reach the anonymized file
+        wanted = set(files_to_anonymize(folder)) | {Path(str(n)).name for n in (data.get("include") or [])}
+        only = [p.name for p in eng.list_sources(folder) if p.name in wanted]
         if not only:
             return bad("Every file of this folder is reviewed: nothing to anonymize. Anonymize one file to redo it.")
     removed = data.get("removed") if isinstance(data.get("removed"), list) else []   # automatic boxes removed: this run only
@@ -679,6 +731,7 @@ def main():
         raise SystemExit(str(e))
     print(f"Root: {root}\nOCR: {ocr.describe(args.ocr_lang) or 'none (scanned PDFs cannot be processed)'}")
     print(f"Secret key for fake values: {secret.key_path()}  (keep it private, back it up, never commit it)")
+    preload_ner()
     url = f"http://127.0.0.1:{args.port}"
     print(f"Open {url}  (Ctrl+C to stop)")
     if args.open:
