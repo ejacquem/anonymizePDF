@@ -22,8 +22,9 @@ import yaml
 
 from . import configmodel, faces, fields, ocr, quality, regions, render, timing, verify, workers
 from .fake import Faker, _norm as fake_norm, _pkey, is_town_name
-from .ocr import DIGITAL_DPI, ocr_words, render_page
-from .pii import (NAME_TYPES, OPERATION_WORDS, PERSON_RANKS, Numberer, _HONORIFIC, detect_all,
+from .ocr import DIGITAL_DPI, render_page
+from .ocrpage import page_words
+from .pii import (NAME_TYPES, OPERATION_WORDS, PERSON_RANKS, ROLE_RANK, Numberer, _HONORIFIC, detect_all,
                   detect_structured,
                   invisible_chars, is_invisible_word,
                   CAP_SEQUENCE, digital_words, fitz,
@@ -264,10 +265,12 @@ def _contains(words: list[str], seq: list[str]) -> bool:
     return n > 0 and any(words[i:i + n] == seq for i in range(len(words) - n + 1))
 
 
-def accept_person(value: str, honorific: bool, from_ner: bool, vocab: frozenset = frozenset()) -> bool:
+def accept_person(value: str, honorific: bool, from_ner: bool, vocab: frozenset = frozenset(), role: bool = False) -> bool:
     """Is this PERSON candidate reliable enough to be active by default?
     - found after M./Mme/Dr/...            -> yes (strong signal)
     - contains a known first name           -> yes
+    - found after the word for its role ('le titulaire Dessaint') -> yes, unless a word of it is an ordinary word of the
+      documents
     - found by the NER model, Title Case    -> yes, unless one of its words is an ordinary word of the documents
       (`vocab`: the words written in lower case somewhere: 'Interest earned' is a heading, not a name)
     otherwise (e.g. 'Assurance MAIF', 'RETRAIT DAB') it is only suggested, commented out."""
@@ -281,6 +284,8 @@ def accept_person(value: str, honorific: bool, from_ner: bool, vocab: frozenset 
         return False
     if honorific:
         return len(toks) >= 2 or len(toks[0]) >= 3
+    if role and names and (len(names) >= 2 or len(names[0]) >= 4) and not any(_pkey(t) in vocab for t in names):
+        return True
     if len(names) < 2:
         return False
     firsts = _first_names()
@@ -429,6 +434,7 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
         spellings[value] = spellings.get(value, 0) + 1
         e["ner"] = e["ner"] or m.rank >= 100
         e["honorific"] = e["honorific"] or (m.type == "PERSON" and m.rank == PERSON_RANKS[0])
+        e["role"] = e.get("role", False) or (m.type == "PERSON" and m.rank == ROLE_RANK)
         if m.type == "PERSON" and not e["title"]:
             t = _TITLE_BEFORE.search(text[max(0, m.start - 16):m.start])
             e["title"] = t.group(1) if t else ""
@@ -588,7 +594,7 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
     vocab = frozenset(_pkey(w) for w in tokens if w[:1].islower())     # ordinary words of the documents
     # the fullest names first: their words tell the kinds of the shorter forms that follow ('Morin Aurélien Gaspard')
     for e in sorted(persons, key=lambda e: (has_initial(e), -len(e["value"].split()), -e["count"])):
-        if e.get("labeled") or accept_person(e["value"], e["honorific"], e["ner"], vocab):
+        if e.get("labeled") or accept_person(e["value"], e["honorific"], e["ner"], vocab, e.get("role", False)):
             activate(e)
         else:
             rejected.append(e)
@@ -796,7 +802,7 @@ def _read_scan_page(task, page, ocr_lang: str):
         return got["words"], got["gray"], got["scale"]
     with timing.stage("render"):
         img = render_page(page, 300)
-    words = ocr_words(img, ocr_lang)
+    words = page_words(img, ocr_lang)
     with timing.stage("render"):
         return words, np.asarray(img.convert("L")), native_scale(page, 300)
 

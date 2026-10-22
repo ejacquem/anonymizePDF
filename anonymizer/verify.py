@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import fields, ocr, timing, workers
-from .ocr import ocr_words, render_page
+from .ocr import render_page
+from .ocrpage import page_words
 from .pii import (NAME_TYPES, PERSON_RANKS, _repeated_digits, detect_structured, digital_words, fitz, norm_value, strip_operations,
                   term_regex, words_to_text)
 
@@ -72,7 +73,7 @@ def read_output(path: Path, ocr_lang: str, use_ocr: bool) -> OutputRead:
                         timing.current().add_workers(answer["stages"])
                 else:
                     with timing.stage("ocr_check"):
-                        words = ocr_words(render_page(page, 300), ocr_lang)
+                        words = page_words(render_page(page, 300), ocr_lang)
             else:
                 words = layer_words
             with timing.stage("check"):
@@ -129,7 +130,7 @@ def find_hits(path: Path, term: str, case_sensitive: bool, ocr_lang: str) -> lis
             mine = _hit_boxes(layer, text, spans, rx, pno)
             out += mine
             if ocr.available() and (len(layer) < 3 or page.get_images()):
-                words = ocr_words(render_page(page, 300), ocr_lang)
+                words = page_words(render_page(page, 300), ocr_lang)
                 text, spans = words_to_text(words)
                 for h in _hit_boxes(words, text, spans, rx_ocr, pno, 72 / 300):
                     if not any(_overlaps(h["box"], m["box"]) for m in mine):
@@ -186,6 +187,63 @@ def remove_fakes(text: str, fakes: list[str]) -> str:
     return text
 
 
+def _likeness(a: str, b: str) -> float:
+    """How alike two folded texts are: their ratio, or how much of `a` is found in `b` when they are about as long (a text
+    read with letters lost is found in the whole); when one is much shorter, the share of the longer they hold in common
+    (a short word explains nothing of a long one)."""
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    matched = sum(m.size for m in sm.get_matching_blocks())
+    if min(len(a), len(b)) < 0.6 * max(len(a), len(b)):
+        return matched / max(len(a), len(b), 1)
+    return max(matched / max(len(a), 1), sm.ratio())
+
+
+def remove_garbled_fakes(text: str, fakes: list[str], originals: list[str]) -> str:
+    """The text without the words that are a fake the OCR read badly ('IIENI)RICKX' for 'HENDRICKX', '.fournicr@ykuj2to.he'
+    for an e-mail): a word of 4 characters or more that looks like a word of a fake (0.7) and looks less like any
+    original value (by 0.25; for a word of 8 characters or more, 0.5 and 0.1: two long strings share a third by chance) is blanked, so the detectors do not take its pieces for a name or an address. A word that is
+    as near an original value as a fake is stays (the second check is there for what is not in the config)."""
+    fake_words = {_fold(w) for f in fakes for w in [f] + f.split() if len(_fold(w)) >= 4}
+    origin_words = {_fold(w) for o in originals for w in [o] + o.split() if len(_fold(w)) >= 3}
+
+    def blank(m):
+        tok = _fold(m.group())
+        if len(tok) < 4:
+            return m.group()
+        near = max((_likeness(tok, f) for f in fake_words), default=0.0)
+        other = max((_likeness(tok, o) for o in origin_words), default=0.0)
+        # a long identifier loses half its characters to a coarse copy and is still nothing like an original value
+        if not ((near >= 0.7 and near >= other + 0.25) or (len(tok) >= 8 and near >= 0.5 and near >= other + 0.1)):
+            return m.group()
+        return " " * len(m.group())
+
+    return re.sub(r"\S+", blank, text)
+
+
+def _in_digits(number: str, folded: str) -> bool:
+    """Is `number` a run of the digits of a replacement, with at most one digit read wrong?"""
+    digits = re.sub(r"\D", "", folded)
+    n = len(number)
+    return any(sum(a != b for a, b in zip(number, digits[i:i + n])) <= 1 for i in range(len(digits) - n + 1))
+
+
+def _read_back(value: str, replacements_folded: list, originals_folded: list, original_groups: tuple = ()) -> bool:
+    """A value that looks more like a replacement than like any original value is a replacement the OCR read badly
+    (a long fake identifier with half its digits misread: 'OFSTN6E129' for 'OFST086550129'), not a leak. So is a
+    number that is part of a fake (a digit misread at most) and is no number of an original value (a group of 4 to 8
+    digits; a longer number holds 4 digits by chance), with the word after it ('4947 Le',
+    the end of a fake IBAN and the next word, read as a postcode and a town)."""
+    folded = _fold(value)
+    numbers = re.findall(r"\d{4,}", value)                       # a number of a fake, read back with the word after it
+    if numbers and len(numbers) == len(re.findall(r"\d+", value)) and all(
+            any(_in_digits(n, rf) for _, rf in replacements_folded) and not any(n in g for g in original_groups)
+            for n in numbers):
+        return True
+    best = max((difflib.SequenceMatcher(None, folded, rf).ratio() for _, rf in replacements_folded), default=0.0)
+    other = max((difflib.SequenceMatcher(None, folded, of).ratio() for of in originals_folded), default=0.0)
+    return (best >= 0.65 and best > other + 0.2) or (len(folded) >= 8 and best >= 0.5 and best > other + 0.1)
+
+
 def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
     """Values that the detectors still read in the file and that are not replacements. On identity documents the
     dates, the values found by their shape and the values under their labels are checked too."""
@@ -193,6 +251,8 @@ def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
     from .fake import is_town_name
     replacements = {norm_value(v) for v in cfg["terms"].values() if v}
     replacements_folded = [(r, _fold(r)) for r in replacements]
+    originals_folded = [_fold(f) for f in cfg["terms"] if len(f) >= 3]
+    original_groups = tuple(g for f in cfg["terms"] for g in re.findall(r"\d{4,8}", f))     # the numbers of the originals
     # the fake values as written (longest first): taken out of the text before the detectors run, so that a fake
     # street and the fake town written on the same line are not read as one address
     fakes = sorted({" ".join(v.split()) for v in cfg["terms"].values() if v and len(v.strip()) >= 3},
@@ -200,7 +260,7 @@ def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
     out: list[dict] = []
     for pno, page in enumerate(read.pages, start=1):
         words = page.words
-        text = remove_fakes(words_to_text(words)[0], fakes)
+        text = remove_garbled_fakes(remove_fakes(words_to_text(words)[0], fakes), fakes, list(cfg["terms"]))
         id_page = fields.is_id_document(words)
         found = [(m.type, m.value) for m in detect_structured(text)
                  if not _repeated_digits(m.value) and (m.type in LEAK_TYPES or (m.type == "DATE" and id_page)
@@ -223,7 +283,7 @@ def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
             # a replacement read back by the OCR with a few errors ('Irnier' for a fake name) is a replacement too
             if len(key) < 3 or key in seen or any(
                     key in r or difflib.SequenceMatcher(None, _fold(key), rf).ratio() >= 0.8
-                    for r, rf in replacements_folded):
+                    for r, rf in replacements_folded) or _read_back(key, replacements_folded, originals_folded, original_groups):
                 continue
             seen.add(key)
             out.append({"page": pno, "type": typ, "value": value})

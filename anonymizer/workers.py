@@ -341,7 +341,8 @@ def read_scan(path: str, index: int, ocr_lang: str) -> dict:
     import numpy as np
 
     from . import scanpaint, timing
-    from .ocr import ocr_words, render_page
+    from .ocr import render_page
+    from .ocrpage import page_words
     from .pii import fitz
 
     doc = fitz.open(path)
@@ -349,7 +350,7 @@ def read_scan(path: str, index: int, ocr_lang: str) -> dict:
         with timing.collecting() as tm:
             with timing.stage("render"):
                 img = render_page(doc[index], 300)
-            words = ocr_words(img, ocr_lang)
+            words = page_words(img, ocr_lang)
             with timing.stage("render"):
                 gray = np.asarray(img.convert("L"))
                 scale = scanpaint.native_scale(doc[index], 300)
@@ -381,14 +382,15 @@ def name_faces_page(gray, words: list[dict], scale: float, wanted: list[tuple], 
 def read_page(path: str, index: int, ocr_lang: str) -> dict:
     """The OCR words of one page of a PDF file, rendered at 300 dpi (the reading of an output page by the checks)."""
     from . import timing
-    from .ocr import ocr_words, render_page
+    from .ocr import render_page
+    from .ocrpage import page_words
     from .pii import fitz
 
     doc = fitz.open(path)
     try:
         with timing.collecting() as tm:
             with timing.stage("ocr_check"):
-                words = ocr_words(render_page(doc[index], 300), ocr_lang)
+                words = page_words(render_page(doc[index], 300), ocr_lang)
     finally:
         doc.close()
     return {"words": words, "stages": dict(tm.seconds), "pid": os.getpid()}

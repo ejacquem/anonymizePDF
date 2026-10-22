@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from . import memo, quality, timing
+from . import memo, morph, quality, timing
 
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
 
@@ -330,7 +330,21 @@ def compare(ref, tpl: np.ndarray, soft: float = 0.0) -> float:
     return ncc - WIDTH_WEIGHT * abs(width)
 
 
-def compare_many(ref, tpls: list, soft: float = 0.0) -> list[float]:
+def _thicken(stack: np.ndarray, d: float) -> np.ndarray:
+    """Strokes made thicker by `d` pixels (of the stack's images) on each side: a grey dilation at 4 times the size."""
+    n = int(round(abs(d) * quality.UP))
+    if n == 0:
+        return stack
+    out = []
+    for im in stack:
+        hi = np.asarray(Image.fromarray((np.clip(im, 0, 1) * 255).astype(np.uint8)).resize(
+            (im.shape[1] * quality.UP, im.shape[0] * quality.UP), Image.BILINEAR))
+        hi = morph.square_max(hi, 2 * n + 1) if d > 0 else morph.square_min(hi, 2 * n + 1)
+        out.append(hi.reshape(im.shape[0], quality.UP, im.shape[1], quality.UP).mean(axis=(1, 3)) / 255.0)
+    return np.stack(out)
+
+
+def compare_many(ref, tpls: list, soft: float = 0.0, thick: float = 0.0) -> list[float]:
     """compare() of several candidates against the same word at once: the candidates are brought to the word's size
     and softened as a stack, and the correlations are taken per image. Each score is bit for bit what compare() gives
     for that candidate alone."""
@@ -340,6 +354,8 @@ def compare_many(ref, tpls: list, soft: float = 0.0) -> list[float]:
         return []
     extra = soft * SHAPE_H / max(ref.height, 1)
     stack = np.stack([_resized(t, ref.c.shape[1]) for t in tpls])
+    if thick:
+        stack = _thicken(stack, thick * SHAPE_H / max(ref.height, 1))
     stack = quality.blur_stack(stack, math.sqrt(1.0 + extra * extra))
     n = len(tpls)
     stack = stack - stack.reshape(n, -1).mean(axis=1)[:, None, None]
@@ -357,7 +373,7 @@ def _letters(text: str) -> int:
     return sum(ch.isalnum() for ch in text)
 
 
-def word_scores(gray: np.ndarray, word: dict, soft: float = 0.0):
+def word_scores(gray: np.ndarray, word: dict, soft: float = 0.0, thick: float = 0.0):
     """(score of every candidate face, ink crop) for one OCR word, the candidates softened by `soft` (see compare);
     None when the word says nothing (too short, no contrast)."""
     text = word["text"].strip()
@@ -377,7 +393,7 @@ def word_scores(gray: np.ndarray, word: dict, soft: float = 0.0):
     cut = min(widths.values()) + WIDTH_PRUNE
     # a font far too wide or too narrow is not compared shape by shape: it gets the score of a poor shape match
     near = [f for f in tpls if widths[f] <= cut]
-    scored = dict(zip(near, compare_many(ref, [tpls[f] for f in near], soft)))
+    scored = dict(zip(near, compare_many(ref, [tpls[f] for f in near], soft, thick)))
     out = {f: scored[f] if f in scored else POOR_SHAPE - WIDTH_WEIGHT * widths[f] for f in tpls}
     return (out, crop) if out else None
 
@@ -392,12 +408,19 @@ def _overlap(a, b) -> float:
     return max(w, 0) * max(h, 0)
 
 
-# Weight of a word, two clues averaged (0 = regular, 1 = bold, bold above 0.5):
+# Weight of a word, two clues averaged (0 = regular, 1 = bold, bold above BOLD_AT):
 # - the error left by the bold rendering against the regular one (degraded like the page): 1 -> 0, 0.4 -> 1;
 # - the ink mass of the word (a blur spreads ink, it keeps its total) against the regular rendering's, relative to
 #   the page (its words are mostly regular: their median is the reference), on the log scale between regular and
 #   bold. Dossier Test 17, 234 words: 228 right with the first clue, 231 with the second, 233 with both.
 RESIDUAL_BOLD = 0.4
+# the score above which a word is bold. The two clues are weaker on a coarse scan (pixelated 110 dpi: the bold names
+# score 0.41 and 0.47, the regular words 0.15 at most); on the clean and soft scans of Dossier Test 17 the regular words
+# stay under 0.31 and the bold ones over 0.79: 0.35 sits in the gap of both.
+BOLD_AT = 0.35
+# the weight of two or three letters ('97', 'de') says little: its score is pulled toward regular, in proportion to the
+# letters it rests on, under SHORT_EVIDENCE of them (regular digits scored 0.35 to 0.58 in Dossier Test 17)
+SHORT_EVIDENCE = 4
 # the page's reference ink mass: a low quantile of its words (bold words only raise it; a page can be half bold)
 MASS_QUANTILE = 30
 WORD_WEIGHT_SPREAD = 0.3             # the words of a value have two weights when their bold scores spread this much
@@ -479,8 +502,9 @@ class PageFonts:
             return None
         if i not in self._scores:
             soft = self.softness()
-            self._scores[i] = self._raw.get(i) if soft < 0.5 and i in self._raw else \
-                word_scores(self.gray, self.clean[i], soft if soft >= 0.5 else 0.0)
+            thick = self.page_quality().spread
+            self._scores[i] = self._raw.get(i) if soft < 0.5 and not thick and i in self._raw else \
+                word_scores(self.gray, self.clean[i], soft if soft >= 0.5 else 0.0, thick)
         return self._scores[i]
 
     def _sample(self, i: int, f: Face):
@@ -504,7 +528,11 @@ class PageFonts:
                     smp = self._sample(i, max(s, key=s.get))
                     if smp:
                         samples.append(smp)
-            self._quality = quality.fit(samples, self.scale)
+            hard = False
+            if self.scale < quality.NEAREST_BELOW:           # a black and white scan: its pixels are read on its own grid
+                mid = quality.hardness(self.gray, [self.words[i]["box"] for i in idx[::step][:SAMPLE_WORDS]], self.scale)
+                hard = mid is not None and mid < quality.HARD_MID
+            self._quality = quality.fit(samples, self.scale, hard)
         return self._quality
 
     def _mass(self, i: int, f: Face) -> float | None:
@@ -553,7 +581,7 @@ class PageFonts:
     def is_bold(self, own: list[int], family: str) -> bool | None:
         """Weight of the value's words in `family` (see bold_score). None when it cannot be measured."""
         score = self.bold_score(own, family)
-        return None if score is None else score > 0.5
+        return None if score is None else score > BOLD_AT
 
     @_fonts
     def bold_score(self, own: list[int], family: str) -> float | None:
@@ -590,7 +618,9 @@ class PageFonts:
             k = min(_letters(self.clean[i]["text"]), 8)
             votes += k * x
             total += k
-        return votes / total if total else None
+        if not total:
+            return None
+        return votes / total * min(total / SHORT_EVIDENCE, 1.0)
 
     def value_words(self, box) -> list[int]:
         """The OCR words under a value's box (a box per line of the value; a value can be a part of a word)."""
@@ -651,10 +681,10 @@ class PageFonts:
         scores = [self.bold_score([i], main.family) for i in own]
         known = [x for x in scores if x is not None]
         if known and max(known) - min(known) >= WORD_WEIGHT_SPREAD:
-            weights = [main.bold if x is None else x > 0.5 for x in scores]     # two weights: each word its own
+            weights = [main.bold if x is None else x > BOLD_AT for x in scores]     # two weights: each word its own
         else:
             pooled = self.bold_score(own, main.family)                         # one weight: all the words together
-            weights = [main.bold if pooled is None else pooled > 0.5] * len(own)
+            weights = [main.bold if pooled is None else pooled > BOLD_AT] * len(own)
         return [face(main.family, b) or main for b in weights]
 
     def followed(self, box) -> bool:

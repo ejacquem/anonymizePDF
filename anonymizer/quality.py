@@ -4,7 +4,8 @@ The print / scan quality of a page, measured on its own words, and the replaceme
 A word of the scan is compared with the same word rendered sharp in its font (fontmatch), then degraded the way a
 scanner does it, until both look alike:
 - scale: the native resolution of the scan / the resolution of the page image (a 150 dpi scan is drawn at 300 dpi:
-  its letters are made of bigger, softer pixels); known from the PDF image, not fitted,
+  its letters are made of bigger, softer pixels; a 100 dpi one is drawn as blocks of 3 pixels, no interpolation, on the
+  grid of the page: `_native`); known from the PDF image, not fitted,
 - spread: every stroke made thicker (ink spread, toner) or thinner (faded) by a fraction of a pixel,
 - blur: soft focus (Gaussian sigma, page pixels).
 Then per value: the paper and ink colours (a least squares fit, per channel, of the degraded rendering to the
@@ -28,7 +29,7 @@ from . import morph
 
 UP = 4                                   # supersampling of the renderings
 BLURS = (0.0, 0.4, 0.7, 1.0, 1.4, 1.9, 2.5, 3.2)
-SPREADS = (-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0)    # page pixels, multiples of 1 / UP
+COARSE_SPREADS = (-0.5, 0.0, 0.5, 1.0, 1.5, 2.0)      # page pixels; the fit refines the best by a quarter pixel
 MARGIN = 6                               # pixels around a word's ink for the fit (the blur spills out)
 SPREAD_GAIN = 0.03                       # a stroke spread is kept only if it lowers the fit's error this much
 MIN_SAMPLES = 3                          # words needed to fit the quality of a page
@@ -37,14 +38,15 @@ MIN_SAMPLES = 3                          # words needed to fit the quality of a 
 @dataclass(frozen=True)
 class Quality:
     scale: float = 1.0                   # native resolution / page image resolution (<= 1)
-    blur: float = 0.0                    # Gaussian sigma, page pixels
+    blur: float = 0.0                    # Gaussian sigma, page pixels (on a scan enlarged more than twice: on its own pixels)
     spread: float = 0.0                  # stroke offset, page pixels (+ thicker)
     grain: float = 0.0                   # std of the paper noise (0..255)
     fit: float = 0.0                     # mean square residual of the fit (0..1 coverage units), for the trace
+    hard: bool = False                   # the native pixels are black or white (a thresholded scan): no grey in them
 
     def describe(self) -> str:
         dpi = f"{int(round(300 * self.scale))} dpi, " if self.scale < 0.95 else ""
-        return f"{dpi}blur {self.blur:.1f}px, spread {self.spread:+.2f}px, grain {self.grain:.0f}"
+        return f"{dpi}blur {self.blur:.1f}px, spread {self.spread:+.2f}px, grain {self.grain:.0f}" +             (", black and white" if self.hard else "")
 
 
 SHARP = Quality()
@@ -144,8 +146,12 @@ def _down(hi: np.ndarray) -> np.ndarray:
     return hi[:h * UP, :w * UP].reshape(h, UP, w, UP).mean(axis=(1, 3)) / 255.0
 
 
+NEAREST_BELOW = 0.5                      # a scan enlarged more than twice: the viewer draws its pixels as blocks (MuPDF)
+
+
 def _resample(a: np.ndarray, scale: float) -> np.ndarray:
-    """Down to the native resolution of the scan and back up (bilinear, as the page image was made)."""
+    """Down to the native resolution of the scan and back up (bilinear: a scan enlarged up to twice is drawn smooth;
+    a coarser one is drawn as blocks, see _native)."""
     if scale >= 0.95:
         return a
     h, w = a.shape
@@ -154,9 +160,65 @@ def _resample(a: np.ndarray, scale: float) -> np.ndarray:
     return np.asarray(small.resize((w, h), Image.BILINEAR)).astype(float)
 
 
-def degrade(hi: np.ndarray, q: Quality) -> np.ndarray:
-    """A supersampled sharp coverage image (uint8, UP times larger) -> coverage in page pixels, as scanned."""
-    return np.clip(blur(_resample(_down(_spread(hi, q.spread)), q.scale), q.blur), 0, 1)
+HARD_MID = 0.12                          # a scan whose ink pixels are less than this share mid-tones is black and white
+
+
+def hardness(gray: np.ndarray, boxes: list, scale: float) -> float | None:
+    """The share of mid-tones (20 to 80 % of the ink) among the ink pixels of a low resolution scan, read on its own
+    pixel grid (one value per native pixel: the page is drawn as blocks): a thresholded scan has almost none, an
+    anti-aliased or sampled one has many. None when there is no ink to read."""
+    mids = total = 0
+    for x0, y0, x1, y1 in boxes:
+        kx0, kx1 = int(math.floor(x0 * scale)), int(math.ceil(x1 * scale))
+        ky0, ky1 = int(math.floor(y0 * scale)), int(math.ceil(y1 * scale))
+        xs = np.clip(((np.arange(kx0, kx1) + 0.5) / scale).astype(int), 0, gray.shape[1] - 1)
+        ys = np.clip(((np.arange(ky0, ky1) + 0.5) / scale).astype(int), 0, gray.shape[0] - 1)
+        if len(xs) < 3 or len(ys) < 3:
+            continue
+        native = gray[np.ix_(ys, xs)].astype(float)
+        paper, ink = np.percentile(native, 90), np.percentile(native, 1)
+        if paper - ink < 60:
+            continue
+        c = np.clip((paper - native) / (paper - ink), 0, 1)
+        c = c[c > 0.1]
+        mids += int(((c > 0.2) & (c < 0.8)).sum())
+        total += c.size
+    return mids / total if total >= 500 else None
+
+
+def _native(a: np.ndarray, scale: float, origin, hard: bool = False):
+    """The native pixels of the scan under the area `a` (page pixels, its corner the page pixel `origin`): the mean of
+    the coverage under each, on the page's grid. Returns (native pixels, the native index of each page column and
+    row) for `_blocks`."""
+    h, w = a.shape
+    ox, oy = origin
+    kx0, kx1 = int(math.floor(ox * scale)), int(math.ceil((ox + w) * scale))
+    ky0, ky1 = int(math.floor(oy * scale)), int(math.ceil((oy + h) * scale))
+    pad = int(math.ceil(1 / scale)) + 1
+    big = np.pad(a.astype(np.float32), pad)                      # nothing is written outside the patch
+    box = (kx0 / scale - ox + pad, ky0 / scale - oy + pad, kx1 / scale - ox + pad, ky1 / scale - oy + pad)
+    native = np.asarray(Image.fromarray(big, "F").resize((kx1 - kx0, ky1 - ky0), Image.BOX, box=box)).astype(float)
+    if hard:
+        native = (native >= 0.5).astype(float)                    # a black and white scan: every pixel is ink or paper
+    ix = np.clip(np.floor((np.arange(w) + ox + 0.5) * scale).astype(int) - kx0, 0, kx1 - kx0 - 1)
+    iy = np.clip(np.floor((np.arange(h) + oy + 0.5) * scale).astype(int) - ky0, 0, ky1 - ky0 - 1)
+    return native, np.ix_(iy, ix)
+
+
+def _blocks(native_and_index, sigma: float) -> np.ndarray:
+    """The native pixels (blurred by `sigma` native pixels: a soft focus belongs to the scan, its pixels stay blocks)
+    drawn as blocks on the page."""
+    native, index = native_and_index
+    return blur(native, sigma)[index]
+
+
+def degrade(hi: np.ndarray, q: Quality, origin=None) -> np.ndarray:
+    """A supersampled sharp coverage image (uint8, UP times larger) -> coverage in page pixels, as scanned. `origin`:
+    the page pixel of its corner (the native pixel grid of a low resolution scan is aligned on it)."""
+    a = _down(_spread(hi, q.spread))
+    if q.scale < NEAREST_BELOW and origin is not None:
+        return np.clip(_blocks(_native(a, q.scale, origin, q.hard), q.blur * q.scale), 0, 1)
+    return np.clip(blur(_resample(a, q.scale), q.blur), 0, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -169,12 +231,15 @@ class Sample:
     region: tuple                        # (x0, y0, x1, y1) page pixels
     a: np.ndarray                        # coverage of the scan in the region (0 paper .. 1 ink), from the grey page
     hi: np.ndarray                       # candidate rendering, supersampled, on the region (uint8)
-    bases: dict = field(default_factory=dict)   # (spread, scale) -> the rendering spread and resampled (no blur yet)
+    bases: dict = field(default_factory=dict)   # (spread, scale, hard) -> the rendering spread and resampled (no blur yet)
 
     def degraded(self, q: "Quality") -> np.ndarray:
-        key = (q.spread, q.scale)
+        key = (q.spread, q.scale, q.hard)
         if key not in self.bases:
-            self.bases[key] = _resample(_down(_spread(self.hi, q.spread)), q.scale)
+            a = _down(_spread(self.hi, q.spread))
+            self.bases[key] = _native(a, q.scale, self.region[:2], q.hard) if q.scale < NEAREST_BELOW                 else _resample(a, q.scale)
+        if q.scale < NEAREST_BELOW:
+            return np.clip(_blocks(self.bases[key], q.blur * q.scale), 0, 1)
         return np.clip(blur(self.bases[key], q.blur), 0, 1)
 
 
@@ -218,21 +283,24 @@ def _total(samples: list[Sample], q: Quality) -> float:
     return sum(residual(s, q) for s in samples) / max(len(samples), 1)
 
 
-def fit(samples: list[Sample], scale: float = 1.0) -> Quality:
-    """Blur and spread that make the sharp candidates look like the scan (coordinate search: blur, spread, blur).
+def fit(samples: list[Sample], scale: float = 1.0, hard: bool = False) -> Quality:
+    """Blur and spread that make the sharp candidates look like the scan (every blur at every spread, the spread
+    refined by a quarter pixel: a thick copy and a soft one are told apart only together).
+    A black and white scan (`hard`) has no blur: its pixels are ink or paper, only the thickness is fitted.
     Fewer than MIN_SAMPLES words: not fitted (sharp, at the native scale)."""
-    q = Quality(scale=scale)
+    q = Quality(scale=scale, hard=hard)
     if len(samples) < MIN_SAMPLES:
         return q
-    best = min(BLURS, key=lambda b: _total(samples, replace(q, blur=b)))
-    q = replace(q, blur=best)
-    errors = {d: _total(samples, replace(q, spread=d)) for d in SPREADS}
-    best = min(errors, key=errors.get)
-    if errors[best] > (1 - SPREAD_GAIN) * errors[0.0]:
-        best = 0.0                       # no clear gain: strokes kept as printed (a faded or JPEG copy can fake it)
-    q = replace(q, spread=best)
-    best = min(BLURS, key=lambda b: _total(samples, replace(q, blur=b)))
-    q = replace(q, blur=best)
+    blurs = (0.0,) if hard else BLURS
+    grid = {(bl, d): _total(samples, replace(q, blur=bl, spread=d)) for d in COARSE_SPREADS for bl in blurs}
+    bl, d = min(grid, key=grid.get)
+    for dd in (d - 0.25, d + 0.25):                      # the spread by a quarter pixel
+        grid[(bl, dd)] = _total(samples, replace(q, blur=bl, spread=dd))
+    bl, d = min(grid, key=grid.get)
+    zero = min((v, b0) for (b0, d0), v in grid.items() if d0 == 0.0)
+    if grid[(bl, d)] > (1 - SPREAD_GAIN) * zero[0]:
+        bl, d = zero[1], 0.0             # no clear gain: strokes kept as printed (a faded or JPEG copy can fake it)
+    q = replace(q, blur=bl, spread=d)
     return replace(q, fit=_total(samples, q))
 
 
@@ -339,7 +407,7 @@ def text_coverage(font, text: str, xy, sx: float, q: Quality):
     ImageDraw.Draw(canvas).text(((x - left) * UP / sx, (y - top) * UP), text, font=big, anchor="ls", fill=255)
     if wu != w * UP:
         canvas = canvas.resize((w * UP, h * UP), Image.BICUBIC)
-    return degrade(np.asarray(canvas), q), (left, top)
+    return degrade(np.asarray(canvas), q, (left, top)), (left, top)
 
 
 def paint(img: Image.Image, text: str, font, xy, sx: float, ink, q: Quality, key):
