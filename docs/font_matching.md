@@ -139,3 +139,73 @@ percentile, on the words that were replaced):
   4 letters is shrunk toward regular (regular digits scored up to 0.58).
 Left: a value written in another family than its line (an IBAN in Consolas in a Garamond sentence) takes the line's;
 a fake narrower than the box of its original can leave a pale fragment of the last letter.
+
+## 10. Fourth round: the style of a block instead of the style of each value
+
+The complaint: inside one paragraph, two replaced values come out with different stroke thickness and quality. Each
+value's weight, ink, grain, size and family were decided from its own 1-3 words, so each got its own noisy draw. The goal
+is replacements that agree with the text around them, not a perfect font match.
+
+### 10.1 The scoreboard (`tools/style_bench.py`)
+
+- Sample set: the three fake scans of Dossier Test 17 with their truth (`polices_scan.pdf`, `contrat_assurance_scan.pdf`,
+  `paragraphes_scan.pdf`: 229 values, 10 pages at 100 to 300 dpi). No new generator and no public scans were made: the Test
+  17 paragraph file already covers paragraphs in one font at four qualities.
+- Two runs per file on a copy: the fake run (the real output) and an identity run (every value replaced by itself). Measures
+  on 300 dpi crops: thickness (median horizontal ink run / letter height), darkness (5 % darkest level), contrast,
+  sharpness, height, grain; round trip ratios and an SSIM (3x3 windows, best shift of +-2 px); consistency of each fake
+  value against the unreplaced OCR words of its block (z-scores; the share with |z| > 2 on thickness or darkness; the
+  spread of the values against the spread of the others, 1 = the same); detection of family and weight on the original.
+
+### 10.2 Baseline and final (main numbers; the full per-page table: `python tools/style_bench.py run out.json`)
+
+| measure (all pages, n = 229) | baseline | block style |
+|---|---:|---:|
+| family right (detector) | 91 % | 91 % |
+| weight right (detector) | 98 % | 98 % |
+| round trip: thickness ratio, median | 1.00 | 1.00 |
+| round trip: |darkness| difference, median (levels) | 3.0 | 3.0 |
+| round trip: sharpness ratio, median | 0.96 | 0.97 |
+| round trip: SSIM, median | 0.758 | 0.747 |
+| consistency: values with |z| > 2 on thickness or darkness | 44 % | 36 % |
+| consistency: |z| thickness, 90th percentile | 2.62 | 2.39 |
+| consistency: |z| darkness, 90th percentile | 9.10 | 9.11 |
+| spread of the values / their block, thickness (median of blocks) | 1.00 | 0.92 |
+| spread of the values / their block, darkness | 1.50 | 1.61 |
+| spread of the values / their block, sharpness | 0.32 | 0.33 |
+| spread of the values / their block, height | 0.29 | 0.29 |
+
+Per page, the outlier share (baseline -> block): contrat p1 70 -> 58 %, contrat p2 41 -> 44 %, contrat p3 57 -> 29 %,
+paragraphes p1 36 -> 41 %, paragraphes p3 45 -> 23 %, paragraphes p4 41 -> 41 %, paragraphes p2 5 -> 0 %, polices 0 -> 0 %.
+Family per page: contrat p1 98 -> 98 %, paragraphes p3 74 -> 74 %, all others unchanged.
+
+Timings (bench, scan + anonymize, one run each on a machine with other programs running; read the proportions):
+baseline polices 47.5 s, contrat 49.1 s, paragraphes 76.7 s; block style polices 41.6 s, contrat 49.6 s, paragraphes 66.0 s.
+The timings differ run to run by 10 to 15 %, so no speed-up or slow-down is claimed; the block style costs one measure
+per block (bold scores of up to 24 words, grain, size), cached per page.
+
+### 10.3 What the block style does (`anonymizer/layout.py`, `fontmatch.PageFonts.block_style`)
+
+- Lines and blocks of the OCR words of a page (`layout.blocks`). A block with at least 4 measurable words is measured
+  once: family (the vote of `face_for` over its words), weight threshold (the mid gap of its bold scores when they form
+  two clusters of at least 2 words with a gap of 0.25; else `BOLD_AT`), letter size, grain, and ink / paper (`block_colours`).
+- The values of the block take these in `look`, `face_for`, `is_bold`, `word_faces` and `metrics`. A value keeps its own
+  size only beyond 12 % of its block's. Its baseline and the per-word weight decision stay per value.
+- Ink and grain from the block: the consistency of the thickness and the outliers improve; the darkness spread widens
+  (see 10.4).
+
+### 10.4 Tried and kept or dropped
+
+- Family of a value with few letters taken from its block (`WEAK_LETTERS = 6`): family 98 -> 77 % on contrat p1. Dropped.
+- Ink of the block (kept): the ablation with each value's own ink gives outliers 41 % (block ink 36 %) and darkness spread
+  1.39 (block ink 1.61); the thickness spread is 0.88 (0.92). The spec puts the ink on the block, so it stays, and the
+  darkness spread is the price: a known trade-off, to look at next.
+- Darkness z-scores stay high (90th percentile about 9): the 5 % darkest level of a small crop reacts to the blur and the
+  colour of its neighbours; a better darkness measure is the next step.
+
+### 10.5 What is not done
+
+- The synthetic paragraph generator and the public-domain scans: not built (see 10.1).
+- Quality (blur, spread, scale) is still per page, not per block; a block is never measured on its own quality.
+- Family per block only as a vote: a value in another font than its block (an IBAN in Consolas) is still read as its line
+  says, as before.

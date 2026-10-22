@@ -62,6 +62,7 @@ anonymizer/
                        Roboto, Open Sans, Lato, Source Sans 3, Barlow, Courier Prime
   fields.py            identity documents: lines_of, find_labeled, is_id_document; MRZ: find_mrz, build_mrz, mrz_zone
   regions.py           find_codes, find_signatures (+ *_digital variants), is_signature_label, line_angles (skew)
+  layout.py            lines and blocks of the OCR words (blocks = the surroundings a value's style is taken from, 10b)
   morph.py             square max / min / closing on arrays, two 1-D passes (same result as PIL's rank filters)
   faces.py             faces of people (YuNet, ONNX Runtime, offline): detect, find_faces, find_faces_digital
   models/              face_detection_yunet_2023mar.onnx (OpenCV zoo, MIT; sha256 checked at load)
@@ -107,6 +108,7 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        make_test_idcard.py also writes the poor copy (Dossier Test 09); make_test_transfers.py (Dossier
                        Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12); key_hunt.py (many random keys on one file);
                        snapshot_results.py (before / after comparison of the results, section 11b);
+                       style_bench.py (scoreboard of the replaced text against its block, section 12c);
                        check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
                        section 12b: the PDFs are downloaded, never committed)
 ```
@@ -628,6 +630,18 @@ Order must never change a result (`order_tests`): a value written with several s
   - Black and white scans (`quality.hardness`: share of mid-tones among the ink pixels, read on the native grid, < 0.12;
     `Quality.hard`): every native pixel of the fake is ink or paper (threshold 0.5), no blur; without it the fake was grey
     (ink 50 levels too light) and smooth.
+- Block style (`layout.py`, `PageFonts.block_style`; results in docs/font_matching.md section 10): the OCR words of a
+  page are grouped into lines and blocks (`layout.blocks`: a line is cut where a gap is over 3 word heights; a block is
+  a run of lines whose gaps are under one text height, whose heights are alike (0.8-1.25) and whose x ranges overlap or
+  start at the same x). A block with >= 4 measurable words (`MIN_BLOCK_WORDS`) is measured once and cached on the page
+  (`BlockStyle`): family (the vote of `face_for` over its words), weight threshold (the mid gap of its bold scores when
+  they form two clusters of >= 2 words with a gap >= 0.25, else `BOLD_AT`), letter size (median of its words' fits; a
+  value keeps its own size only beyond 12 %), grain (median of its words' rings) and ink / paper (`block_colours`, medians
+  over its 8 longest words). `look`, `face_for`, `is_bold`, `word_faces` and `metrics` take these for the values of the
+  block; the value's own baseline and its own per-word weight decision (against the block threshold) stay per value. The
+  trace look says which block (`block N`). A value with no OCR word under it, or in a block with fewer words: the
+  per-value rules, as before. Tried and dropped: giving a value with few letters the block's family (contrat p1 family
+  98 % -> 77 %).
 - Limits: close look-alikes are mixed up on soft copies (Arial / Roboto, Courier New / Courier Prime, DejaVu Sans
   Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; ~0.1-0.3 s per value. A value in a
   font other than its line's (an IBAN in Consolas inside a Garamond sentence) takes the line's family: the value's own
@@ -765,6 +779,10 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Detectors (`detector_tests`, no OCR): the strings the real files showed ('MONSIEUR' is no BIC, capitalised cities,
   Swiss VAT, apostrophe references and amounts, 'Code SWIFT' not a name, identity by shape).
 - `KEEP`: values that must stay readable in a digital output (no over-redaction), e.g. 'MONSIEUR'.
+- Lines and blocks (`layout_tests`, no OCR): a paragraph is one block, a heading and separated paragraphs are others, a
+  label and a value on one row far apart are two blocks, a line with a gap over 3 word heights is cut, every word is in
+  one block.
+
 - Scan rendering (`name_width_tests`, `tilted_font_tests`, `mrz_typed_quality_tests`, `ink_tail_tests`, `italic_tests`):
   see section 10b.
 - Text of scans in sentences (`scan_text_tests`, no OCR: punctuation, line cuts, filling, 'i\venue', a phone over a
@@ -808,6 +826,20 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   replaced wherever it stands, so 'banker's personal checks' and 'SAMPLE FORM' are not in `keep` (over-redaction,
   accepted by design).
 - The scanned copies are made by the script (pages rendered at 200 dpi) in a temporary folder, never kept.
+
+### 12c. Style scoreboard: `python tools/style_bench.py run <out.json> [--label NAME] [--file NAME]`
+
+- How well the replaced text blends into the text around it, on the three fake scans of Dossier Test 17
+  (`polices_scan.pdf`, `contrat_assurance_scan.pdf`, `paragraphes_scan.pdf`, truth in `fonts_truth.json`). Each file runs
+  twice on a temporary copy with a scratch key: the fake run (what the user gets) and an identity run (every value
+  replaced by itself: the round trip). Measures per value: thickness, darkness, contrast, sharpness, height and grain of
+  its crop; round trip ratios and differences and a 3x3-window SSIM at the best shift of +-2 px; consistency (z-scores of
+  the fake against the unreplaced words of its block, the share with |z| > 2 on thickness or darkness, the spread of the
+  values against the spread of the other words of the block); detection (family, weight, size) on the original page.
+- `compare <before.json> <after.json>` prints the measures side by side. Takes about 5 minutes (the pipeline runs twice
+  per file). Not part of check_all. Results: docs/font_matching.md section 10.
+- Not built: a synthetic paragraph generator of its own (the Test 17 paragraph file is the set), and the public-domain
+  scans (not downloaded).
 
 ## 13. Known limits / ideas
 

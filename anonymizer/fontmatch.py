@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from . import morph, quality
+from . import layout, morph, quality
 
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
 
@@ -390,20 +390,43 @@ MASS_QUANTILE = 30
 WORD_WEIGHT_SPREAD = 0.3             # the words of a value have two weights when their bold scores spread this much
 INK_LIGHTER = 30                    # a value's ink this much lighter than the page's: the page's is used
 SAMPLE_WORDS = 20                   # words of the page measured for its quality
+# The style of a block of text (paragraph, label column, table cell: anonymizer/layout.py) is measured once from its
+# words, and the values of the block start from it: its family, its weight threshold (between the regular and the bold
+# words of the block when they form two clusters, else BOLD_AT), its letter size, its grain and its ink. A value keeps
+# its own family or size only on strong evidence (face_for, metrics).
+MIN_BLOCK_WORDS = 4                 # measurable words a block needs for its own style (fewer: the value's own rules)
+BLOCK_WORDS = 24                    # the longest measurable words of a block are the ones measured
+BLOCK_SPLIT = 0.25                  # the bold scores of a block are two clusters when their largest gap is this wide
+SIZE_SLACK = 0.12                   # a value whose own size is this close to its block's takes the block's size
+
+
+@dataclass
+class BlockStyle:
+    """The style of one block: family (None when not measured), weight threshold, letter size (px), grain, and the
+    measurable words it rests on (members, longest first)."""
+    family: str | None
+    bold_at: float
+    size: float | None
+    grain: float | None
+    words: int
+    members: list[int]
 
 
 @dataclass
 class Look:
-    """How a replacement is written: its face, the page quality, the paper and ink colours of the value."""
+    """How a replacement is written: its face, the page quality, the paper and ink colours of the value, and the
+    block whose style it takes (None: the value's own)."""
     face: Face | None
     margin: float                   # how sure the face is (0 = a tie with the next family)
     quality: "quality.Quality"
     paper: tuple | None = None
     ink: tuple | None = None
+    block: int | None = None
 
     def describe(self) -> str:
         name = self.face.name if self.face else "Arial (font not measured)"
-        return name + (f", {self.quality.describe()}" if self.quality is not None else ", sharp")
+        text = name + (f", {self.quality.describe()}" if self.quality is not None else ", sharp")
+        return text + (f", block {self.block}" if self.block is not None else "")
 
 
 class PageFonts:
@@ -421,6 +444,9 @@ class PageFonts:
         self._scores: dict[int, tuple | None] = {}
         self._bold: dict[tuple, float | None] = {}
         self._quality = None
+        self._layout = None         # (blocks, block of each word): anonymizer/layout.py, made on first use
+        self._styles: dict[int, BlockStyle] = {}
+        self._block_cols: dict[int, tuple | None] = {}
 
     def raw_scores(self, i: int):
         """Face scores of word i against sharp candidates (to choose the words the page quality is fitted on)."""
@@ -515,9 +541,81 @@ class PageFonts:
         return self._mass_ref or None
 
     def is_bold(self, own: list[int], family: str) -> bool | None:
-        """Weight of the value's words in `family` (see bold_score). None when it cannot be measured."""
+        """Weight of the value's words in `family` (see bold_score), against the threshold of their block. None when
+        it cannot be measured."""
         score = self.bold_score(own, family)
-        return None if score is None else score > BOLD_AT
+        return None if score is None else score > self.bold_threshold(own)
+
+    # ----- the style of the blocks of the page (see BlockStyle) -----
+
+    def _blocks(self):
+        if self._layout is None:
+            self._layout = layout.blocks(self.words)
+        return self._layout
+
+    def block_at(self, box) -> int | None:
+        """The block of a value written in `box`: the block of the OCR word it overlaps most (None: no word)."""
+        own = self.value_words(box)
+        best = max(own, key=lambda i: _overlap(self.words[i]["box"], box), default=None)
+        return None if best is None else self._blocks()[1][best]
+
+    def block_style(self, bid: int | None) -> BlockStyle | None:
+        """The style of block bid, None when it is None or has fewer than MIN_BLOCK_WORDS measurable words."""
+        if bid is None:
+            return None
+        if bid not in self._styles:
+            self._styles[bid] = self._measure_block(bid)
+        style = self._styles[bid]
+        return style if style.words >= MIN_BLOCK_WORDS else None
+
+    def _measure_block(self, bid: int) -> BlockStyle:
+        members = [i for i in self._blocks()[0][bid]["words"]
+                   if i not in self.skip and _letters(self.words[i]["text"]) >= 1 and self.scores(i)]
+        members.sort(key=lambda i: -_letters(self.words[i]["text"]))
+        members = members[:BLOCK_WORDS]
+        if len(members) < MIN_BLOCK_WORDS:
+            return BlockStyle(None, BOLD_AT, None, None, len(members), members)
+        fam: dict[str, float] = {}                             # the family vote of face_for, over the block's words
+        for i in members:
+            s = self.scores(i)
+            best, k = max(s.values()), min(_letters(self.words[i]["text"]), 8)
+            per_family: dict[str, float] = {}
+            for f, v in s.items():
+                per_family[f.family] = max(per_family.get(f.family, -9.0), v)
+            for family, v in per_family.items():
+                fam[family] = fam.get(family, 0.0) + k * (v - best)
+        family = max(fam, key=fam.get)
+        scores = sorted(x for x in (self.bold_score([i], family) for i in members) if x is not None)
+        bold_at = BOLD_AT
+        if len(scores) >= 4:                                   # two clusters: the threshold is in their gap
+            gap, k = max((scores[k + 1] - scores[k], k) for k in range(1, len(scores) - 2))
+            if gap >= BLOCK_SPLIT:
+                bold_at = min(max((scores[k] + scores[k + 1]) / 2, 0.2), 0.7)
+        size = None
+        regular = face(family, False)
+        sizes = self._fit_words(members, regular, self.softness(), baseline=False) if regular else None
+        if sizes:
+            size = float(np.median(sizes[0]))
+        grain = float(np.median([quality.grain(self.gray, self.words[i]["box"]) for i in members]))
+        return BlockStyle(family, bold_at, size, grain, len(members), members)
+
+    def block_colours(self, img, bid: int | None):
+        """(paper, ink) of a block: the medians over its longest words; None without enough of them."""
+        if bid is None:
+            return None
+        if bid not in self._block_cols:
+            style = self.block_style(bid)
+            got = [c for c in (self._colours(img, i, self.page_quality()) for i in style.members[:8]) if c] \
+                if style else []
+            self._block_cols[bid] = None if len(got) < 3 else (
+                tuple(int(v) for v in np.median([c[0] for c in got], axis=0)),
+                tuple(int(v) for v in np.median([c[1] for c in got], axis=0)))
+        return self._block_cols[bid]
+
+    def bold_threshold(self, own: list[int]) -> float:
+        """The weight threshold of the value's words: their block's (BOLD_AT when the block has no style)."""
+        style = self.block_style(self._blocks()[1][own[0]]) if own else None
+        return style.bold_at if style else BOLD_AT
 
     def bold_score(self, own: list[int], family: str) -> float | None:
         """How bold the value's words look in `family`, 0 = regular, 1 = bold, from two clues (see RESIDUAL_BOLD):
@@ -578,9 +676,13 @@ class PageFonts:
         if not got:
             return None
         sizes, bases = got
+        size = float(np.median(sizes))
+        style = self.block_style(self._blocks()[1][own[0]]) if own else None
+        if style is not None and style.size and abs(size / style.size - 1) <= SIZE_SLACK:
+            size = style.size                          # the letters of the block (its median over many words)
         if not bases:                                  # measured on the line only: the baseline from the box
-            return float(np.median(sizes)), None
-        return float(np.median(sizes)), float(np.median(bases))
+            return size, None
+        return size, float(np.median(bases))
 
     def _fit_words(self, idx, f: Face, soft: float, baseline: bool = True):
         """Sizes and baselines (pixels) of the words idx fitted in face f (fit_rows); None when none fits. The
@@ -613,11 +715,12 @@ class PageFonts:
             return None
         scores = [self.bold_score([i], main.family) for i in own]
         known = [x for x in scores if x is not None]
+        thr = self.bold_threshold(own)
         if known and max(known) - min(known) >= WORD_WEIGHT_SPREAD:
-            weights = [main.bold if x is None else x > BOLD_AT for x in scores]     # two weights: each word its own
+            weights = [main.bold if x is None else x > thr for x in scores]         # two weights: each word its own
         else:
             pooled = self.bold_score(own, main.family)                         # one weight: all the words together
-            weights = [main.bold if pooled is None else pooled > BOLD_AT] * len(own)
+            weights = [main.bold if pooled is None else pooled > thr] * len(own)
         return [face(main.family, b) or main for b in weights]
 
     def followed(self, box) -> bool:
@@ -720,19 +823,23 @@ class PageFonts:
         misread cannot be measured itself)."""
         f, margin = self.face_for(box, bold_hint) if match_font else (None, 0.0)
         q = self.page_quality()
-        q = replace(q, grain=quality.grain(self.gray, box))
         own = self.value_words(box)
+        bid = self.block_at(box)
+        style = self.block_style(bid)                  # grain and ink come from the block when it has its own style
+        q = replace(q, grain=style.grain if style is not None and style.grain is not None
+                    else quality.grain(self.gray, box))
         by_length = lambda idx: sorted(idx, key=lambda j: -_letters(self.clean[j]["text"]))   # noqa: E731
-        colours = None
-        for i in by_length(own) + by_length(self.line_words(own)):
-            colours = self._colours(img, i, q)
-            if colours:
-                break
+        colours = self.block_colours(img, bid) if style is not None else None
+        if colours is None:
+            for i in by_length(own) + by_length(self.line_words(own)):
+                colours = self._colours(img, i, q)
+                if colours:
+                    break
         page = self.page_colours(img)
         if page and (not colours or _lum(colours[1]) > _lum(page[1]) + INK_LIGHTER):
             colours = (colours[0] if colours else page[0], page[1])    # a few short words measure too light an ink
         paper, ink = colours or (None, None)
-        return Look(f, margin, q, paper, ink)
+        return Look(f, margin, q, paper, ink, bid if style is not None else None)
 
     def page_colours(self, img):
         """(paper, ink) of the page's text: the medians over its 8 longest measurable words. None without them."""

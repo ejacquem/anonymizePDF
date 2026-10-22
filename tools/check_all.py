@@ -3306,8 +3306,40 @@ def native_blocks_tests():
         check(f"fit: {label} ({q.describe()})", ok(q))
 
 
+def layout_tests():
+    """Lines and blocks of the OCR words (anonymizer/layout.py) on synthetic word lists: a paragraph is one block, a
+    heading and separated paragraphs are other blocks, a label and a value on one row are two blocks, a line with a
+    gap of over three word heights is cut, and every word is in exactly one block."""
+    print("\n== lines and blocks of the page (no OCR)")
+    from anonymizer import layout
+
+    def word(x0, y0, w=40, h=20):
+        return {"text": "mot", "box": [x0, y0, x0 + w, y0 + h]}
+
+    paragraph = [word(50 + c * 48, 100 + r * 28) for r in range(3) for c in range(4)]        # gaps 8 px, lines 28 apart
+    blocks, of = layout.blocks(paragraph)
+    check("layout: a paragraph (3 lines, gaps under a text height) is one block",
+          len(blocks) == 1 and set(of) == {0}, f"{len(blocks)} block(s)")
+    heading = [word(50, 40, 300, 40)] + [word(50 + c * 48, 120 + r * 28) for r in range(3) for c in range(4)]
+    blocks, of = layout.blocks(heading)
+    check("layout: a heading twice the text height starts its own block",
+          len(blocks) == 2 and of[0] != of[1] and len({of[i] for i in range(1, len(heading))}) == 1)
+    two = paragraph + [word(50 + c * 48, 300 + r * 28) for r in range(2) for c in range(4)]   # 100 px below: a gap
+    blocks, of = layout.blocks(two)
+    check("layout: two paragraphs far apart are two blocks", len(blocks) == 2 and of[0] != of[-1])
+    row = [word(50, 100), word(250, 100)]                    # a label and a value side by side, not aligned
+    blocks, of = layout.blocks(row)
+    check("layout: a label and a value on one row, far apart, are two blocks", len(blocks) == 2 and of[0] != of[1])
+    cut, _ = layout.blocks([word(50, 100), word(96, 100), word(300, 100)])
+    check("layout: a line is cut where the gap is over three word heights",
+          len(cut) == 2 and cut[0]["words"] == [0, 1] and cut[1]["words"] == [2])
+    check("layout: every word is in exactly one block",
+          sorted(i for b in blocks for i in b["words"]) == list(range(len(row)))
+          and all(i in blocks[of[i]]["words"] for i in range(len(row))))
+
+
 GROUPS = [
-    "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
+    "layout_tests", "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
     "split_word_tests", "colon_tests", "street_name_tests", "second_pass_tests", "suspect_suggestion_tests",
     "incremental_report_tests", "scan_anonymize_batch_tests",
