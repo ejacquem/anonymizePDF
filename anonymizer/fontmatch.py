@@ -479,7 +479,7 @@ class PageFonts:
     page, gray = the grey page image, scale = native resolution of the scan / resolution of the page image)."""
 
     def __init__(self, gray: np.ndarray, words: list[dict], scale: float = 1.0, skip=()):
-        self.gray = gray
+        self.gray = polarity_normalised(gray, [w["box"] for w in words])
         self.words = words
         self.scale = min(scale, 1.0)
         self.skip = set(skip)       # words that are not measured: slanted words (their OCR box is not their ink)
@@ -937,6 +937,24 @@ class PageFonts:
         key = memo.image_key(img)
         self._seen_img = (weakref.ref(img), key)
         return key
+
+
+def polarity_normalised(gray: np.ndarray, boxes, margin: int = 3) -> np.ndarray:
+    """A copy of a grey page where each box on a dark background is inverted: its light ink becomes dark ink, the form
+    the font matching compares (white text on black matched no face: family right 4 %, weight 54 %, Dossier Test 19).
+    Boxes on a light background are left as they are. Decided on the original page, and each pixel is inverted once
+    even where two boxes overlap. Only the measures use this copy: the painting keeps the page."""
+    out = gray.copy()
+    mask = np.zeros(gray.shape, dtype=bool)
+    for x0, y0, x1, y1 in boxes:
+        # the box grows by a share of its height: the background around the ink must share its polarity
+        grow = max(margin, 0.6 * (y1 - y0))
+        X0, Y0 = max(int(x0 - grow), 0), max(int(y0 - grow), 0)
+        X1, Y1 = min(int(math.ceil(x1 + grow)), gray.shape[1]), min(int(math.ceil(y1 + grow)), gray.shape[0])
+        if X1 > X0 and Y1 > Y0 and np.median(gray[Y0:Y1, X0:X1]) < 128:
+            mask[Y0:Y1, X0:X1] = True
+    out[mask] = 255 - out[mask]
+    return out
 
 
 def _lum(rgb) -> float:

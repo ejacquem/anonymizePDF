@@ -1013,7 +1013,11 @@ def ink_start(img, box) -> float:
         return x0
     paper = sum(background_color(img, box)) / 3.0
     strip = np.asarray(img.convert("L").crop((xa, ya, xb, yb))).astype(float)
-    dark = np.clip(paper - strip, 0, None)
+    mid = float(np.median(strip))                          # the box is mostly background: its median is the paper
+    if mid < 128:                                          # light ink on a dark background: the strokes are the bright side
+        dark = np.clip(strip - mid, 0, None)
+    else:
+        dark = np.clip(paper - strip, 0, None)
     peak = dark.max()
     if peak < 8:
         return x0
@@ -1074,6 +1078,8 @@ def ink_tail(gray: np.ndarray, box, others=()):
     if ax1 - ax0 < 4 or ay1 - ay0 < 4:
         return None
     win = gray[ay0:ay1, ax0:ax1].astype(float)
+    if np.median(win) < 128:            # light ink on a dark background: read the window inverted (dark ink)
+        win = 255 - win
     paper = np.percentile(win, 85)
     ink = win < paper - 60
     lines = _long_runs(ink, 3 * h) | _long_runs(ink.T, 3 * h).T       # ruled lines and frames are not letters

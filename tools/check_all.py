@@ -3651,6 +3651,106 @@ def layout_tests():
           and all(i in blocks[of[i]]["words"] for i in range(len(row))))
 
 
+def colour_tests():
+    """Dossier Test 19: white and coloured text on coloured backgrounds, digital and scan (tools/make_test_colours.py).
+    No value left in its box; each replacement on the contrast side of its background; the family and the weight the
+    scan path finds for each value's font; no sliver of the original left in the gap before a replacement (docs 10.6)."""
+    import json
+
+    from anonymizer import fontmatch
+
+    src = ROOT / "sample_data" / "Dossier Test 19"
+    truth = json.loads((src / "colours_truth.json").read_text(encoding="utf-8"))
+    combos = {i + 1: c for i, c in enumerate(truth["combinations"])}
+    dark = {"black", "navy", "dark green", "dark red", "dark grey"}
+    px = 300 / 72
+    work = Path(tempfile.mkdtemp(prefix="anon_colour_"))
+    try:
+        for name in ("colours_digital.pdf", "colours_scan.pdf"):
+            shutil.copy(src / name, work / name)
+        config = engine.scan_folder(work, "colours", _names_model(), "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(work, "colours", config, "fra+eng", False, lambda m: None)
+        for f in rep["files"]:
+            out = fitz.open(work / f["output"])
+            orig = fitz.open(src / f["file"])
+            left = [(h["page"], fitz.Rect(h["box"])) for lo in f["leftovers"] for h in lo.get("hits", []) if "box"in h]
+            leak, polarity, gap = [], [], []
+            for v in truth["values"]:
+                c = combos[v["combination"]]
+                page_no, box = v["page"], fitz.Rect(v["box"])
+                clip = fitz.Rect(box.x0 - 12, box.y0 - 2, box.x1 + 2, box.y1 + 2)
+                bg_o, ink_o = _lumas(orig[page_no - 1], box)
+                if f["mode"] == "scan":
+                    present = any(p == page_no and r.intersects(box) for p, r in left)
+                    bg_n, ink_n = _lumas(out[page_no - 1], box)
+                else:
+                    text = " ".join(s["text"] for s in _spans_in(out[page_no - 1], box))
+                    present = _norm(v["value"]) in _norm(text)
+                    bg_n, ink_n = _lumas(out[page_no - 1], box)
+                tag = f"{c['bg_name']} / {c['fg_name']} / {c['font']}{' bold' if c['bold'] else ''}: {v['value'][:18]}"
+                if present:
+                    leak.append(tag)
+                if (ink_n - bg_n) * (ink_o - bg_o) <= 0:
+                    polarity.append(tag)
+                if f["mode"] == "scan" and c["bg_name"] in dark:
+                    pix = out[page_no - 1].get_pixmap(dpi=300, alpha=False, clip=clip)
+                    arr = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, pix.n)[..., :3].mean(axis=2)
+                    edge = (box.x0 - clip.x0) * px
+                    lo, hi = int(round(edge - 6)), int(round(edge - 1))
+                    excess = float((arr[:, max(lo, 0):max(hi, 0)] - np.median(arr)).max()) if hi > lo else 0.0
+                    if excess > 40:
+                        gap.append(f"{tag} ({excess:.0f})")
+            check(f"{f['file']}: no value left in its box", not leak, "; ".join(leak[:4]))
+            check(f"{f['file']}: each replacement on the contrast side of its background", not polarity,
+                  "; ".join(polarity[:4]))
+            if f["mode"] == "scan":
+                check(f"{f['file']}: no sliver of the original in the gap before a replacement", not gap,
+                      "; ".join(gap[:4]))
+        # the faces the scan path finds for the values of the scan (before any replacement)
+        src_doc = fitz.open(src / "colours_scan.pdf")
+        right_family = right_weight = total = 0
+        for p, page in enumerate(src_doc, start=1):
+            gray = np.asarray(ocr.render_page(page, 300).convert("L"))
+            words = ocr.ocr_words(ocr.render_page(page, 300), "fra+eng")
+            pf = fontmatch.PageFonts(gray, words, scanpaint.native_scale(page, 300))
+            for v in [v for v in truth["values"] if v["page"] == p]:
+                c = combos[v["combination"]]
+                face, _ = pf.face_for([x * px for x in v["box"]])
+                total += 1
+                right_family += bool(face) and face.family == c["font"]
+                right_weight += bool(face) and face.bold == c["bold"]
+        check(f"colours (scan): the font family found for {total} values", right_family >= 0.95 * total,
+              f"{right_family}/{total}")
+        check(f"colours (scan): the weight found for {total} values", right_weight >= 0.95 * total,
+              f"{right_weight}/{total}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _spans_in(page, box):
+    got = []
+    for b in page.get_text("dict")["blocks"]:
+        for line in b.get("lines", []):
+            for sp in line["spans"]:
+                r = fitz.Rect(sp["bbox"])
+                if r.get_area() and (r & box).get_area() / r.get_area() > 0.5:
+                    got.append(sp)
+    return got
+
+
+def _lumas(page, box):
+    """(background, ink) luminance of a box of a page: median, and the 98th (light ink) or 2nd percentile (dark ink)."""
+    clip = fitz.Rect(box.x0 - 2, box.y0 - 2, box.x1 + 2, box.y1 + 2)
+    pix = page.get_pixmap(dpi=200, alpha=False, clip=clip)
+    arr = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, pix.n)[..., :3].mean(axis=2)
+    bg = float(np.median(arr))
+    return bg, float(np.percentile(arr, 98 if bg < 128 else 2))
+
+
+def _norm(s):
+    return "".join(c for c in s.casefold() if c.isalnum())
+
+
 GROUPS = [
     "layout_tests", "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
@@ -3660,7 +3760,7 @@ GROUPS = [
     "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
-    "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests",
+    "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own
