@@ -198,7 +198,15 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - App settings (⚙ Settings in the header, kept in localStorage `anonymizePDF.app`): pop-up messages on/off and their
   duration (`notify` / `toast`, top centre, 3 s by default; off = the status line), the border width of the Changes frames
   (`--chg-w`), the OCR second pass (same value as the OCR check of Config › Settings), and the fake text quality
-  (`qualityOffset`, -1 .. +1, sent with every anonymization as `quality_offset`, see section 10b).
+  (`qualityOffset`, -1 .. +1, sent with every anonymization as `quality_offset`, see section 10b), and the lowest fake
+  text quality allowed (`qualityFloor`, default -0.5, -1 = no limit): the value sent is the slider not below it
+  (`sentQuality()`). The tree (directory): each original has a dot at its left (`file_states` in app.py): red = a
+  leftover, a second-check suspect or an error; orange = a warning of the last run; yellow = the config was saved
+  after the output (or no output yet): anonymize; green = reviewed by hand. The icon is a file, or a lock once an
+  anonymized file exists; the anonymized output has no row of its own.
+- A folder anonymization leaves reviewed files alone, except those with black boxes / typed texts / removed boxes not
+  applied yet: the client sends them in `include` (`folderPendingFiles`), so a new box always reaches the output.
+- Typed texts are shown with or without the Text tool; with the tool off a text is not moved (the view pans on it).
 - Session (localStorage `anonymizePDF.session`): folder, file, zoom, scroll of both panes, tab and viewer mode are saved
   (`saveSession`, `scheduleSave`) and put back on reload (`restoreSession`, after the tree is loaded).
 - Frames placed in page points (the red leftovers, the blue value frame) are redrawn on every zoom (`sizePages`).
@@ -373,6 +381,12 @@ Order must never change a result (`order_tests`): a value written with several s
   count as boundary). `label_and_town_tests`. DOC_NUMBER,
   BIRTH_PLACE, DATE (`/ . -` or spaces `14 05 1992`), PERSON, NER ORG / LOCATION (always commented out).
 - Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid.
+- IBAN and phone numbers accept wide gaps between their groups ('FR76  3000  6000 ...', '01  47  36  21  21'): the
+  separators are `[ \t]{0,3}` / `[ .\-/]{0,3}`, and `_v_iban` measures the span on the text, not on single spaces.
+- SEPA creditor identifiers with the business code ZZZ ('FR16ZZZ001001M1200015436665') are detected by their shape
+  (`_v_sepa_zzz`), also when the OCR splits them ('FRI 6ZZZ001001 Ml 200015436665'); `ocr.fix_digits` leaves a token
+  holding 'ZZZ' alone (it read the Z as 2). Greetings ('Bonjour', 'Cher', ...) are stop words: never a name.
+- A BIC stays a suggestion by default (bank identifier, kept readable in Dossier 01 / 02 / 08 by design).
 - A word cut across two lines ('JACQUEM' / 'IN LUCAS') is joined in the page text (`pii._cut_words`, used by
   `words_to_text`) only when the joined word (6 letters or more, letters only) is written whole elsewhere on the same page
   ('JACQUEMIN LUCAS'). Without that evidence the lines stay apart. Tests: `split_word_tests`. A real

@@ -179,6 +179,12 @@ function unfoldAbove(path) {
   path.split("/").forEach((_, i, parts) => state.open.add(parts.slice(0, i + 1).join("/")));
 }
 
+const DOT_TITLE = {
+  red: "Text still readable, a suspect for the second check, or an error: see the Recap",
+  orange: "Warning from the last anonymization: see the Recap",
+  yellow: "Config changed since the last anonymization: anonymize again",
+  green: "Reviewed by hand",
+};
 function renderTree() {
   const box = $("#tree");
   box.innerHTML = "";
@@ -210,11 +216,14 @@ function renderNode(node, parent, depth) {
     parent.appendChild(row);
     if (open) node.children.forEach((c) => renderNode(c, parent, depth + 1));
   } else {
+    if (node.anonymized) return;                       // the anonymized output has no row: its original is the row
     const row = document.createElement("div");
-    row.className = "row" + (node.anonymized ? " anon" : "") + (pairSelected(node) ? " selected" : "");
+    row.className = "row" + (pairSelected(node) ? " selected" : "");
     row.style.paddingLeft = 6 + depth * 10 + 12 + "px";
-    row.innerHTML = `<span>${node.anonymized ? "🔒" : "📄"}</span><span class="name" title="${esc(node.name)}">${esc(node.name)}</span>` +
-      (node.reviewed ? `<span class="rev-mark" title="anonymized file reviewed by hand">✓</span>` : "");
+    // [dot] [file / lock] [name]: the lock = an anonymized file exists
+    row.innerHTML = `<span class="dot ${node.status || ""}" title="${esc(DOT_TITLE[node.status] || "")}"></span>` +
+      `<span class="fico" title="${node.anon ? "anonymized file generated" : "not anonymized yet"}">${node.anon ? "🔒" : "📄"}</span>` +
+      `<span class="name" title="${esc(node.name)}">${esc(node.name)}</span>`;
     row.onclick = () => openFile(node.path);
     parent.appendChild(row);
   }

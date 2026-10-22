@@ -350,6 +350,8 @@ def fix_digits(text: str) -> str:
     digits, or short letter-only tokens between two numbers, are touched."""
     def tok(m):
         t = m.group()
+        if "ZZZ" in t:                  # the business code of a SEPA creditor identifier ('FR16ZZZ0010...'): not a 2
+            return t
         digits = sum(c.isdigit() for c in t)
         mostly_digits = digits >= sum(c.isalpha() for c in t) or len(t) >= 4   # '3OOO' yes, 'B2B' no
         return t.translate(_DIGIT_LIKE) if digits and mostly_digits else t

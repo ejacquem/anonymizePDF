@@ -514,6 +514,16 @@ def detector_tests():
         return [(m.type, m.value) for m in pii.detect_structured(text)]
 
     check("'MONSIEUR' is no BIC", not any(t == "BIC" for t, _ in found("MONSIEUR")))
+    # reported on real files: an IBAN and a phone number with wide gaps between their groups, a greeting is no name,
+    # a SEPA creditor identifier written 'ZZZ' (the OCR read its 2 as Z, or split it)
+    check("IBAN with wide gaps between the groups", any(t == "IBAN" and v.replace(" ", "") == "FR7630006000011234567890189"
+                                                        for t, v in found("IBAN FR76  3000  6000  0112  3456  7890  189")))
+    check("phone with two spaces between the pairs", any(t == "PHONE" and re.sub(r"\D", "", v) == "0147362121"
+                                                         for t, v in found("Tél.:  01  47  36  21  21 - Fax: 01 47 36 21 22")))
+    check("'Bonjour' is no name", not engine.accept_person("Bonjour", False, True))
+    check("SEPA creditor id with the ZZZ business code", ("SEPA_CREDITOR_ID", "FR16ZZZ001001M1200015436665")
+          in found("++FR16ZZZ001001M1200015436665"))
+    check("OCR keeps the ZZZ business code (not read as 222)", ocr.fix_digits("FRI 6ZZZ001001 Ml") == "FRI 6ZZZ001001 Ml")
     check("'MONSIEUR JEAN DUPONT' gives no BIC", not any(t == "BIC" for t, _ in found("MONSIEUR JEAN DUPONT")))
     check("BIC after its label", ("BIC", "GEBABEBB") in found("BIC : GEBABEBB"))
     check("BIC just after an IBAN", ("BIC", "BNPAFRPP") in found("IBAN FR76 3000 6000 0112 3456 7890 189  BIC BNPAFRPP"))
