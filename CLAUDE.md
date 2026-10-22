@@ -108,6 +108,11 @@ sample_data/Dossier Test 17/  fonts and scan qualities (tools/make_test_fonts.py
                               sampled with no antialiasing, black and white Times 100 dpi, grey Verdana / Tahoma 200 dpi
                               with copier spread, faded Garamond / Consolas 200 dpi): 38 values, 7 of them dates that are
                               not replaced by design; fonts_truth.json
+sample_data/Dossier Test 20/   bank statements at 150 dpi as the real client scans (tools/make_test_statement150.py): JPEG
+                              quality 69 placed at 595 x 842 pt (blocks at 2 x 2 px, native grid 0.4 px off the page
+                              in y), thin Arial 9 pt text, digit tables, a heavy Courier New block; releve_150_scan.pdf
+                              (grey), releve_150_couleur.pdf (RGB 4:2:0); 25 values per file; fonts_truth.json; section 11
+                              of docs/font_matching.md
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
                        make_test_faces.py, make_test_signatures.py (generators, Windows fonts); test_faces/ (public-domain portraits from
@@ -118,6 +123,7 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        style_bench.py (scoreboard of the replaced text against its block, section 12c);
                        review_summary.py (a review sheet summed up with no client data, to share; section 12c);
                        scan_props.py (properties of the scanned pages of a folder, no client data; section 12c);
+                       make_test_statement150.py (Dossier Test 20: the 150 dpi statements, truth; docs 11);
                        bench.py (time by document and by stage, before / after, section 11b);
                        check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
                        section 12b: the PDFs are downloaded, never committed)

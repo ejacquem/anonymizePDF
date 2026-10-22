@@ -258,3 +258,49 @@ Results (Dossier Test 17, 176 values with a z-score; outlier = thickness or dark
   (checked), so on these generated files the block's ink and each word's own ink are the same. A file with uneven ink is
   needed before the block ink can be judged.
 - Not done here: rendering changes. No change to the fakes is justified by these numbers.
+
+## 11. Dossier Test 20: the look of the 150 dpi client scans (step 2 of the thickness work)
+
+The thickness of the regular text of the real client statements came out at about half of what the model paints (the
+original 0.46, the fake 0.86 of its prediction), while Test 17 showed no such split. Dossier Test 20 reproduces the
+real pages, so the next changes can be tested on it. Generator: `tools/make_test_statement150.py`; measures:
+`tools/style_bench.py run <out.json> --set 20`; properties: `tools/scan_props.py "sample_data/Dossier Test 20"`.
+
+What the real pages showed (numbers only, `tools/scan_props.py`, 14 pages of two files):
+- a JPEG (DCT, 8 bit, quality 69, 4:2:0 on colour), placed at 595 x 842 pt at the corner of the page, 1240 x 1754 px;
+- MuPDF draws the picture in blocks on both axes (the scale is just under 2x: an enlargement above 2 gives blocks, exactly
+  2 gives smooth, checked on synthetic pages), and the native grid starts about 1.62 px (= -0.38) above the page origin in y;
+- original strokes one native pixel wide: 52 to 55 % of the runs are 2 px, 30 to 36 % are 4 px, no odd run of 1, 3 or 5 px;
+- hardness 0.56 to 0.61 (grey), ink levels 26 to 67 (median of the words), grain 0.4 to 1.6, fit blur 1.0 to 1.4 px.
+
+How the replica is made (`make_test_statement150.py`): the page is rendered at 600 dpi, the print is thinned there (a
+MaxFilter of 3 = 1 px at 300 dpi less per stroke), the scanner averages 4 x 4 pixels to 150 dpi, the print is degraded
+(ink 15, blur 0.3 at 150 dpi, grain 3), and the JPEG (quality 69) is placed at 595 x 842 pt.
+
+| measure | real pages | Test 20 replica |
+|---|---|---|
+| placed size, picture | 595 x 842 pt, 1240 x 1754 px | the same |
+| scale / blocks x / y (ratio) | < 0.5 / 35 to 38 / 5 to 30 | 0.49995 / 38 to 39 / 10 to 13 |
+| y grid phase (px) | 1.62 on most pages | 1.62 |
+| hardness (mid-tones) | 0.56 to 0.61 | 0.59 |
+| runs 2 px / 4 px | 52 to 55 % / 30 to 36 % | 55 to 59 % / 26 % |
+| ink (median) | 26 to 67 | 31 to 32 |
+| Arial, thickness normalised: original / fake | 0.46 / 0.88 | 0.46 / 0.86 |
+| round trip, thickness (identity run) | not measured | 1.89 |
+| fit blur (px, 300 dpi) | 1.0 to 1.4 | 0.7 to 1.0 |
+| words read per page | 211 to 556 | 117 to 151 |
+| share of values outside the threshold (fakes) | 32 % flagged | 39 % |
+
+Gaps still open (not tuned on purpose):
+- the heavy monospace: its original is 1.69 times its prediction (real 1.64), and its fake 0.85 (real 1.29), but 15 of its
+  18 values have no prediction (its block has no measurable style): step 4;
+- the replica has fewer words per page than the real pages, so fewer neighbours per block;
+- the fit blur is a little lower than the real pages' (0.7 to 1.0 against 1.0 to 1.4 px).
+
+The line that matters for the thickness: the fake's regular strokes are 4 px (two native pixels) where the original's
+are 2 px (one native pixel), in the painting itself (the identity run is 1.89 times its original), not in the measure.
+
+Measure fix made with it: a value of several words was given no block when no single OCR word covered 30 % of its box (each
+covers only part of it): a word that lies more than half inside the value now gives the block (`style_bench.measure_values`,
+only when the old rule finds nothing). Test 17 after the fix: 229 values (180 with a z-score, 176 before), families 91 %,
+weights 98 %, fakes outside the threshold 8 %, nulls 4 %, identity 3 %: the same numbers as section 10.6.

@@ -140,6 +140,57 @@ KEEP = {
 # notarial and bank values written right after a colon (':123456789'): good and poor scan (Dossier Test 16)
 SENSITIVE_16 = ["123456789", "0077436639", "AB12345678", "0612345678", "FR7630006000011234567890189", "987654321"]
 # folder -> (sensitive values, {file: (mode, black box kinds, MRZ formats)})
+# Dossier Test 20: bank statements at 150 dpi, JPEG 69, the real pages' look (tools/make_test_statement150.py):
+# the values of its truth file, and their words
+SENSITIVE_20 = [
+ "Madame Héloïse Vandamme",
+ "BE91 0682 4813 5729",
+ "0682 4813 5729",
+ "Rue des Tanneurs 47",
+ "+32 471 58 23 96",
+ "heloise.vandamme@exemple.be",
+ "REF.CLIENT 12345678",
+ "Monsieur Bastien Lambotte",
+ "MARION LEFEVRE",
+ "BE96 0015 7392 0468",
+ "BE94 3631 7052 8846",
+ "Madame Ludivine Mertens",
+ "0015 7392 0468",
+ "+32 486 19 74 30",
+ "Avenue des Platanes 112",
+ "Monsieur Corentin Dewulf",
+ "Chaussée de Waterloo 215",
+ "+32 478 52 19 64",
+ "corentin.dewulf@exemple.be",
+ "REF.CLIENT 44718203",
+ "Madame Anaëlle Verstraete",
+ "BRUNO HENNEBERT",
+ "Monsieur Florian Hennebert",
+ "+32 472 33 08 15",
+ "Rue du Vieux Marché 9",
+ "Héloïse",
+ "Vandamme",
+ "Bastien",
+ "Lambotte",
+ "MARION",
+ "LEFEVRE",
+ "Ludivine",
+ "Mertens",
+ "Corentin",
+ "Dewulf",
+ "Anaëlle",
+ "Verstraete",
+ "BRUNO",
+ "HENNEBERT",
+ "Florian",
+ "Hennebert",
+ "Tanneurs",
+ "Platanes",
+ "Waterloo",
+ "Vieux",
+ "Marché"
+]
+
 EXPECT = {
     "Dossier Test 00": (STATEMENT_0, {
         "releve_compte_fr.pdf": ("digital", [], []),
@@ -234,6 +285,11 @@ EXPECT = {
         "polices_image_collee.pdf": ("mixed", [], []),
         "contrat_assurance_scan.pdf": ("scan", [], []),
         "paragraphes_scan.pdf": ("scan", [], []),
+    }),
+    # bank statements at 150 dpi (JPEG 69, placed in blocks by MuPDF): the scans of the real client pages' look
+    "Dossier Test 20": (SENSITIVE_20, {
+        "releve_150_scan.pdf": ("scan", [], []),
+        "releve_150_couleur.pdf": ("scan", [], []),
     }),
     "Dossier Test 05": (STATEMENT_0, {
         "contrat_image_collee.pdf": ("mixed", [], []),

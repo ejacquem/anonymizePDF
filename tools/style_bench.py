@@ -53,6 +53,14 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLES = ROOT / "sample_data" / "Dossier Test 17"
 SET = ["polices_scan.pdf", "contrat_assurance_scan.pdf", "paragraphes_scan.pdf"]
+# Dossier Test 20: bank statements at 150 dpi, JPEG 69, as the real client pages (tools/make_test_statement150.py)
+TEST20 = ROOT / "sample_data" / "Dossier Test 20"
+SET20 = ["releve_150_scan.pdf", "releve_150_couleur.pdf"]
+
+
+def folder_of(file: str) -> Path:
+    """The sample folder of a file (its truth is the fonts_truth.json next to it)."""
+    return TEST20 if file in SET20 else SAMPLES
 LANG = "fra+eng"
 DPI = 300
 TEST_KEY = Path(tempfile.gettempdir()) / "anonymizePDF_style_bench_key.txt"       # a scratch key, not the user's
@@ -71,7 +79,7 @@ ALPHA_MEASURE = 0.025
 
 def load_truth(file: str) -> tuple[list[dict], dict[int, str]]:
     """The truth values of one file: [{page, box (PDF points), text, family, bold, size}] and the label of each page."""
-    truth = json.loads((SAMPLES / "fonts_truth.json").read_text(encoding="utf-8"))[file]
+    truth = json.loads((folder_of(file) / "fonts_truth.json").read_text(encoding="utf-8"))[file]
     stem = Path(file).stem.split("_")[0]
     labels = {p["page"]: f"{stem} p{p['page']} {p['dpi']} dpi" for p in truth["pages"]}
     items = []
@@ -373,8 +381,12 @@ def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[
         for t, truth_box in zip(items, truth_boxes):
             # the block of the value: that of the OCR word it overlaps most (None when OCR missed it)
             hits = [(_covered(truth_box, w["box"]), i) for i, w in enumerate(words) if _covered(truth_box, w["box"]) > 0.3]
+            # a value of several words: each word covers only part of its box, so the words inside it count too
+            inside = [w["box"] for w in words if _covered(w["box"], truth_box) > 0.5]
+            if not hits:
+                hits = [(_covered(w["box"], truth_box), i) for i, w in enumerate(words) if _covered(w["box"], truth_box) > 0.5]
             bid = block_of[max(hits)[1]] if hits else None
-            cover = [w["box"] for w in words if _covered(truth_box, w["box"]) > 0.3]
+            cover = [w["box"] for w in words if _covered(truth_box, w["box"]) > 0.3] or inside
             box = (min(b[0] for b in cover), min(b[1] for b in cover), max(b[2] for b in cover),
                    max(b[3] for b in cover)) if cover else truth_box
             face, _ = pf.face_for(box)
@@ -414,7 +426,7 @@ def process_file(file: str, work: Path, ner, log, code: Path | None = None, abla
                  images: bool = False) -> dict:
     """Every truth value of one file: the fake run and the identity run, then measure_values (see the module doc).
     code: the pipeline of another checkout; ablation: 'own_ink' (see own_ink); images: pictures for the sheet."""
-    src = SAMPLES / file
+    src = folder_of(file) / file
     truth, labels = load_truth(file)
     with own_ink() if ablation == "own_ink" else contextlib.nullcontext():
         fake_out, scan_s, anon_s, fake_cfg = run_pipeline(src, work / "fake", ner, None, log, code)
@@ -817,7 +829,7 @@ def cmd_run(args) -> int:
     results = []
     work = Path(tempfile.mkdtemp(prefix="style_bench_"))
     try:
-        for file in args.file or SET:
+        for file in args.file or (SET20 if args.set == "20" else SET):
             t0 = time.time()
             res = process_file(file, work / Path(file).stem, ner, lambda *a: None,
                                Path(args.code) if args.code else None, args.ablation)
@@ -862,7 +874,8 @@ def main() -> int:
     r = sub.add_parser("run")
     r.add_argument("out")
     r.add_argument("--label", default="")
-    r.add_argument("--file", action="append", help="only this sample file of Dossier Test 17 (repeatable)")
+    r.add_argument("--file", action="append", help="only this sample file (repeatable; Dossier Test 17 or 20)")
+    r.add_argument("--set", choices=["17", "20"], default="17", help="the sample set: 17 (default) or 20 (150 dpi statements)")
     r.add_argument("--code", help="run the anonymizer of this other checkout (e.g. a commit exported in a worktree)")
     r.add_argument("--ablation", choices=["own_ink"], help="the replacements take their own paper and ink (ablation)")
     c = sub.add_parser("compare")
