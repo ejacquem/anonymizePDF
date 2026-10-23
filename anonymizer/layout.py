@@ -20,7 +20,7 @@ def _h(box) -> float:
     return max(box[3] - box[1], 1.0)
 
 
-def _segments(words: list[dict]) -> list[dict]:
+def _segments(words: list[dict], max_gap: float = GAP_SPLIT) -> list[dict]:
     """Lines of the page: {"idx": [word indices, left to right], "box": [x0, y0, x1, y1], "h": median height}."""
     order = sorted(range(len(words)), key=lambda i: (words[i]["box"][1] + words[i]["box"][3]) / 2)
     rows: list[dict] = []
@@ -45,7 +45,7 @@ def _segments(words: list[dict]) -> list[dict]:
         cut = [0]
         for a, b in zip(idx, idx[1:]):
             gap = words[b]["box"][0] - words[a]["box"][2]
-            if gap > GAP_SPLIT * r["h"]:
+            if gap > max_gap * r["h"]:
                 cut.append(idx.index(b))
         cut.append(len(idx))
         for start, end in zip(cut, cut[1:]):
@@ -59,10 +59,11 @@ def _segments(words: list[dict]) -> list[dict]:
     return segments
 
 
-def rows(words: list[dict]) -> list[dict]:
+def rows(words: list[dict], max_gap: float | None = GAP_SPLIT) -> list[dict]:
     """The rows of the page, whatever line each word was given: {"idx": [word indices, left to right], "box", "h"}.
-    A row is cut where the gap between two words is over 3 word heights (two columns)."""
-    return _segments(words)
+    A row is cut where the gap between two words is over `max_gap` word heights (two columns); None: never cut (the
+    words of one row, whatever the gaps: the groups of an IBAN written each in its own box)."""
+    return _segments(words, max_gap if max_gap is not None else float("inf"))
 
 
 def _joins(prev: dict, line: dict) -> bool:

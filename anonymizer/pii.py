@@ -300,6 +300,16 @@ _TOWN_NOT_FIRST = {"rue", "avenue", "av", "boulevard", "bd", "chemin", "allee", 
                    "libelle", "nom", "name", "montant", "motif", "objet", "identifiant", "référence", "reference"}
 
 
+def _v_town_region(m):
+    """A town and the code of its region, before a country in brackets: the value is 'HENAN (19' of 'à HENAN (19, CHINE)'.
+    The same words are refused as for a town before its code (a label, a street type, an operation word)."""
+    for w in re.finditer(r"[^\s\-]+", m.group(1)):
+        key = w.group().casefold()
+        if key in _CITY_STOPLIST or key in _US_ADDRESS_WORDS or key in _TOWN_NOT_FIRST or key in OPERATION_WORDS:
+            return None
+    return m.start(), m.end()
+
+
 def _v_code_after_street(m):
     """A postcode in brackets that follows a street name and a house number on the same line."""
     line = m.string[:m.start()].rsplit("\n", 1)[-1]
@@ -477,6 +487,10 @@ DETECTORS = [
     # 'SAINT-CLOUD (92210)', 'BOULOGNE-BILLANCOURT (72000) (FRANCE)' (the country is not part of the value)
     ("POSTAL_CITY", re.compile(r"(?<![\w/.\-])([A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]*(?:[ \-]+[A-ZÀ-Þ][A-Za-zÀ-ÿ'’\-]*){0,3})"
                                r"[ \t]*\((?:[A-Z]{1,2}-)?\d{4,5}\)"), _v_town_code),
+    # a town and the code of its region before a country in brackets: 'à HENAN (19, CHINE)' (the country is no value:
+    # the value stops before the comma, the country stays on the document)
+    ("POSTAL_CITY", re.compile(r"(?<![\w/.\-])([A-ZÀ-Þ][A-ZÀ-Þ'’\-]+(?:[ \-]+[A-ZÀ-Þ][A-ZÀ-Þ'’\-]+){0,2})"
+                               r"[ \t]*\(\d{1,5}(?=\s*,\s*[A-ZÀ-Þ])"), _v_town_region),
     # the postcode in brackets right after a street on the same line: '12 RUE DES LILAS (75020)' -> '75020'
     # (no town here: the town, when it is written, is the detector above; the code alone is replaced)
     ("POSTAL_CITY", re.compile(r"(?<![\w/])\((\d{5})\)(?![\w,])"), _v_code_after_street),

@@ -276,6 +276,15 @@ console running `app.py` and the last 12 lines in the job log.
    text with render mode 3 or opacity 0 – the OCR layer of a searchable scan – does not count), else `digital`;
    a digital page whose images cover >= 2 % of it also has `pixels` (OCR of what the visible text layer does not
    cover, `_pixel_words`). File mode in the report: digital / scan / mixed, plus `page_modes`.
+   A page whose TEXT LAYER is corrupted is a `scan` too (`page_layout`, `GARBLED`): its raw text holds control or
+   private-use characters (a ToUnicode map that gives back unreadable characters: copy-paste shows blanks, the page
+   looks clean). Rule: at least 3 such characters and at least 2 % of the text. The page is read by OCR, its layout has
+   `garbled` (the count) and the log says so. Test: `corrupt_layer_tests` (a DejaVu page with a broken ToUnicode map: its
+   values are read by OCR and none is left on the output). Limit: a map that gives readable but wrong letters (ASCII
+   shifted by a constant) is not detected by this rule.
+   Towns with the code of their region, before a country in brackets ('à HENAN (19, CHINE)'): POSTAL_CITY `_v_town_region`
+   takes 'HENAN (19' (the value stops before the comma; the country stays); `fake.postal_city` keeps the bracket.
+   Test: `town_region_tests`.
 1. **Scan** (`scan_folder`): per page, `_detect_words` on the text layer (digital), on the OCR (scan pages; the
    invisible layer of a searchable scan is read too) and on the OCR of the images (pixels). `fix_digits` on OCR
    text, `detect_all` (structured detectors + NER, line by line) and `_add_labeled` (identity fields by position). Aggregate by (type, normalized value). Persons: full names first,
@@ -437,8 +446,10 @@ Order must never change a result (`order_tests`): a value written with several s
 - IBAN and phone numbers accept wide gaps between their groups ('FR76  3000  6000 ...', '01  47  36  21  21'): the
   separators are `[ \t]{0,8}` (IBAN, B1; phone `[ .\-/]{0,3}`), and `_v_iban` measures the span on the text, not on single spaces.
   An IBAN whose groups sit on one row but whose words the page text gives several lines (a table cell, an OCR that
-  cut the row) is found too: `_detect_words` reads each row of the page (`layout.rows`, cut at gaps over 3 word
-  heights, so two columns stay apart) on its own for the IBAN detectors, and adds the IBANs the page text did not give.
+  cut the row) is found too: `_detect_words` reads each row of the page on its own for the IBAN detectors
+  (`layout.rows(words, max_gap=None)`: the whole row, so an IBAN whose groups are each in their own box, far apart, is
+  found; the checksum and the country's exact length keep the next column out), and adds the IBANs the page text did not
+  give. Tests: `iban_gap_tests` (incl. a table with one group per cell, anonymized).
   The shape variant (`_v_iban_shape`, no checksum) ends at its country's IBAN length (`_IBAN_LENGTH`), else at 34
   characters: the groups after it are another column. Test: `iban_gap_tests`.
 - A masked card number read by OCR with its zeros as O ('1324 00XX XXXX 1234', '1324 OOXX XXXX 1234', B2): a second
@@ -989,6 +1000,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   output gives a message, a path outside --root is 403.
 - Underlined and framed values on a scan (`underline_tests`, B4): each underline stays, no replacement is bold where the
   original is regular.
+- Corrupted text layer (`corrupt_layer_tests`: the page is read by OCR, its values replaced), a town with its region code
+  (`town_region_tests`), the second check's places (`suspect_hits_tests`), the IBAN in table cells (`iban_gap_tests`).
 - Wide-gap IBAN (`iban_gap_tests`), masked card read as postcode (`masked_number_tests`), title words never in a
   value (`title_tests`): the strings of the reports, and the scan + anonymize of a digital letter with titles.
 - Click-to-find (`ocr_data_tests`, needs OCR): the scan saves `anon_ocr.json`; the hits read from it are the fresh hits

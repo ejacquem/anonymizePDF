@@ -795,6 +795,12 @@ class Faker:
             new_city, new_code = self.town(city)
             code = _code_like(new_code, len(bracket.group("code")), self.rng("postal-code", _norm(city)))
             return f"{_style_token(city, new_city)} ({bracket.group('pre')}{code})"
+        # a town and the code of its region, the country after it stays on the document: 'HENAN (19' -> 'LILLE (48'
+        region = re.fullmatch(r"(?P<city>.+?)\s*\((?P<code>\d{1,5})", value)
+        if region:
+            city = region.group("city")
+            new_city, _ = self.town(city)
+            return f"{_style_token(city, new_city)} ({self.digits(region.group('code'), self.rng('postal-code', _norm(city)))}"
         m = re.fullmatch(r"(?P<pre>(?:B-|BE-|F-|CH-|L-|NL-|D-|I-|A-)?)(?P<code>\d{4,5})(?P<sp>\s+)(?P<city>.+)", value)
         if not m:
             return self.scramble(value, self.rng("postal", value))

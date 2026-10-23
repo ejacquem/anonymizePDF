@@ -417,7 +417,7 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
     # an IBAN whose groups sit on one row, but whose words the page text puts on several lines (a table cell, an OCR
     # that cut the row): each row is read on its own, and the IBANs it has that the page text did not give are added
     known = {norm_value(m.value) for m in matches if m.type == "IBAN"}
-    for row in layout.rows(words):
+    for row in layout.rows(words, max_gap=None):          # the whole row: each group of an IBAN may be in its own box
         row_text = " ".join(words[i]["text"] for i in row["idx"])
         if ocr_page:
             row_text = ocr.fix_digits(row_text)
@@ -512,6 +512,8 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
         if can_ocr:
             ocr_saved[pdf.name] = (ocrdata.fingerprint(pdf), ocr_engine_id, default_ocr_lang, read_pages)
         for pno, (page, lay) in enumerate(zip(doc, layouts), start=1):
+            if lay.get("garbled") and lay["kind"] == "scan":
+                log(f"   page {pno}: the text layer is unreadable ({lay['garbled']} garbled word(s)): read by OCR")
             if lay["kind"] == "scan":
                 if not can_ocr:
                     log(f"   page {pno}: no visible text and no OCR engine available -> skipped")
@@ -1087,9 +1089,19 @@ def page_layout(page) -> dict:
     chars = invisible_chars(page) if hidden else {}
     for w in words:                                   # a word is drawn, or invisible (the OCR layer of a scan)
         w["invisible"] = is_invisible_word(w["box"], chars) if chars else False
-    kind = "digital" if len(visible) >= 3 else "scan"
-    return {"kind": kind, "words": words, "visible": visible, "hidden": hidden,
+    # a text layer that is corrupted (a ToUnicode map that gives control or private-use characters: copy-paste shows
+    # unreadable characters, the page looks clean): its text cannot be found, so the page is read by OCR like a scan
+    raw = page.get_text("text")
+    garbled = len(GARBLED.findall(raw))
+    corrupt = garbled >= 3 and garbled >= 0.02 * max(len(raw.replace(" ", "").replace("\n", "")), 1)
+    kind = "digital" if len(visible) >= 3 and not corrupt else "scan"
+    return {"kind": kind, "words": words, "visible": visible, "hidden": hidden, "garbled": garbled,
             "pixels": kind == "digital" and img_area / area >= PIXEL_MIN_AREA}
+
+
+# characters that a readable text layer never has: control characters (but not tab, line feed, return), the
+# replacement character and the private-use area (what a broken font map gives back)
+GARBLED = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f�-]")
 
 
 def page_mode_name(lay: dict) -> str:

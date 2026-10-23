@@ -4081,6 +4081,31 @@ def iban_gap_tests():
     got = [norm_value(e["value"]) for e in found.values() if e["type"] == "IBAN"]
     check("the same IBAN on one line is found once, not twice (OCR page)", got == [norm_value(valid)], got)
 
+    # every group in its own box, far apart (a table with a cell per group): the IBAN is still one IBAN
+    def boxed(groups: str, gap: float) -> list[dict]:
+        out, x = [], 40.0
+        for g in groups.split():
+            out.append({"text": g, "box": (x, 100.0, x + 4 * 6.0, 110.0), "line": 0})
+            x += 4 * 6.0 + gap
+        return out
+
+    found = {}
+    engine._detect_words(found, {}, {}, boxed(valid, 60.0), False, None, "x.pdf", 1)
+    got = [norm_value(e["value"]) for e in found.values() if e["type"] == "IBAN"]
+    check("an IBAN with each group in its own box, far apart: found, once", got == [norm_value(valid)], got)
+    found = {}
+    engine._detect_words(found, {}, {}, boxed(line, 60.0), False, None, "x.pdf", 1)
+    got = [norm_value(e["value"]) for e in found.values() if e["type"] == "IBAN"]
+    check("the same with the invalid checksum (a garbled digit): found", got == [norm_value(line)], got)
+    found = {}
+    engine._detect_words(found, {}, {}, boxed("1234 5678 9012 3456 2345 6789 0123 4567", 60.0), False, None, "x.pdf", 1)
+    check("a row of account-like groups without a country code, in boxes: no IBAN",
+          not any(e["type"] == "IBAN" for e in found.values()), [e["value"] for e in found.values()])
+    found = {}
+    engine._detect_words(found, {}, {}, boxed(valid + " 1234 5678 9012 3456 2345 6789 0123", 60.0), False, None, "x.pdf", 1)
+    got = [norm_value(e["value"]) for e in found.values() if e["type"] == "IBAN"]
+    check("a valid IBAN in a box, then another column far away: only the IBAN", got == [norm_value(valid)], got)
+
     # a digital page: the groups written separately on one row
     doc = fitz.open()
     page = doc.new_page(width=595, height=300)
@@ -4093,6 +4118,29 @@ def iban_gap_tests():
     doc.close()
     got = [norm_value(e["value"]) for e in found.values() if e["type"] == "IBAN"]
     check("a digital page with the groups as separate words: the IBAN is found", got == [norm_value(line)], got)
+
+    # the same as a table: each group in its own bordered cell, anonymized (none of its groups stays readable)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_iban_cells_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        folder = tmp / "client"
+        folder.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        x = 60.0
+        for g in valid.split():
+            page.draw_rect(fitz.Rect(x, 120, x + 52, 140), color=(0, 0, 0), width=0.6)
+            page.insert_text((x + 6, 134), g, fontname="helv", fontsize=10)
+            x += 56
+        doc.save(folder / "cellules.pdf")
+        doc.close()
+        res = engine.scan_folder(folder, "client", [], "fra+eng", lambda m: None)
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda m: None)
+        text = " ".join(fitz.open(folder / "cellules_anonymized.pdf")[0].get_text().split())
+        check("the IBAN in cells is replaced: none of its groups is left", not any(g in text for g in ("3000", "6000", "0112", "3456", "7890")), text[:200])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def title_tests():
@@ -4157,6 +4205,83 @@ def title_tests():
         check("the anonymized file still says the titles ('Monsieur', 'MME')",
               "Monsieur" in text and text.count("MME") >= 2, text[:200])
         check("the names are replaced", "Jean DUPONT" not in text and "DUPONT MARTIN" not in text, text[:200])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def town_region_tests():
+    """A town and the code of its region before a country in brackets is an address to replace ('à HENAN (19, CHINE)'):
+    the value is the town and the code, the country stays (B-bug: address not spotted)."""
+    print("\n== a town with its region code before a country")
+    for text in ("Adresse : à HENAN (19, CHINE)", "Expédié à HENAN (19, CHINE) le 3 mai"):
+        got = [m.value for m in pii.detect_all(text, types={"POSTAL_CITY"})]
+        check(f"'{text}': the town and its code are found, the country is not", got == ["HENAN (19"], got)
+    fake = Faker(b"k" * 32).postal_city("HENAN (19")
+    check("the town and the code are replaced by a town and a code of the same length; the bracket is kept",
+          re.fullmatch(r"[A-Z][A-Z \-]+ \(\d{2}", fake) is not None, fake)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_region_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        folder = tmp / "client"
+        folder.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 100), "Expédié à HENAN (19, CHINE) le 3 mai 2024.", fontsize=11)
+        page.insert_text((72, 130), "Nom : Jean DUPONT", fontsize=11)
+        doc.save(folder / "envoi.pdf")
+        doc.close()
+        res = engine.scan_folder(folder, "client", [], "fra+eng", lambda m: None)
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda m: None)
+        text = " ".join(fitz.open(folder / "envoi_anonymized.pdf")[0].get_text().split())
+        check("the output has no 'HENAN (19' and keeps ', CHINE)'", "HENAN" not in text and ", CHINE)" in text, text[:200])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def corrupt_layer_tests():
+    """A digital page whose text layer is corrupted (its ToUnicode map gives control characters: copy-paste shows
+    unreadable characters, the page looks clean) is read by OCR like a scan, so its values are found and replaced; a
+    clean page is still digital (B-bug: text layer corrupted)."""
+    print("\n== corrupted text layer: the page is read by OCR")
+    font = ROOT / "anonymizer" / "fonts" / "DejaVuSans.ttf"
+    lines = ["Nom : Jean DUPONT", "IBAN : BE68 5390 0754 7034", "Adresse : 12 rue Neuve, 1000 Bruxelles"]
+    tmp = Path(tempfile.mkdtemp(prefix="anon_corrupt_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        doc = fitz.open()
+        page = doc.new_page()
+        for i, line in enumerate(lines):
+            page.insert_text((72, 100 + 30 * i), line, fontname="dv", fontfile=str(font), fontsize=11)
+        for xref in range(1, doc.xref_length()):                       # break the ToUnicode map of every font
+            obj = doc.xref_object(xref)
+            m = re.search(r"/ToUnicode (\d+) 0 R", obj) if "/ToUnicode" in obj else None
+            if m:
+                doc.update_stream(int(m.group(1)), b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n"
+                                                   b"1 begincodespacerange <0000> <FFFF> endcodespacerange\n"
+                                                   b"endcmap CMapName currentdict /CMap defineresource pop end end\n")
+        folder = tmp / "client"
+        folder.mkdir()
+        doc.save(folder / "broken.pdf")
+        doc.close()
+        from anonymizer import engine as eng_mod
+        lay = eng_mod.page_layout(fitz.open(folder / "broken.pdf")[0])
+        check("a page whose text layer is unreadable is read by OCR (kind scan, its garbled words counted)",
+              lay["kind"] == "scan" and lay["garbled"] >= 3, f"kind {lay['kind']}, garbled {lay.get('garbled')}")
+        clean_doc = fitz.open()
+        clean_page = clean_doc.new_page()
+        clean_page.insert_text((72, 100), lines[0], fontsize=11)
+        check("a clean digital page is still digital", eng_mod.page_layout(clean_page)["kind"] == "digital")
+        if not ocr.available():
+            print("  (no OCR engine on this PC: the values are not checked on the output)")
+            return
+        res = engine.scan_folder(folder, "client", [], "fra+eng", lambda m: None)
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda m: None)
+        out = folder / "broken_anonymized.pdf"
+        read = " ".join(w["text"] for w in ocr.ocr_words(ocr.render_page(fitz.open(out)[0], 300), "fra+eng"))
+        check("the values of the unreadable page are replaced: none of them is read on the output",
+              not any(v in read for v in ("DUPONT", "5390", "Neuve")), read[:200])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -4438,7 +4563,7 @@ GROUPS = [
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
-    "underline_tests", "suspect_hits_tests",
+    "underline_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own
