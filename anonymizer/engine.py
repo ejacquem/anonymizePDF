@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from . import configmodel, faces, fields, ocr, quality, regions, render, timing, verify, workers
+from . import configmodel, faces, fields, ocr, ocrdata, quality, regions, render, timing, verify, workers
 from .fake import Faker, _norm as fake_norm, _pkey, is_town_name
 from .ocr import DIGITAL_DPI, render_page
 from .ocrpage import page_words
@@ -487,18 +487,24 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
     sequences: dict[str, dict] = {}
     seen_pages: list[dict] = []        # the scanned pages as read (grey image, words): the fonts of the names are measured on them
     classified, reads = _start_reads(pdfs, default_ocr_lang) if can_ocr else ({}, {})   # scanned pages read by the workers
+    ocr_engine_id = ocr.engine() if can_ocr else None
+    ocr_saved: dict[str, tuple] = {}   # file -> (sha256, engine, lang, {page: full-page OCR words}), kept for click-to-find
     for fi, pdf in enumerate(pdfs, start=1):
         _report(progress, fi - 1, len(pdfs), pdf.name)
         doc = open_source(pdf)
         layouts = classified.get(fi) or [page_layout(p) for p in doc]
         modes = sorted({page_mode_name(l) for l in layouts})
         log(f"[{fi}/{len(pdfs)}] {pdf.name}: {len(doc)} page(s), {', '.join(modes)}")
+        read_pages: dict[int, list] = {}
+        if can_ocr:
+            ocr_saved[pdf.name] = (ocrdata.fingerprint(pdf), ocr_engine_id, default_ocr_lang, read_pages)
         for pno, (page, lay) in enumerate(zip(doc, layouts), start=1):
             if lay["kind"] == "scan":
                 if not can_ocr:
                     log(f"   page {pno}: no visible text and no OCR engine available -> skipped")
                     continue
                 words, gray, scale = _read_scan_page(reads.get((fi, pno - 1)), page, default_ocr_lang)
+                read_pages[pno] = words
                 log(f"   page {pno}: OCR ({len(words)} words)")
                 seen_pages.append({"gray": gray, "words": words, "scale": scale,
                                    "ref": (str(pdf), pno - 1) if (fi, pno - 1) in reads else None})
@@ -508,7 +514,10 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
                 continue
             _detect_words(found, tokens, sequences, lay["words"], False, ner, pdf.name, pno)
             if lay["pixels"] and can_ocr:                # text that only exists as pixels (images)
-                pimg, pw = _pixel_words(page, lay["visible"], default_ocr_lang)
+                whole: list = []
+                pimg, pw = _pixel_words(page, lay["visible"], default_ocr_lang, whole=whole)
+                if whole:
+                    read_pages[pno] = whole[0]
                 if pw:
                     log(f"   page {pno}: OCR of the images ({len(pw)} words)")
                     with timing.stage("render"):
@@ -517,6 +526,8 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
                     _detect_words(found, tokens, sequences, pw, True, ner, pdf.name, pno)
 
     _report(progress, len(pdfs), len(pdfs))
+    if can_ocr:
+        ocrdata.save_scan(folder, ocr_saved)           # the pages read here: click-to-find reads them back (CLAUDE.md 11b)
     aggregate = timing.stage("config")
     for e in found.values():
         # one value, several spellings ('30002 / 05871', '30002/ 05871'): the one written most often is kept, ties by

@@ -1863,6 +1863,7 @@ function updateToolbar() {
   $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
   const cur = currentOriginalNode();                          // either file of the pair works
   $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur;
+  $("#btnExport").disabled = state.running || state.folder === null;   // the folder and the folders below it: the server decides
   const pending = !!cur && isPending(cur.name);
   $("#btnRunFile").classList.toggle("save-needed", pending);
   const changes = changedBoxes();
@@ -2003,6 +2004,21 @@ $("#btnBoth").onclick = async () => {
   state.dirty = false;
   await loadConfig();
   await anonymizeFolder();
+};
+
+// Export: a ZIP of the anonymized files below the selected folder. The info says how many files it holds and which
+// originals have no anonymized file yet; the download is the same address (the server sends it as an attachment).
+$("#btnExport").onclick = async () => {
+  if (state.folder === null) return;
+  try {
+    const info = await api(`/api/export/info?folder=${encodeURIComponent(state.folder)}`);
+    if (!info.files.length) { setStatus("Nothing to export: no anonymized file in this folder yet.", "err"); return; }
+    const missing = info.missing.length ? ` · no anonymized file yet for ${info.missing.length}: ${info.missing.join(", ")}` : "";
+    setStatus(`Export: ${info.files.length} anonymized file(s)${missing}`, info.missing.length ? "" : "ok");
+    location.href = `/api/export?folder=${encodeURIComponent(state.folder)}`;
+  } catch (e) {
+    setStatus(e.message, "err");
+  }
 };
 
 $("#btnRunFile").onclick = async () => {

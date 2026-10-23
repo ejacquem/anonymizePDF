@@ -3893,6 +3893,129 @@ def colour_tests():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def export_tests():
+    """The ZIP export (app /api/export): only the anonymized outputs, at their folder's path below the selected folder;
+    never an original, a config, a report, a review flag or the OCR data. A folder with no output is a message, not an
+    empty ZIP; a path outside --root is refused."""
+    print("\n== export: the ZIP of the anonymized files")
+    import importlib.util
+    import zipfile
+    spec = importlib.util.spec_from_file_location("anon_webapp", ROOT / "app.py")
+    webapp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(webapp)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_export_"))
+    saved_root = webapp.STATE["root"]
+    try:
+        files = {
+            "A/x.pdf": "original", "A/x_anonymized.pdf": "out x", "A/y.jpg": "original", "A/y_anonymized.jpg": "out y",
+            "A/anon_config.yaml": "ocr_lang: fra", "A/anon_report.json": "{}", "A/anon_review.json": "{}",
+            "A/anon_ocr.json": "{}", "A/sub/z.pdf": "original, no output yet", "B/w.pdf": "original",
+            "B/w_anonymized.pdf": "out w", ".hidden/q.pdf": "original", ".hidden/q_anonymized.pdf": "out q",
+            "A/__pycache__/junk_anonymized.pdf": "junk"}
+        for rel, text in files.items():
+            (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / rel).write_text(text, encoding="utf-8")
+        webapp.STATE["root"] = tmp
+        client = webapp.app.test_client()
+
+        def names(folder: str) -> set[str]:
+            r = client.get(f"/api/export?folder={folder}")
+            assert r.status_code == 200, r.status_code
+            with zipfile.ZipFile(io.BytesIO(r.data)) as z:
+                return set(z.namelist())
+
+        got = names("A")
+        check("the ZIP of A holds its two outputs, at their paths, and nothing else",
+              got == {"x_anonymized.pdf", "y_anonymized.jpg"}, sorted(got))
+        got = names("")
+        check("the ZIP of the root holds every output below it (hidden and __pycache__ folders left out)",
+              got == {"A/x_anonymized.pdf", "A/y_anonymized.jpg", "B/w_anonymized.pdf"}, sorted(got))
+        r = client.get("/api/export?folder=A")
+        check("the ZIP is named after its folder", "A_anonymized.zip" in r.headers.get("Content-Disposition", ""),
+              r.headers.get("Content-Disposition"))
+        info = client.get("/api/export/info?folder=A").get_json()
+        check("the info names the originals with no output yet (and none of the other files)",
+              info["missing"] == ["sub/z.pdf"] and sorted(info["files"]) == ["x_anonymized.pdf", "y_anonymized.jpg"], info)
+        r = client.get("/api/export?folder=A/sub")
+        check("a folder with no output is a message, not an empty ZIP", r.status_code == 404
+              and "No anonymized file" in r.get_data(as_text=True), r.status_code)
+        r = client.get("/api/export?folder=../")
+        check("a path outside the root is refused (403)", r.status_code == 403, r.status_code)
+        r = client.get("/api/export?folder=A/../../")
+        check("a traversal through a folder of the root is refused too", r.status_code == 403, r.status_code)
+    finally:
+        webapp.STATE["root"] = saved_root
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ocr_data_tests():
+    """Click-to-find reads the OCR saved by the scan (anon_ocr.json, anonymizer/ocrdata.py): the hits are the same as a
+    fresh reading, a changed file or another OCR engine is read again, and the saved data is never used for them."""
+    print("\n== click-to-find: the OCR saved by the scan")
+    if not ocr.available():
+        print("  (no OCR engine on this PC: skipped)")
+        return
+    from anonymizer import ocrdata
+    tmp = Path(tempfile.mkdtemp(prefix="anon_ocrdata_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        folder = tmp / "client"
+        folder.mkdir()
+        shutil.copy(ROOT / "sample_data" / "Dossier Test 00" / "releve_compte_fr_scan.pdf", folder / "scan.pdf")
+        shutil.copy(ROOT / "sample_data" / "Dossier Test 00" / "releve_compte_fr.pdf", folder / "digital.pdf")
+        engine_id, lang = str(ocr.engine()), "fra+eng"
+        res = engine.scan_folder(folder, "client", [], lang, lambda m: None)
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        data = ocrdata._read(folder)
+        pages = (data.get("scan.pdf") or {}).get("pages") or {}
+        check("the scan saves the OCR words of every scanned page, with the fingerprint of the file",
+              sorted(pages) == ["1", "2", "3"] and data["scan.pdf"]["sha256"] == ocrdata.fingerprint(folder / "scan.pdf")
+              and data["scan.pdf"]["engine"] == engine_id and data["scan.pdf"]["lang"] == lang, sorted(pages))
+        check("the file of the scan is saved, the digital one is not read by OCR (no entry needed)",
+              "digital.pdf" not in data or not data["digital.pdf"]["pages"], sorted(data))
+        scan = folder / "scan.pdf"
+        for term in ("Marchand", "FR76"):
+            ocr.clear_cache()
+            fresh = verify.find_hits(scan, term, False, lang)
+            sha, saved = ocrdata.lookup(folder, scan, engine_id, lang)
+            read: dict = {}
+            again = verify.find_hits(scan, term, False, lang, saved=saved, read=read)
+            check(f"'{term}': the hits read from the saved OCR are the fresh hits ({len(fresh)})",
+                  fresh == again and fresh and not read, f"fresh {len(fresh)}, saved {len(again)}, read again {sorted(read)}")
+        # the saved words are the ones find_hits reads: a fresh reading of page 1 is the saved one (as JSON)
+        ocr.clear_cache()
+        page_read = json.loads(json.dumps(ocrpage_words(scan), default=ocrdata._plain))
+        check("the saved words of page 1 are the words of a fresh reading of that page", page_read == pages["1"], "differs")
+        # another OCR engine or language: the saved words are not used either
+        other = "windows" if engine_id != "windows" else "tesseract"
+        check("another OCR engine or language never uses the saved words",
+              ocrdata.lookup(folder, scan, other, lang)[1] == {} and ocrdata.lookup(folder, scan, engine_id, "fra")[1] == {})
+        # a changed file: its OCR is read again, and the new reading is saved for it
+        with open(scan, "ab") as f:
+            f.write(b"\n% changed\n")
+        sha2, saved2 = ocrdata.lookup(folder, scan, engine_id, lang)
+        check("a changed file has no saved OCR (read again, then saved for the next click)", saved2 == {} and sha2 != sha)
+        # a read again is stored, and kept with the pages already saved for the same file
+        ocrdata.store(folder, "scan.pdf", sha2, engine_id, lang, {2: [{"text": "x", "box": [1, 2, 3, 4]}]})
+        ocrdata.store(folder, "scan.pdf", sha2, engine_id, lang, {3: [{"text": "y", "box": [1, 2, 3, 4]}]})
+        sha4, saved4 = ocrdata.lookup(folder, scan, engine_id, lang)
+        check("stored pages are read back, and a second store keeps the first", sorted(saved4) == [2, 3], sorted(saved4))
+        # the export never holds the OCR data
+        check("the OCR data file is not a source of the tree and is not in an export",
+              engine.is_source(folder / ocrdata.DATA_NAME) is False and engine.output_of(scan).name == "scan_anonymized.pdf")
+    finally:
+        ocr.clear_cache()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ocrpage_words(pdf: Path) -> list[dict]:
+    """The words of page 1 read afresh, the way the scan reads a scanned page (300 dpi render, full-page reading)."""
+    from anonymizer.ocr import render_page
+    from anonymizer.ocrpage import page_words
+    with fitz.open(pdf) as doc:
+        return page_words(render_page(doc[0], 300), "fra+eng")
+
+
 def _spans_in(page, box):
     got = []
     for b in page.get_text("dict")["blocks"]:
@@ -3927,7 +4050,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

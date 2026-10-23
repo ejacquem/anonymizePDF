@@ -115,10 +115,13 @@ def _overlaps(a: list, b: list) -> bool:
     return w * h > 0.3 * small
 
 
-def find_hits(path: Path, term: str, case_sensitive: bool, ocr_lang: str) -> list[dict]:
+def find_hits(path: Path, term: str, case_sensitive: bool, ocr_lang: str, saved: dict | None = None,
+              read: dict | None = None) -> list[dict]:
     """Every place of a term of the config in a file: {page, box in PDF points}, all pages counted. The text layer
     gives the words written as text; a page that is a scan, or has pictures, is also read by OCR (tolerant to the usual
-    misreadings), and the OCR words that the text layer already gives are not counted twice."""
+    misreadings), and the OCR words that the text layer already gives are not counted twice.
+    `saved` = {page number: the OCR words of that page}, read earlier for this same file (ocrdata): those pages are not
+    read again. `read`, when given, receives the OCR words of the pages read here, so that they can be saved."""
     rx = term_regex(term, case_sensitive)
     rx_ocr = term_regex(term, case_sensitive, ocr=True)
     out: list[dict] = []
@@ -130,7 +133,11 @@ def find_hits(path: Path, term: str, case_sensitive: bool, ocr_lang: str) -> lis
             mine = _hit_boxes(layer, text, spans, rx, pno)
             out += mine
             if ocr.available() and (len(layer) < 3 or page.get_images()):
-                words = page_words(render_page(page, 300), ocr_lang)
+                words = (saved or {}).get(pno)
+                if words is None:
+                    words = page_words(render_page(page, 300), ocr_lang)
+                    if read is not None:
+                        read[pno] = words
                 text, spans = words_to_text(words)
                 for h in _hit_boxes(words, text, spans, rx_ocr, pno, 72 / 300):
                     if not any(_overlaps(h["box"], m["box"]) for m in mine):

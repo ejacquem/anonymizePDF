@@ -222,15 +222,19 @@ def _adjust(cfg: dict, m) -> str:
 PIXEL_MIN_AREA = 0.02        # a digital page whose images cover >= 2 % of it also gets an OCR pass on its pixels
 
 
-def _pixel_words(page, visible: list[dict], ocr_lang: str, dpi: int = 300):
+def _pixel_words(page, visible: list[dict], ocr_lang: str, dpi: int = 300, whole: list | None = None):
     """OCR of the rendered page minus what the VISIBLE text layer already covers: the text that only exists as
-    pixels (images, scanned parts). Returns (image, words with boxes in image pixels)."""
+    pixels (images, scanned parts). Returns (image, words with boxes in image pixels). `whole`, when given, receives
+    the full-page reading (before the cut), which click-to-find reads back (ocrdata)."""
     with timing.stage("render"):
         img = render_page(page, dpi)
     k = 72 / dpi
     boxes = [(b[0] - 1.5, b[1] - 1.5, b[2] + 1.5, b[3] + 1.5) for b in (w["box"] for w in visible)]
     keep = []
-    for w in page_words(img, ocr_lang):
+    reading = page_words(img, ocr_lang)
+    if whole is not None:
+        whole.append(reading)
+    for w in reading:
         x0, y0, x1, y1 = w["box"]
         if not _inside((x0 * k, y0 * k, x1 * k, y1 * k), boxes):
             keep.append(w)

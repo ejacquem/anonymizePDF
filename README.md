@@ -145,6 +145,9 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 7. Once you have checked an anonymized file by eye, press **Mark as reviewed** (top of the *Anonymized* pane). The tree
    shows `✓` on the file and `✓ 2/3` on the folder. If the file is generated again (or changed in any way), the flag
    goes back to *not reviewed* by itself. Flags are stored in `anon_review.json` in the folder.
+8. **Export anonymized** (toolbar) downloads one ZIP with the anonymized files of the selected folder and of the
+   folders below it: only the `*_anonymized.*` files, never the originals, the configs or the reports. The status
+   line says how many files it holds and which originals have no anonymized file yet.
 
 ### Many folders at once (batch)
 
@@ -280,6 +283,8 @@ licence), Roboto, Open Sans, Lato, Source Sans 3, Barlow, Courier Prime (SIL Ope
 
 * `anon_config.yaml` and `anon_report.json` contain the **real** values (original → fake). `.gitignore` excludes
   them, the `*_anonymized.pdf` files and all PDFs outside `sample_data/`. Keep your real PDFs outside the repository.
+* `anon_ocr.json` (written by the scan, next to the originals) holds the text that the OCR read on the scanned pages, so
+  that clicking a value finds it at once. It is git-ignored like the config and is not part of the export.
 * Do not send real documents to an AI assistant; the fake test documents are enough for development.
 
 **Secret key.** Fake values are derived from the original with HMAC-SHA256 and a secret 256-bit key, so having

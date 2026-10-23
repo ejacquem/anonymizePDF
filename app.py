@@ -12,18 +12,20 @@ inside --root. Original PDFs are never modified; results are written next to the
 """
 import argparse
 import hashlib
+import io
 import json
 import sys
 import threading
 import time
 import traceback
 import uuid
+import zipfile
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from anonymizer import engine as eng
-from anonymizer import configmodel, ocr, secret, verify
+from anonymizer import configmodel, ocr, ocrdata, secret, verify
 from anonymizer.pii import fitz, load_ner
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -357,7 +359,15 @@ def find_term():
         except ValueError:
             pass
     try:
-        return jsonify({"hits": verify.find_hits(pdf, term, case_sensitive, STATE["ocr_lang"])})
+        # the OCR of the scanned pages is read from anon_ocr.json when the file and the OCR are the ones it was read
+        # with; otherwise the pages are read here, and saved for the next click (ocrdata)
+        lang, engine_id = STATE["ocr_lang"], str(ocr.engine())
+        sha, saved = ocrdata.lookup(folder, pdf, engine_id, lang)
+        read: dict = {}
+        hits = verify.find_hits(pdf, term, case_sensitive, lang, saved=saved, read=read)
+        if read:
+            ocrdata.store(folder, pdf.name, sha, engine_id, lang, read)
+        return jsonify({"hits": hits})
     except Exception as e:  # noqa: BLE001
         return bad(f"Search failed: {e}")
 
@@ -474,6 +484,59 @@ def status():
     except (PermissionError, FileNotFoundError) as e:
         return bad(str(e), 404)
     return jsonify([folder_status(d) for d in client_folders(base)])
+
+
+# ---------------------------------------------------------------------------
+# export: the anonymized files of a folder (and of its client folders) in one ZIP. Only the outputs go in it: never an
+# original, a config, a report, a review flag or the OCR data (anon_ocr.json).
+# ---------------------------------------------------------------------------
+
+def export_files(base: Path) -> tuple[list[tuple[Path, str]], list[str]]:
+    """(output, name in the ZIP) for every anonymized file below `base`, and the originals with no output yet (names
+    relative to `base`). Folders that are hidden or __pycache__ are left out, as in the tree."""
+    outputs, missing = [], []
+    for d in client_folders(base):
+        for src in eng.list_sources(d):
+            out = eng.output_of(src)
+            if out.is_file():
+                outputs.append((out, out.relative_to(base).as_posix()))
+            else:
+                missing.append(src.relative_to(base).as_posix())
+    return outputs, missing
+
+
+@app.get("/api/export/info")
+def export_info():
+    """What the export of a folder holds: the anonymized files, and the originals that have none yet."""
+    try:
+        base = folder_arg(request.args)
+    except PermissionError:
+        return bad("forbidden", 403)
+    except FileNotFoundError as e:
+        return bad(str(e), 404)
+    outputs, missing = export_files(base)
+    return jsonify({"files": [rel for _, rel in outputs], "missing": missing})
+
+
+@app.get("/api/export")
+def export():
+    """A ZIP of the anonymized files of the selected folder, built in memory (never written next to the documents)."""
+    try:
+        base = folder_arg(request.args)
+    except PermissionError:
+        return bad("forbidden", 403)
+    except FileNotFoundError as e:
+        return bad(str(e), 404)
+    outputs, _ = export_files(base)
+    if not outputs:
+        return bad("No anonymized file in this folder yet: anonymize it first.", 404)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for path, rel in outputs:
+            z.write(path, rel)
+    buf.seek(0)
+    return send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name=f"{base.name or 'anonymized'}_anonymized.zip")
 
 
 # ---------------------------------------------------------------------------

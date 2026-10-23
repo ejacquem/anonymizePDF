@@ -19,7 +19,7 @@ Repo: `C:\Users\Lucas\Project\anonymizePDF` (Windows 10, Git Bash + PowerShell).
 
 ## 2. Rules to keep
 
-- Never commit real PDFs, `anon_config.yaml`, `anon_report.json`, `*_anonymized.pdf` (`.gitignore` covers them;
+- Never commit real PDFs, `anon_config.yaml`, `anon_report.json`, `anon_ocr.json`, `*_anonymized.pdf` (`.gitignore` covers them;
   `sample_data/` only contains generated fake documents).
 - Never commit or share the secret key (`secret.key`); never put a constant salt / key back in the code.
 - Never ask for or open real client documents; use / extend the generated test documents instead.
@@ -50,6 +50,8 @@ anonymizer/
                        term_regex (OCR-tolerant mode), apply_config, words_to_text, match_boxes, plan_page
   ocr.py               OCR engines (Tesseract / Windows winrt), engine(), ocr_words(), fix_digits(), render_page()
   ocrpage.py           a page read more than once: page_words() = the 300 dpi reading repaired with the page rescaled (section 9)
+  ocrdata.py           anon_ocr.json per folder: the full-page OCR words the scan read, with the sha256 of the file, the OCR
+                       engine and the language; click-to-find reads them back (section 5, 11b)
   fake.py              Faker: deterministic fake values (HMAC with the secret key), name memory, all value types
   secret.py            per-PC secret key (created once, outside the repo)
   render.py            digital: FontBook, page_spans, style_at, free_right, insert_replacement, black_out_digital;
@@ -159,6 +161,12 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Trace also lists the glyphs each redaction removed: 'glyphs removed (value)' (the characters of the values) and
   'glyph restored (taken by a neighbouring redaction)' (characters next to a value that the redaction took and that
   were written again). Black boxes and pixel redactions do the same. Invisible characters are never written again.
+- Export (toolbar, `#btnExport`, enabled when a folder is selected and nothing runs): a ZIP of the anonymized files of the
+  selected folder and of every folder below it (`GET /api/export?folder=`, built in memory, sent as
+  `<folder>_anonymized.zip`). Only the outputs go in (`export_files`: `eng.output_of` of each original with an output, at
+  its path relative to the selected folder): never an original, a config, a report, a review flag, the OCR data or a
+  hidden / `__pycache__` folder. `GET /api/export/info?folder=` gives the file names and the originals without output
+  (the status line says it before the download). No output: a message, no empty ZIP. Outside --root: 403.
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Scan & anonymize** (scan, then anonymize, with no
   review in between: `btnBoth`, `anonymizeFolder()` is the second half; in batch mode the action `scan_anonymize` of
   `/api/batch` does each folder's scan then its anonymization before the next folder), **Anonymize file** (either file of the pair; the
@@ -247,7 +255,7 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 
 API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api/page?path=&page=&scale=`,
 `GET|PUT /api/config?folder=`, `GET /api/report?folder=`, `POST /api/scan`, `POST /api/anonymize` (job id; `file` = one file name; `removed` = [{file, page, kind, box}] automatic boxes left out of this run),
-`GET|PUT /api/review?folder=`, `GET /api/status?folder=`, `POST /api/batch`,
+`GET|PUT /api/review?folder=`, `GET /api/status?folder=`, `GET /api/export?folder=` (ZIP), `GET /api/export/info?folder=`, `POST /api/batch`,
 `GET /api/job/<id>?since=N` (log lines + status + progress: files done / total, elapsed, eta). Jobs run in a thread, one at a time. A job error prints its full traceback on the
 console running `app.py` and the last 12 lines in the job log.
 
@@ -290,6 +298,13 @@ console running `app.py` and the last 12 lines in the job log.
      selected original (`locateTerm`, `GET /api/find`, `verify.find_hits`: the text layer of every page, plus the OCR of the
      pages that are scans or have pictures, without the words already counted) and frames them in blue (`.tlbox`). The
      count is per file; the `found N times` of the config counts the whole folder. Zoom on the word is an app setting (off).
+     The OCR of those pages is not read again when the scan saved it: the scan writes `anon_ocr.json` (`ocrdata.save_scan`,
+     in `_scan_folder`: per scanned page the words of `ocrpage.page_words` of the 300 dpi render, and per picture page the
+     full-page reading `_pixel_words(whole=)`), with the sha256 of the original, the OCR engine and the language.
+     `/api/find` uses the saved pages only when all three match (`ocrdata.lookup`); otherwise (a file changed, a config
+     from before this feature, another engine) it reads the pages, and saves them (`ocrdata.store`) for the next click.
+     Measured on Dossier Test 00 (3-page scan, Windows OCR): first click 16.9 s (read, saved), next clicks 0.13-0.17 s.
+     The hits are the same as a fresh reading (`ocr_data_tests`).
      The blue frame belongs to the original it was found in: opening another original forgets the search
      (`resetTermSearch`, called by `setViewer`), so a zoom does not draw the old frame on the new file.
    - Verify (`verify.verify_output`): searches the output for each original value (metadata, text layer, and OCR with the
@@ -755,8 +770,12 @@ Order must never change a result (`order_tests`): a value written with several s
 - OCR cache (`ocr.ocr_words`): the reading of an image is remembered, keyed by the pixels (sha1 of the array, ~20 ms for
   a page), the engine and the language. The scan and the anonymization render the same page the same way, so the
   second OCR of a page is a lookup. In memory only, bounded by the number of words (`ocr.CACHE_WORDS`, least recently
-  used out); the words are copied in and out. Never on disk next to the documents. The one disk use is the test suite's:
-  `ANON_OCR_CACHE_DIR` (a folder of the run's temporary directory) shares the readings between its processes.
+  used out); the words are copied in and out. Never on disk next to the documents, with one exception: `anon_ocr.json`
+  (`anonymizer/ocrdata.py`) keeps the OCR words of the pages the scan read, so that click-to-find does not read them
+  again. It sits next to the originals, like `anon_config.yaml` (which already holds the real values), is git-ignored,
+  is never part of an export (section 4, Export) and is used only while the file's sha256, OCR engine and language are
+  the ones it was read with. The test suite's disk use is `ANON_OCR_CACHE_DIR` (a folder of the run's temporary
+  directory) which shares the readings between its processes.
 - Profile of a scanned page (`cProfile` on `run_anonymize` of the insurance contract, Dossier Test 17, 3 pages, 33 s):
   the time was in the font and quality measures (`fontmatch.PageFonts`), not in the OCR (3 s of 54 s for the folder).
   Done, results identical: `fit_rows` takes all the tops of a scale at once (np.corrcoef called 69 000 times was 8 s of
@@ -926,6 +945,11 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   misreadings, never the original without accents, a wrong key does not single out the true name.
 - Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements,
   a removed photo stays removed on the second pass of a scan.
+- Export (`export_tests`): the ZIP of a folder tree holds exactly the outputs at their paths (hidden and `__pycache__`
+  folders, configs, reports, review flags and `anon_ocr.json` left out), the info names the originals without output, no
+  output gives a message, a path outside --root is 403.
+- Click-to-find (`ocr_data_tests`, needs OCR): the scan saves `anon_ocr.json`; the hits read from it are the fresh hits
+  for each term; a changed file, another engine or language reads again; stored pages are read back.
 - Speed-up helpers (`speedup_tests`): morph equals a window reference (edges included) and PIL, the shared skew memo
   gives the same angles, the output is read once and verify finds what is still there.
 - Detectors (`detector_tests`, no OCR): the strings the real files showed ('MONSIEUR' is no BIC, capitalised cities,
