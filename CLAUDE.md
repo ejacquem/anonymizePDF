@@ -1054,7 +1054,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   twice on a temporary copy with a scratch key: the fake run (what the user gets) and an identity run (every value
   replaced by itself: the round trip). Measures per value: thickness (the SUB-PIXEL ruler: `stroke_widths`, the coverage
   of each stroke summed, median over the letter height, against the page's paper and ink (`page_reference`); the old run
-  count is kept as `run` for comparison, outR / RTrun in the tables; docs 12 and 13), darkness, contrast, sharpness,
+  count is kept as `run` for comparison, outR / RTrun in the tables; docs 12, 13 and 13.1: the null of the ruler is 6.1 %
+  on Test 17 and 4.9 % where the family is right, `ruler_null_check` in `ruler_tests`), darkness, contrast, sharpness,
   height and grain of its crop; round trip ratios and differences and a 3x3-window SSIM at the best shift of +-2 px; consistency (each
   measure of the fake divided by its PREDICTION for the same text in the block's style, `predict`; z-scores against the
   unreplaced words of its block, same normalisation; the share beyond the Student t threshold for n-1 others: outT, and
@@ -1089,7 +1090,9 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   block test (grey change across the native pixel edges against inside them, along x and y, at the best phase and at
   phase 0, and the phase of the image's edge), the hardness (mid-tones on the native grid), the fit (blur, spread,
   black and white, error, grain), the strokes (median run in page and native px, the share of each run length) and the
-  paper / ink levels. The scan pages are read as the app reads them (OCR needed). `scan_props_tests`.
+  paper / ink levels, and the stems of the digit and monospace blocks against the catalog's monospace faces (regular and
+  bold, at the block's digit height; docs 14.1). The scan pages are read as the app reads them (OCR needed).
+  `scan_props_tests`, `monospace_stems_test`.
 - `compare <before.json> <after.json>` prints the measures side by side. Takes about 5 minutes (the pipeline runs twice
   per file). Not part of check_all. Results: docs/font_matching.md section 10.
 - Not built: a synthetic paragraph generator of its own (the Test 17 paragraph file is the set), and the public-domain
