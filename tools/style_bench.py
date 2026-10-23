@@ -14,7 +14,10 @@ For each file the pipeline runs twice on a temporary copy, with a scratch key (n
   original, without any ground truth for the look).
 
 Measures (300 dpi renderings, the crop of a box; raw pixel differences are not scores):
-- thickness: median horizontal run of ink / letter height; darkness: 5 % darkest level; contrast; sharpness: 95th
+- thickness: the sub-pixel width of the strokes (the coverage of each stroke summed, median) over the letter height
+  (`thick`: the ruler of the scoreboard since the sub-pixel change); run: the old ruler, the median horizontal run of ink
+  over the letter height, a count of pixels (quantised by the grid: 2 px steps at 2 x 2 px blocks), kept for comparison;
+  darkness: 5 % darkest level; contrast; sharpness: 95th
   percentile of the edge gradient / contrast; ink height; grain: MAD of the paper around the ink.
 - round trip, per value: ratio of thickness, of contrast, of sharpness and of height; difference of darkness and of
   grain; 3x3-window SSIM at the best shift of +-2 px (and the shift);
@@ -67,8 +70,8 @@ TEST_KEY = Path(tempfile.gettempdir()) / "anonymizePDF_style_bench_key.txt"     
 MIN_OTHERS = 3                  # other words of a block needed to judge a value against them
 # a z-score or a spread is not divided by less than this (a block whose other words are all alike); the normalised
 # measures of the consistency are ratios to the prediction (thickness, sharpness) or levels (darkness)
-FLOOR = {"thick": 0.03, "dark5": 3.0, "sharp": 0.03}
-MEASURES = ("thick", "dark5", "sharp")
+FLOOR = {"thick": 0.03, "dark5": 3.0, "sharp": 0.03, "run": 0.03}
+MEASURES = ("thick", "dark5", "sharp", "run")       # 'thick' is the sub-pixel ruler, 'run' the old one (comparison only)
 PAD = 12                        # pixels around a predicted rendering (the value's box is cut out of it)
 # the outlier of a value is thickness OR darkness beyond its threshold: each of the two gets half of the 5 %
 ALPHA_MEASURE = 0.025
@@ -107,6 +110,24 @@ def crop(gray, box):
     return gray[y0:y1, x0:x1].astype(float)
 
 
+HALO = 0.05          # a pixel of less coverage than this is paper: the tails of the blur and the grain stop there
+
+
+def stroke_widths(cov: np.ndarray) -> np.ndarray:
+    """The width of each stroke of a crop, in pixels, from the coverage of its pixels (0 paper .. 1 ink): the coverage of
+    each run of pixels above HALO that holds a stroke (a pixel of 50 % or more) summed along its row. A count of the pixels
+    above the half level is quantised by the grid (a stroke of 3.5 px reads 3); this sum is not: the partly covered edges
+    and the blur are part of the width, so a stroke of 3.5 px measures 3.5 px."""
+    on = np.pad((cov > HALO).astype(np.int8), ((0, 0), (1, 1)))
+    d = np.diff(on, axis=1)
+    run_r, run_s = np.nonzero(d == 1)        # the first ink pixel of each run (column of the crop)
+    _, run_e = np.nonzero(d == -1)           # the first paper pixel after it: the same order, the same rows
+    csum = np.concatenate([np.zeros((cov.shape[0], 1)), np.cumsum(cov, axis=1)], axis=1)
+    strong = np.concatenate([np.zeros((cov.shape[0], 1)), np.cumsum(cov >= 0.5, axis=1)], axis=1)
+    keep = strong[run_r, run_e] - strong[run_r, run_s] > 0
+    return (csum[run_r, run_e] - csum[run_r, run_s])[keep]
+
+
 def measure(c):
     """The look of the ink in a crop (see the module doc); None when the crop holds no readable ink."""
     if c is None:
@@ -125,11 +146,13 @@ def measure(c):
     for r in ink[top:bot + 1]:
         d = np.diff(np.concatenate(([0], r.astype(np.int8), [0])))
         runs.extend((np.flatnonzero(d == -1) - np.flatnonzero(d == 1)).tolist())
+    widths = stroke_widths(np.clip((paper - c[top:bot + 1]) / contrast, 0, 1))
     gy, gx = np.gradient(c)
     mag = np.hypot(gx, gy)
     paper_px = c[c >= paper - 0.1 * contrast]
     grain = 1.4826 * float(np.median(np.abs(paper_px - np.median(paper_px)))) if paper_px.size > 8 else float("nan")
-    return {"thick": float(np.median(runs)) / h if runs else 0.0, "dark5": float(np.percentile(c, 5)),
+    return {"thick": float(np.median(widths)) / h if widths.size else 0.0,
+            "run": float(np.median(runs)) / h if runs else 0.0, "dark5": float(np.percentile(c, 5)),
             "contrast": contrast, "sharp": float(np.percentile(mag, 95)) / contrast, "h": float(h), "grain": grain}
 
 
@@ -176,7 +199,9 @@ def normalized(m: dict | None, p: dict | None) -> dict | None:
     """A measure over its prediction: thickness and sharpness as ratios, darkness as a difference of levels."""
     if not m or not p or p["thick"] <= 0 or p["sharp"] <= 0:
         return None
-    return {"thick": m["thick"] / p["thick"], "dark5": m["dark5"] - p["dark5"], "sharp": m["sharp"] / p["sharp"]}
+    run = m["run"] / p["run"] if p["run"] > 0 else 1.0       # the old ruler: a neutral ratio when the prediction has none
+    return {"thick": m["thick"] / p["thick"], "run": run, "dark5": m["dark5"] - p["dark5"],
+            "sharp": m["sharp"] / p["sharp"]}
 
 
 def _box3(a):
@@ -212,6 +237,7 @@ def roundtrip(c0, c1, m0, m1):
         return None
     s, at = ssim_shift(c0, c1)
     return {"thick": m1["thick"] / m0["thick"] if m0["thick"] > 0 else None,
+            "run": m1["run"] / m0["run"] if m0["run"] > 0 else None,
             "dark5": m1["dark5"] - m0["dark5"],
             "contrast": m1["contrast"] / m0["contrast"],
             "sharp": m1["sharp"] / m0["sharp"] if m0["sharp"] > 0 else None,
@@ -554,12 +580,13 @@ def t_critical(df: int, alpha: float = 0.05) -> float:
     return (lo + hi) / 2
 
 
-def _outlier_share(rs: list[dict], name: str):
-    """Share of the values whose thickness or darkness is beyond their own threshold (see judge)."""
+def _outlier_share(rs: list[dict], name: str, ruler: str = "thick"):
+    """Share of the values whose thickness (`ruler`: 'thick' the sub-pixel one, 'run' the old one) or darkness is beyond
+    their own threshold (see judge)."""
     judged = [r for r in rs if name in r]
     if not judged:
         return None
-    return sum(1 for r in judged if max(abs(r[name]["thick"]), abs(r[name]["dark5"])) > r[name]["crit"]) / len(judged)
+    return sum(1 for r in judged if max(abs(r[name][ruler]), abs(r[name]["dark5"])) > r[name]["crit"]) / len(judged)
 
 
 def spread_ratios(records: list[dict], others: dict) -> dict[str, list[float]]:
@@ -601,6 +628,7 @@ def summarize(records: list[dict], pools: dict) -> dict:
             "wt": sum(r["ok_bold"] for r in rs) / len(rs),
             "size": _med([r["size_ratio"] for r in rs if r["size_ratio"]]),
             "rt_thick": _med(thick), "rt_thick_p10": _pct(thick, 10), "rt_thick_p90": _pct(thick, 90),
+            "rt_run": _med([x["run"] for x in rt if x["run"]]),
             "rt_dark_abs": _med([abs(x["dark5"]) for x in rt]),
             "rt_contrast": _med([x["contrast"] for x in rt]),
             "rt_sharp": _med([x["sharp"] for x in rt if x["sharp"]]),
@@ -610,10 +638,13 @@ def summarize(records: list[dict], pools: dict) -> dict:
             "rt_shift": (sum(1 for x in rt if x["shift"]) / len(rt)) if rt else None,
             "cons_n": len(judged),
             "cons_outlier": _outlier_share(rs, "z_fake"),
+            "cons_outlier_run": _outlier_share(rs, "z_fake", "run"),
+            "cons_z_run_p90": _pct([abs(r["z_fake"]["run"]) for r in judged], 90),
             "cons_z_thick_p90": _pct([abs(r["z_fake"]["thick"]) for r in judged], 90),
             "cons_z_dark_p90": _pct([abs(r["z_fake"]["dark5"]) for r in judged], 90),
             # the null: the original values and their identity replacements against their blocks, as the fakes are
             "orig_outlier": _outlier_share(rs, "z_orig"),
+            "orig_outlier_run": _outlier_share(rs, "z_orig", "run"),
             "orig_z_dark_p90": _pct([abs(r["z_orig"]["dark5"]) for r in rs if "z_orig" in r], 90),
             "ident_outlier": _outlier_share(rs, "z_ident"),
             "ident_z_dark_p90": _pct([abs(r["z_ident"]["dark5"]) for r in rs if "z_ident" in r], 90),
@@ -626,9 +657,11 @@ def summarize(records: list[dict], pools: dict) -> dict:
 # commands
 
 COLUMNS = [("n", "n", "{:d}"), ("fam", "fam", "{:.0%}"), ("wt", "wt", "{:.0%}"), ("size", "size", "{:.2f}"),
-           ("rt_thick", "RTthick", "{:.2f}"), ("rt_dark_abs", "RT|dark|", "{:.1f}"), ("rt_sharp", "RTsharp", "{:.2f}"),
+           ("rt_thick", "RTthick", "{:.2f}"), ("rt_run", "RTrun", "{:.2f}"), ("rt_dark_abs", "RT|dark|", "{:.1f}"),
+           ("rt_sharp", "RTsharp", "{:.2f}"),
            ("rt_ssim", "RTssim", "{:.3f}"), ("rt_shift", "RTshift", "{:.0%}"),
-           ("cons_outlier", "outT", "{:.0%}"), ("cons_z_thick_p90", "|zT|90", "{:.2f}"),
+           ("cons_outlier", "outT", "{:.0%}"), ("cons_outlier_run", "outR", "{:.0%}"),
+           ("cons_z_thick_p90", "|zT|90", "{:.2f}"),
            ("cons_z_dark_p90", "|zD|90", "{:.2f}"), ("orig_outlier", "orgT", "{:.0%}"),
            ("ident_outlier", "idnT", "{:.0%}"), ("spread_thick", "sprT", "{:.2f}"),
            ("spread_dark5", "sprD", "{:.2f}"), ("spread_sharp", "sprS", "{:.2f}")]
@@ -670,8 +703,8 @@ def _worst(r: dict) -> float:
     return max(abs(z["thick"]), abs(z["dark5"])) if z else -1.0
 
 
-SHEET_MEASURES = (("thick", "thickness: run / height, ratio"), ("dark5", "darkness: levels, difference"),
-                  ("sharp", "sharpness: edge / contrast, ratio"))
+SHEET_MEASURES = (("thick", "thickness: ink width / height (sub-pixel), ratio"), ("dark5", "darkness: levels, difference"),
+                  ("sharp", "sharpness: edge / contrast, ratio"), ("run", "runs: median run / height (old ruler), ratio"))
 
 SHEET_CSS = """
 body { font: 14px/1.4 system-ui, sans-serif; margin: 0 auto; max-width: 1100px; padding: 16px; color: #1c1c1c; }
@@ -856,7 +889,8 @@ def cmd_compare(args) -> int:
     a = json.loads(Path(args.before).read_text(encoding="utf-8"))
     b = json.loads(Path(args.after).read_text(encoding="utf-8"))
     print(f"{'quality':<22}{'measure':<18}{'before':>10}{'after':>10}")
-    shown = ("fam", "wt", "rt_thick", "rt_dark_abs", "rt_sharp", "rt_ssim", "cons_outlier", "cons_z_thick_p90",
+    shown = ("fam", "wt", "rt_thick", "rt_run", "rt_dark_abs", "rt_sharp", "rt_ssim", "cons_outlier", "cons_outlier_run",
+             "cons_z_thick_p90",
              "cons_z_dark_p90", "orig_outlier", "ident_outlier", "spread_thick", "spread_dark5", "spread_sharp")
     fmts = {k: f for k, _, f in COLUMNS}
     for name in sorted(set(a["summary"]) & set(b["summary"]), key=lambda s: (s != "ALL", s)):

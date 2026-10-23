@@ -29,7 +29,7 @@ from pathlib import Path
 LOOK_RX = re.compile(r"^(?P<face>[^,]+?), (?:(?P<dpi>\d+) dpi, )?blur (?P<blur>[\d.]+)px, spread (?P<spread>[+\-][\d.]+)px, "
                      r"grain (?P<grain>\d+)(?P<bw>, black and white)?(?:, block (?P<block>\d+))?$")
 SHARP_RX = re.compile(r"^(?P<face>[^,]+?), sharp(?:, block (?P<block>\d+))?$")
-MEASURES = {"thickness": "thick", "darkness": "dark", "sharpness": "sharp"}
+MEASURES = {"thickness": "thick", "darkness": "dark", "sharpness": "sharp", "runs": "run"}
 
 
 def _word_kind(word: str) -> str:
@@ -176,6 +176,21 @@ def histogram(judged: list[dict]) -> list[str]:
     return out
 
 
+def rulers(judged: list[dict]) -> list[str]:
+    """Per face: the thickness of the original and of the fake with the two rulers, each over its prediction (median):
+    the sub-pixel one (the one of the tables) and the old run count (a count of pixels, quantised by the grid)."""
+    groups = defaultdict(list)
+    for r in judged:
+        groups[r["face"]].append(r)
+    out = ["== thickness with the two rulers, over the prediction (median): sub-pixel orig / fake, runs orig / fake",
+           f"{'':30} {'n':>3} {'sub orig':>8} {'sub fake':>8} {'run orig':>8} {'run fake':>8}"]
+    for k, rs in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        cells = [_med(_get(r, m, i) for r in rs) for m, i in (("thick", 0), ("thick", 2), ("run", 0), ("run", 2))]
+        out.append(f"{str(k)[:30]:30} {len(rs):>3} " + " ".join(f"{_f(c):>8}" for c in cells))
+    out.append("")
+    return out
+
+
 def summary(rows: list[dict], worst: int) -> str:
     out = []
     judged = [r for r in rows if r["m"]]
@@ -212,6 +227,7 @@ def summary(rows: list[dict], worst: int) -> str:
     table("face on each page", lambda r: f"{r['file']} p{r['page']} {r['face']}")
     table("kind of text", lambda r: f"{r['kind']} {r['length']}")
     out += histogram(judged)
+    out += rulers(judged)
 
     out.append(f"== the {worst} worst values (largest |z| of thickness or darkness)")
     out.append(f"{'file':4} {'p':>2} {'face':24} {'quality':30} {'kind':12} {'thk o/f':>11} {'zT':>6} "

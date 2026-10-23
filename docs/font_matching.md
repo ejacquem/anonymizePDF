@@ -304,3 +304,34 @@ Measure fix made with it: a value of several words was given no block when no si
 covers only part of it): a word that lies more than half inside the value now gives the block (`style_bench.measure_values`,
 only when the old rule finds nothing). Test 17 after the fix: 229 values (180 with a z-score, 176 before), families 91 %,
 weights 98 %, fakes outside the threshold 8 %, nulls 4 %, identity 3 %: the same numbers as section 10.6.
+
+## 12. The thickness ruler: sub-pixel (main) and the run count (kept for comparison)
+
+The run count of section 10 (`thick` = median horizontal run of ink / letter height) is a count of pixels: on the real
+pages and on Test 20 the runs are 2, 4 or 6 px (two native pixels per step), so the thickness of a value could only
+take a few values, and a fake one native pixel wider read as twice as thick. The ruler is now sub-pixel:
+`style_bench.stroke_widths` sums the coverage of each stroke (the run of pixels above 5 % that holds a pixel of 50 %
+or more, the coverage 0 paper .. 1 ink summed), so a stroke of 3.5 px measures 3.5 px (tests: `ruler_tests`). `measure`
+gives both: `thick` (sub-pixel, the ruler of the scoreboard, of the z-scores, of the spreads and of the outlier share)
+and `run` (the old count, z-scored too, reported as RTrun and outR, and as the 'runs' row of the review sheet).
+
+Results (`style_bench run`, z-scores and outlier shares of section 10.6 kept):
+
+| | Test 17, run (old) | Test 17, sub-pixel | Test 20, run (old) | Test 20, sub-pixel |
+|---|---|---|---|---|
+| Arial thickness, normalised: original / fake | - | - | 0.46 / 0.86 | 0.57 / 0.82 |
+| round trip, thickness (identity run) | 1.00 | 1.00 | 1.47 | 1.18 |
+| fakes outside the threshold (outR / outT) | 7.8 % | 10.6 % | 39 % | 48 % |
+| nulls: original values outside (orgT) | 4.4 % | 5.0 % | 0 % | 17 % (4 values) |
+| identity outside (idnT) | 2.8 % | 5.0 % | 57 % | 57 % |
+| |z| thickness, 90th percentile | 1.68 | 1.93 | 3.69 | 6.78 |
+
+Test 17 with the run ruler reproduces section 10.6 exactly (the run ruler is unchanged; checked).
+
+What this changes:
+- The factor of two of the regular text was mostly the count: with the sub-pixel ruler the original Arial strokes are
+  0.57 of their prediction and the fakes 0.82 (fake over original 1.4, not 1.9), and the identity replacement is 1.18
+  times its original (1.47 with the count).
+- The null on Test 17 is at its target (5.0 %); on Test 20 it is 4 values out of 23 judged, not a measure of anything yet.
+- The step 3 targets of the plan (median thickness of the original 0.9 to 1.1) were written against the run count: on the
+  sub-pixel ruler the regular original sits at 0.57 of its prediction, so the target has to be restated.

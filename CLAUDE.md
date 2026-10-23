@@ -1020,8 +1020,9 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - How well the replaced text blends into the text around it, on the three fake scans of Dossier Test 17
   (`polices_scan.pdf`, `contrat_assurance_scan.pdf`, `paragraphes_scan.pdf`, truth in `fonts_truth.json`). Each file runs
   twice on a temporary copy with a scratch key: the fake run (what the user gets) and an identity run (every value
-  replaced by itself: the round trip). Measures per value: thickness, darkness, contrast, sharpness, height and grain of
-  its crop; round trip ratios and differences and a 3x3-window SSIM at the best shift of +-2 px; consistency (each
+  replaced by itself: the round trip). Measures per value: thickness (the SUB-PIXEL ruler: `stroke_widths`, the coverage
+  of each stroke summed, median over the letter height; the old run count is kept as `run` for comparison, outR /
+  RTrun in the tables; docs 12), darkness, contrast, sharpness, height and grain of its crop; round trip ratios and differences and a 3x3-window SSIM at the best shift of +-2 px; consistency (each
   measure of the fake divided by its PREDICTION for the same text in the block's style, `predict`; z-scores against the
   unreplaced words of its block, same normalisation; the share beyond the Student t threshold for n-1 others: outT, and
   the same for the original values, the null orgT, and the identity run idnT); detection (family, weight, size) on the
