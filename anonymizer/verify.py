@@ -85,9 +85,10 @@ def read_output(path: Path, ocr_lang: str, use_ocr: bool) -> OutputRead:
 
 
 def _fold(text: str) -> str:
-    """Letters and digits as an OCR reads them: 0 / 1 / 5 / 8 / 2 come back as O / I / S / B / Z, so a fake number
-    read back with those errors is folded to the same text."""
-    return re.sub(r"[^A-Z0-9]", "", text.upper()).translate(str.maketrans("OILSBZ", "011582"))
+    """Letters and digits as an OCR reads them: 0 / 1 / 5 / 8 / 2 come back as O / I / S / B / Z, and a 7 comes back as
+    a 1 in some fonts (the fake '274 87 96 77' read back as '214 81 96', Dossier Test 17), so a fake number read back
+    with those errors is folded to the same text."""
+    return re.sub(r"[^A-Z0-9]", "", text.upper()).translate(str.maketrans("OILSBZ7", "0115821"))
 
 
 def _hit_boxes(words: list[dict], text: str, spans: list, rx, pno: int, scale: float = 1.0) -> list[dict]:

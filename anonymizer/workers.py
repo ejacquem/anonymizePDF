@@ -353,7 +353,7 @@ def read_scan(path: str, index: int, ocr_lang: str) -> dict:
             words = page_words(img, ocr_lang)
             with timing.stage("render"):
                 gray = np.asarray(img.convert("L"))
-                scale = scanpaint.native_scale(doc[index], 300)
+                scale = scanpaint.native_scale(doc[index], 300, words=words)
     finally:
         doc.close()
     return {"words": words, "gray": gray, "scale": scale, "stages": dict(tm.seconds), "pid": os.getpid()}

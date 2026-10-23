@@ -133,6 +133,8 @@ $("#appQualityFloor").oninput = (e) => {
 };
 // the quality sent with a run: the slider, not below the limit
 function sentQuality() { return Math.max(state.app.qualityOffset || 0, state.app.qualityFloor ?? -1); }
+// the quality settings of a run: the server applies the floor too (app.py _quality_offset), on every request
+function qualityBody() { return { quality_offset: state.app.qualityOffset || 0, quality_floor: state.app.qualityFloor ?? -1 }; }
 $("#appOcrEngine").onchange = async (e) => {
   state.app.ocrEngine = e.target.value;
   saveApp();
@@ -1992,7 +1994,7 @@ async function anonymizeFolder() {
   if (state.dirty && !(await saveConfig())) return null;
   const r = await runJob("anonymize", "/api/anonymize",
     { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(), include: folderPendingFiles(),
-      quality_offset: sentQuality() }, "Anonymize");
+      ...qualityBody() }, "Anonymize");
   await loadTree();
   await loadReport();
   await reloadConfigIfSuggested();
@@ -2043,7 +2045,7 @@ $("#btnRunFile").onclick = async () => {
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("anonymize", "/api/anonymize",
     { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      quality_offset: sentQuality() }, "Anonymize file");
+      ...qualityBody() }, "Anonymize file");
   await loadTree();
   await loadReport();
   await reloadConfigIfSuggested();
@@ -2114,7 +2116,7 @@ async function runBatch(action) {
   if (action === "scan_anonymize" && !confirm("Scan every client folder below and anonymize it right away, folder by folder, without reviewing the new configs? Your edits are kept, reviewed files are left alone.")) return;
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify,
-    quality_offset: sentQuality() },
+    ...qualityBody() },
     { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize",
       scan_anonymize: "Batch scan & anonymize" }[action], { keepsConfig: action === "anonymize" });
   if (r && r.status === "done" && action !== "scan") pendingBoxes.clear();      // every file of the batch is regenerated

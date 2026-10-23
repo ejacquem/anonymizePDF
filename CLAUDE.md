@@ -685,7 +685,10 @@ Order must never change a result (`order_tests`): a value written with several s
 - A value on two lines is cut by the words of the same rank when the fake has as many words (`scanpaint._cut_lines`:
   'i\venue' / 'de la Closière 7' -> 'Avenue' / 'de la Chapelle 2'), else by the widths of the lines.
 - Quality (`PageFonts.page_quality`, `quality.fit`): on the 20 longest words of the page (>= 3, else not fitted):
-  native resolution from the PDF image (`scanpaint.native_scale`, not fitted), then blur and stroke spread by a
+  native resolution from the PDF image (`scanpaint.native_scale`: the image that holds most of the page's word centres,
+  ties to the finer one, NOT the largest image: a low-resolution blue background that covers the page gave the clamp
+  0.1 and every replacement came out at about 30 dpi, unreadable. Test: `background_quality_tests`; the pixel pass passes
+  the words too), not fitted, then blur and stroke spread by a
   coordinate search over grids, error = linear fit of the degraded candidate to the pixels. Per value: grain (MAD of
   the paper around the box, ink and its edges left out) and colours (`colours`: ink = paper + (darkest 5 % - paper) /
   peak coverage of the degraded candidate: the ink of a full stroke, consistent with the fitted blur), measured on
@@ -698,7 +701,13 @@ Order must never change a result (`order_tests`): a value written with several s
 - Fake text quality (app setting, `run_anonymize(quality_offset=)`, kept in the report): the detected quality is
   corrected by `quality.adjust` before painting. Below 0, per 0.1: +0.2 px blur, +1 grain level, -5 % resolution;
   above 0 the blur, grain and spread shrink in proportion and the resolution comes back; +1 = sharp. 0 = as detected.
-  Test: `quality_offset_tests`.
+  Test: `quality_offset_tests`. Which parameters: the downward offset acts on blur, grain and resolution (not on the
+  stroke spread, which is the weight, not the quality); the upward offset on all four.
+  The floor ('Lowest fake text quality allowed', app setting `qualityFloor`, default -0.5, -1 = no limit): the offset
+  sent is never below it, in the browser (`sentQuality`, `qualityBody`) AND on the server (`app._quality_offset`:
+  `quality_floor` in every run request: /api/anonymize and /api/batch). It limits the OFFSET, so it bounds the change
+  the user makes to the detected quality; it cannot stop a detected quality that is already bad. Test:
+  `background_quality_tests` (the floor rules).
 - Slanted words (|angle| >= TILT_MIN) are not measured on the page (their OCR box is not their ink, `page_fonts(skip=)`):
   a slanted value takes the page quality, and its font is measured in the patch `paint_tilted` turns straight
   (`render.tilted_face`: the value's text and its ink box in that patch, a PageFonts of one word), Arial when it cannot

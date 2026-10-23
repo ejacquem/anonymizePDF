@@ -4239,6 +4239,70 @@ def town_region_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def background_quality_tests():
+    """A low-resolution background image that covers the page (a blue template, a watermark) under a 200 dpi text
+    image: the replaced text is written at the resolution of the text, not of the background (before, the largest image
+    decided the resolution: 0.1, so every replacement was blurred to about 30 dpi). The offset floor is applied on the
+    server too (app._quality_offset): the offset is never below it."""
+    print("\n== quality of the fakes: the text's own resolution; the quality floor")
+    import importlib.util
+    import io
+    from PIL import Image, ImageDraw, ImageFont
+    font = ROOT / "anonymizer" / "fonts" / "Barlow-Regular.ttf"
+    tmp = Path(tempfile.mkdtemp(prefix="anon_bgquality_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        folder = tmp / "client"
+        folder.mkdir()
+        bg = io.BytesIO()
+        Image.new("RGB", (120, 160), (226, 236, 252)).save(bg, format="JPEG", quality=85)     # the blue background, small
+        txt = Image.new("RGBA", (1700, 2200), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(txt)
+        f = ImageFont.truetype(str(font), 34)
+        for i, line in enumerate(["Nom : Jean DUPONT", "IBAN : BE68 5390 0754 7034", "Adresse : 12 rue Neuve, 1000 Bruxelles"]):
+            draw.text((160, 300 + 80 * i), line, font=f, fill=(20, 20, 20, 255))
+        tb = io.BytesIO()
+        txt.save(tb, format="PNG")
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        page.insert_image(fitz.Rect(-30, -30, 642, 822), stream=bg.getvalue())               # bleeds over the page
+        page.insert_image(page.rect, stream=tb.getvalue())
+        doc.save(folder / "fond.pdf")
+        doc.close()
+        pg = fitz.open(folder / "fond.pdf")[0]
+        from anonymizer import scanpaint
+        from anonymizer.ocrpage import page_words
+        words = page_words(ocr.render_page(pg, 300), "fra+eng") if ocr.available() else []
+        if words:
+            check("the native scale follows the text's image, not the background's (about 0.67 here, not 0.1)",
+                  scanpaint.native_scale(pg, 300, words=words) > 0.5, scanpaint.native_scale(pg, 300, words=words))
+        if not ocr.available():
+            print("  (no OCR engine on this PC: the look of the replacements is not checked)")
+        else:
+            res = engine.scan_folder(folder, "client", [], "fra+eng", lambda m: None)
+            (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+            engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda m: None)
+            report = json.loads((folder / engine.REPORT_NAME).read_text(encoding="utf-8"))
+            looks = [t["look"] for t in report["files"][0].get("trace", []) if t.get("replacement") and t.get("look")]
+            dpis = [int(re.search(r"(\d+) dpi", lk).group(1)) for lk in looks if re.search(r"(\d+) dpi", lk)]
+            check("the replacements are written at the text's resolution (200 dpi), not at the background's",
+                  dpis and min(dpis) >= 150, f"looks {looks[:3]}")
+
+        spec = importlib.util.spec_from_file_location("anon_webapp", ROOT / "app.py")
+        webapp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(webapp)
+        q = webapp._quality_offset
+        check("the floor holds the offset: -1 with a floor of -0.5 is -0.5",
+              q({"quality_offset": -1, "quality_floor": -0.5}) == -0.5)
+        check("an offset above the floor is kept", q({"quality_offset": -0.2, "quality_floor": -0.5}) == -0.2)
+        check("a floor of -1 is no limit", q({"quality_offset": -1, "quality_floor": -1}) == -1)
+        check("a floor above the offset raises it", q({"quality_offset": 0, "quality_floor": 0.3}) == 0.3)
+        check("no floor sent: the offset alone (old clients)", q({"quality_offset": -0.7}) == -0.7)
+        check("values outside -1 .. +1 are held to the range", q({"quality_offset": -5, "quality_floor": -9}) == -1)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def repeated_value_tests():
     """The same value on two close lines (a line gap of 12 to 14 points, the second line shifted): each copy is replaced
     and its original is gone from the page. Before the fix, the second copy's redaction took the first line's glyphs
@@ -4347,6 +4411,11 @@ def suspect_hits_tests():
               sus and all(s.get("hits") and all(h["page"] == s["page"] and 0 <= h["box"][0] < h["box"][2] <= 595.5
                                               and 0 <= h["box"][1] < h["box"][3] <= 842.5 for h in s["hits"])
                           for s in sus), str(sus)[:300])
+        # a fake read back with a 7 read as a 1 and two digits dropped is the replacement, not a leak (Dossier Test 17)
+        from anonymizer import verify as verify_mod
+        check("a replacement read back with a 7 read as a 1 is no suspect (the read-back rule)",
+              verify_mod._read_back("+32 214 81 96", [("+32 274 87 96 77", verify_mod._fold("+32 274 87 96 77"))],
+                                    [verify_mod._fold("+32 486 19 74 30")]))
         keys = [pii.norm_value(s["value"]) for s in sus]
         check("one place, one line: no suspect is part of another one on its page",
               not any(a != b and a in b for a in keys for b in keys), str(keys))
@@ -4597,7 +4666,7 @@ GROUPS = [
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
-    "underline_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests",
+    "underline_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

@@ -91,11 +91,17 @@ def info():
 
 
 def _quality_offset(data: dict) -> float:
-    """The 'Fake text quality' app setting sent with a run (-1 .. +1, 0 = as detected)."""
+    """The 'Fake text quality' app setting sent with a run (-1 .. +1, 0 = as detected). The lowest quality allowed
+    ('quality_floor', -1 .. +1, -1 = no limit) is applied here too, on every request: the offset is never below it."""
     try:
-        return max(-1.0, min(1.0, float(data.get("quality_offset") or 0.0)))
+        off = max(-1.0, min(1.0, float(data.get("quality_offset") or 0.0)))
     except (TypeError, ValueError):
-        return 0.0
+        off = 0.0
+    try:
+        floor = max(-1.0, min(1.0, float(data.get("quality_floor") if data.get("quality_floor") is not None else -1.0)))
+    except (TypeError, ValueError):
+        floor = -1.0
+    return max(off, floor)
 
 
 @app.post("/api/settings")

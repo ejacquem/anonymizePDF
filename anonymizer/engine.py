@@ -537,7 +537,7 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
                     log(f"   page {pno}: OCR of the images ({len(pw)} words)")
                     with timing.stage("render"):
                         seen_pages.append({"gray": np.asarray(pimg.convert("L")), "words": pw,
-                                           "scale": native_scale(page, 300)})
+                                           "scale": native_scale(page, 300, words=pw)})
                     _detect_words(found, tokens, sequences, pw, True, ner, pdf.name, pno)
 
     _report(progress, len(pdfs), len(pdfs))
@@ -850,7 +850,7 @@ def _read_scan_page(task, page, ocr_lang: str):
         img = render_page(page, 300)
     words = page_words(img, ocr_lang)
     with timing.stage("render"):
-        return words, np.asarray(img.convert("L")), native_scale(page, 300)
+        return words, np.asarray(img.convert("L")), native_scale(page, 300, words=words)
 
 
 def _name_faces(pages: list[dict], keys: set[str], aliases: dict[str, str]) -> dict[str, list]:

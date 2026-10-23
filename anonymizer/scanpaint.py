@@ -76,22 +76,34 @@ def _note(extras: dict, page: int, box, kind: str, value: str = "", replacement:
     extras.setdefault("trace", []).append(item)
 
 
-def native_scale(page, dpi: float, at=None) -> float:
+def native_scale(page, dpi: float, at=None, words=None) -> float:
     """Native resolution of the scan / `dpi` (<= 1): the pixel size of an image of the page over the size it is
-    drawn at; the largest image, or the largest one under the point `at` (x, y in PDF points). 1 when the page has
-    no image (or one finer than `dpi`)."""
-    best, area = 1.0, 0.0
+    drawn at. Which image: among those under the point `at` (x, y in PDF points) when given (else all), and when the words are
+    given (their boxes in pixels of a render at `dpi`), the image that holds the most word centres (ties: the finer one),
+    so that a low-resolution background under the text does not decide the resolution of the text (B-bug: a blue
+    background image as large as the page gave 0.1 and blurred every replacement); else the largest image.
+    1 when the page has no image (or one finer than `dpi`)."""
+    cands = []                                           # (image rect, native scale of the image)
     try:
         for info in page.get_images(full=True):
             for r in page.get_image_rects(info[0]):
-                if at is not None and not r.contains(fitz.Point(*at)):
-                    continue
-                if r.width > 1 and r.height > 1 and r.get_area() > area:
-                    area = r.get_area()
-                    best = min(info[2] / (r.width / 72 * dpi), info[3] / (r.height / 72 * dpi))
+                if r.width > 1 and r.height > 1:
+                    cands.append((r, min(info[2] / (r.width / 72 * dpi), info[3] / (r.height / 72 * dpi))))
     except Exception:                                    # odd image objects: no resolution, keep the page's
         return 1.0
-    return min(max(best, 0.1), 1.0)
+    if at is not None:
+        cands = [c for c in cands if c[0].contains(fitz.Point(*at))]
+    if not cands:
+        return 1.0
+    if words:
+        centres = [((w["box"][0] + w["box"][2]) / 2 * 72 / dpi, (w["box"][1] + w["box"][3]) / 2 * 72 / dpi) for w in words]
+        counts = [sum(1 for cx, cy in centres if r.contains(fitz.Point(cx, cy))) for r, _ in cands]
+        if max(counts) > 0:
+            best = max(range(len(cands)), key=lambda i: (counts[i], cands[i][1]))
+            return min(max(cands[best][1], 0.1), 1.0)
+    # the largest image (the first one when two are as large)
+    area_best = max(cands, key=lambda c: c[0].get_area())
+    return min(max(area_best[1], 0.1), 1.0)
 
 
 def page_fonts(gray, words, cfg: dict, scale: float, angles: dict | None = None):
@@ -283,7 +295,7 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
     black_px = [tuple(v / k for v in r) for r in black]
     # the picture under the first word read: its resolution is the native one of the text in it
     at = ((words[0]["box"][0] + words[0]["box"][2]) / 2 * k, (words[0]["box"][1] + words[0]["box"][3]) / 2 * k)
-    pf = page_fonts(gray, words, cfg, native_scale(page, dpi, at))
+    pf = page_fonts(gray, words, cfg, native_scale(page, dpi, at, words=words))
     with timing.stage("text"):
         plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
     todo, erased = [], []                              # erased: every redacted box (all lines of every value)
@@ -549,7 +561,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
         angles = word_angles(img_key, gray, words, skew)  # slant of each word, before painting
         words = _refine_slanted(img, words, angles, ocr_lang)              # exact boxes of the slanted lines
         angles = word_angles(img_key, gray, words, skew)
-    pf = page_fonts(gray, words, cfg, native_scale(page, 300), angles)
+    pf = page_fonts(gray, words, cfg, native_scale(page, 300, words=words), angles)
     with timing.stage("text"):
         plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
     draw = ImageDraw.Draw(img)
