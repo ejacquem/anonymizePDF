@@ -464,3 +464,29 @@ darkness beyond the t threshold). Target: about 5 %.
 
 Before and after (the step did not change the ruler or the rendering): the per-page fake over original ratios of section
 13 are unchanged. The null check is in `ruler_tests` (`ruler_null_check`).
+
+### 13.2 Step 3, autonomous run: the spread from the painted widths (tried, not kept)
+
+The candidate: the spread of the page is chosen among the spreads whose pixel error is within 8 % of the best, by
+painting the sample words (the same quality, the ink the painting uses, quality.colours), measuring their stroke widths in
+the ruler's page units, and taking the spread whose median log ratio to the scan's widths is nearest 0.
+
+Result, with the candidate on (the ruler and the thresholds unchanged, 13.1):
+
+| page | committed (pixel fit) | candidate | verdict |
+|---|---|---|---|
+| Test 17, paragraphes p1 (110 dpi, blue) | 0.77 (spread 0) | 0.72 (spread -0.25) | moves the wrong way |
+| Test 17, paragraphes p3 (200 dpi, copier) | 1.33 (spread +1.0) | 1.26 (spread +0.5) | the right way, still out |
+| Test 17, polices p1 (300 dpi) | 1.19 (spread 0) | 1.19 (spread 0) | no change |
+| Test 17, contrat p2 (200 dpi) | 0.96 (spread 0) | 0.76 (spread -0.5) | in the target, pushed out |
+| Test 20, releve p1 | 1.07 | 1.10 | in, at the edge |
+| Test 20, releve p2 | 1.06 | 1.12 | in the target, pushed out |
+
+Why it fails: the candidate's painted width does not follow the output of the pipeline on every page. On paragraphes p1
+the painted candidate at spread 0 is wider than the scan, while the fakes of the pipeline are thinner than the originals.
+The candidate paints the grey page (the colours of the grey image); the pipeline paints the colour page, and the output is
+measured after the JPEG. The model cannot be trusted to set the spread without a check against the output.
+
+Decision: no rendering change. `anonymizer/` is unchanged (the candidate is reverted; its diff is kept in the autonomous
+run's scratch). The three pages stay out of the target: paragraphes p1 0.77, paragraphes p3 1.33, polices p1 1.19. The
+next candidate would need a model of the colour painting (the RGB ink of the page), tested on the pipeline's own output.
