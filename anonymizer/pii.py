@@ -8,7 +8,9 @@ PII detection and text/box helpers. Everything runs locally.
 """
 from __future__ import annotations
 
+import difflib
 import re
+import unicodedata
 from functools import lru_cache
 import sys
 from dataclasses import dataclass
@@ -66,13 +68,24 @@ def _v_iban(m):
 _IBAN_SHAPE_COUNTRIES = {"BE", "FR", "NL", "DE", "LU", "CH"}
 
 
+_IBAN_LENGTH = {"BE": 16, "FR": 27, "NL": 18, "DE": 22, "LU": 20, "CH": 21}     # the length of each country's IBAN
+
+
 def _v_iban_shape(m):
     """The shape of an IBAN of a neighbouring country, with a checksum that fails: an OCR that garbles a digit makes a
-    real account unreadable for the checksum, and the account is not less private for it (privacy first: covered)."""
-    s = m.group().replace(" ", "")
-    if s[:2] in _IBAN_SHAPE_COUNTRIES and 15 <= len(s) <= 34 and sum(c.isdigit() for c in s) >= 12:
-        return m.start(), m.end()
-    return None
+    real account unreadable for the checksum, and the account is not less private for it (privacy first: covered).
+    The IBAN ends where its country's length ends; without a known length, at the longest run of groups of 34
+    characters or less. The groups after it are another column (a table), not part of the account."""
+    groups = list(re.finditer(r"\S+", m.group()))
+    runs = []                                                   # (groups used, text), the longest first
+    for k in range(len(groups), 0, -1):
+        s = "".join(g.group() for g in groups[:k])
+        if s[:2] in _IBAN_SHAPE_COUNTRIES and 15 <= len(s) <= 34 and sum(c.isdigit() for c in s) >= 12:
+            runs.append((k, s))
+    if not runs:
+        return None
+    k = next((k for k, s in runs if len(s) == _IBAN_LENGTH.get(s[:2])), runs[0][0])
+    return m.start(), m.start() + groups[k - 1].end()
 
 
 def _sepa_creditor_ok(s: str) -> bool:
@@ -272,7 +285,10 @@ def _is_year(code: str) -> bool:
 def _v_postal(m):
     if _is_year(re.search(r"\d+", m.group()).group()):
         return None
-    city = re.sub(r"^\S+\s+", "", m.group()).split()[0].casefold()
+    word = re.sub(r"^\S+\s+", "", m.group()).split()[0]
+    if re.fullmatch(r"[0OoXx*•]+", word):          # 'OOXX' after a postcode: a masked number, not a town (B2)
+        return None
+    city = word.casefold()
     return None if city in _CITY_STOPLIST or city in _US_ADDRESS_WORDS else (m.start(), m.end())
 
 
@@ -367,14 +383,18 @@ _ROLE = (r"titulaire|cotitulaire|co-titulaire|b[ée]n[ée]ficiaire|mandataire|ma
 _NOT_NAME = r"nous|vous|il|elle|ils|elles|le|la|les|un|une|ce|cet|cette|ces|pour|par|dans|sur|avec|sans|est|sont|ont|aura|doit"
 
 DETECTORS = [
-    # the groups may be spaced widely ('FR76  3000  6000 ...': a layout with gaps between the groups)
-    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?:[ \t]{0,3}[A-Z0-9]{4}){2,7}(?:[ \t]{0,3}[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban),
+    # the groups may be spaced widely ('FR76  3000  6000 ...': a layout with gaps between the groups; up to 8 spaces,
+    # 'FR16     1234     1234 ...' is an IBAN too)
+    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?:[ \t]{0,8}[A-Z0-9]{4}){2,7}(?:[ \t]{0,8}[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban),
     # the same shape, the checksum not required ('BE 70 0016 9028 4173' read with a space after the country, a garbled digit)
-    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2} ?\d{2}(?:[ 	]{0,3}[A-Z0-9]{4}){2,7}(?:[ 	]{0,3}[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban_shape),
+    ("IBAN", re.compile(r"(?<![A-Za-z0-9])[A-Z]{2} ?\d{2}(?:[ \t]{0,8}[A-Z0-9]{4}){2,7}(?:[ \t]{0,8}[A-Z0-9]{1,3})?(?![A-Za-z0-9])"), _v_iban_shape),
     ("CREDIT_CARD", re.compile(r"(?<!\d)(?:\d[ \-]?){13,19}(?!\d)"), _v_card),
     # masked card number: '6703 **** **** 4471', '4975 XXXX XXXX 1234', 'Carte x4412'
     # the mask may be any run of stars or X ('495321XXXXXX7425' is a card as well as '6703 **** 4471')
     ("CARD_NUMBER", re.compile(r"(?<![\w*])\d{4,6}(?:[ \-]?[xX*•]{4,}){1,3}[ \-]?\d{4}(?!\d)"), None),
+    # the same mask as an OCR reads it: the zeros of a group read as O ('1324 00XX XXXX 1234', '1324 OOXX XXXX 1234'),
+    # the groups spaced with gaps. It wins over the postcode and the town that the OCR makes of its first groups
+    ("CARD_NUMBER", re.compile(r"(?<![\w*])\d{4}(?:[ \-]{0,3}[\dOo]{0,2}[xX*•]{2,}[\dOo]{0,2}){1,3}[ \-]{0,3}\d{4}(?!\d)"), None),
     ("CARD_NUMBER", re.compile(r"(?i:carte|card|kaart)(?:\s*n[°o]\.?)?\s*[:\-]?\s*((?:[xX*•]{1,12}[ ]?)\d{4})(?!\d)"),
      _v_group1),
     # a reference with letters and digits after its label: 'REF : 5483651240000XA3'
@@ -534,6 +554,92 @@ CAPS_NAME_RANK = PERSON_RANKS[-1]     # the capitals-only pattern, the last PERS
 STRUCTURED_TYPES = list(dict.fromkeys(t for t, _, _ in DETECTORS))
 
 
+# --------------------------------------------------------------------------
+# Title words (B3): 'Monsieur', 'MME', 'M.' are never part of the value of a name
+# --------------------------------------------------------------------------
+
+_TITLE_WORDS = {"monsieur", "madame", "mademoiselle", "messieurs", "mesdames", "mme", "mmes", "mlle", "mlles", "mle",
+                "mr", "mrs", "ms", "me", "maitre", "dr", "docteur", "heer", "mevrouw", "mevr", "dhr"}
+_TITLE_FUZZY = ("monsieur", "madame", "mademoiselle", "messieurs", "mesdames")   # OCR misreadings: 'Nlonsieur', 'rnadame'
+_TITLE_CONNECTORS = {"et", "and", "en", "&"}                                      # 'M. et MME DUPONT'
+
+
+def _fold(word: str) -> str:
+    """Letters only, lower case, no accents: 'Maître' and 'MAITRE' are the same word."""
+    return "".join(c for c in unicodedata.normalize("NFKD", word.casefold()) if c.isalpha())
+
+
+def is_title_word(word: str) -> bool:
+    """A title word of a person ('Monsieur', 'MME', 'Maître', 'Dr'), or an OCR misreading of one of the long ones."""
+    k = _fold(word)
+    if not k:
+        return False
+    if k in _TITLE_WORDS:
+        return True
+    # the m of a title read as 'rn' or 'nl' / 'ni' ('rnadame', 'Nlonsieur'), then the likeness to the long titles
+    for v in {k, k.replace("rn", "m"), k.replace("nl", "m").replace("ni", "m")}:
+        if len(v) >= 5 and any(difflib.SequenceMatcher(None, v, t).ratio() >= 0.8 for t in _TITLE_FUZZY):
+            return True
+    return False
+
+
+def _name_flags(tokens: list[str]) -> list[bool]:
+    """True for each word that is part of the name: not a title word, not a connector next to a title, and not the 'M'
+    (or 'M.') that starts the value ('M. Dupont'); an initial inside a name ('Jean M. Dupont') is a name word."""
+    flags = []
+    for i, word in enumerate(tokens):
+        title = is_title_word(word) or (i == 0 and _fold(word) == "m")
+        if not title and _fold(word) in _TITLE_CONNECTORS:
+            title = any(j < len(tokens) and is_title_word(tokens[j]) for j in (i - 1, i + 1) if j >= 0)
+        flags.append(not title)
+    return flags
+
+
+def _without_titles(m: Match) -> list[Match]:
+    """A PERSON match split around its title words: one match per run of name words, with its own span. A title is no
+    value, so 'Jean MME DUPONT' gives 'Jean' and 'DUPONT', 'DUPONT MME' gives 'DUPONT'."""
+    toks = list(re.finditer(r"\S+", m.value))
+    flags = _name_flags([t.group() for t in toks])
+    out, run = [], []
+    for t, keep in zip(toks + [None], flags + [False]):
+        if keep and t is not None:
+            run.append(t)
+            continue
+        if run:
+            a, b = run[0].start(), run[-1].end()
+            out.append(Match(m.start + a, m.start + b, m.type, m.value[a:b], m.source, m.rank, m.replacement, m.invisible))
+            run = []
+    return out
+
+
+def _titles_out(matches: list[Match]) -> list[Match]:
+    return [x for m in matches for x in (_without_titles(m) if m.type == "PERSON" else [m])]
+
+
+def strip_term_titles(find: str, replace: str) -> tuple[str, str]:
+    """A config entry whose `find` starts or ends with title words ('Monsieur Jean Dupont', configs made before B3): the
+    title words are taken off the find, and off the replacement where it starts or ends with title words too. Nothing
+    changes when no name word is left (the entry is kept as it was)."""
+    ft = find.split()
+    flags = _name_flags(ft)
+    if not any(flags) or all(flags):
+        return find, replace
+    first, last = flags.index(True), len(flags) - 1 - flags[::-1].index(True)
+    new_find = " ".join(ft[first:last + 1])
+    if len(new_find) < 2:
+        return find, replace
+    rt = replace.split()
+    if rt and first > 0:
+        rflags = _name_flags(rt)
+        if any(rflags):
+            rt = rt[rflags.index(True):]
+    if rt and last < len(ft) - 1:
+        rflags = _name_flags(rt)
+        if any(rflags):
+            rt = rt[:len(rt) - (len(rflags) - 1 - rflags[::-1].index(True))]
+    return new_find, " ".join(rt) if replace.strip() else replace
+
+
 def detect_structured(text: str, types: set[str] | None = None) -> list[Match]:
     out = []
     for rank, (typ, rx, validator) in enumerate(DETECTORS):
@@ -545,8 +651,8 @@ def detect_structured(text: str, types: set[str] | None = None) -> list[Match]:
                 out.append(Match(span[0], span[1], typ, text[span[0]:span[1]], rank=rank))
     # a run of capitals is a name only if no other value sits in it: 'BIC BNPAFRPP' keeps its BIC
     others = [m for m in out if m.rank != CAPS_NAME_RANK]
-    return [m for m in out if m.rank != CAPS_NAME_RANK
-            or not any(o.start < m.end and m.start < o.end for o in others)]
+    return _titles_out([m for m in out if m.rank != CAPS_NAME_RANK
+                        or not any(o.start < m.end and m.start < o.end for o in others)])
 
 
 # --------------------------------------------------------------------------
@@ -615,7 +721,7 @@ def detect_ner(text: str, ner, types: set[str] | None = None) -> list[Match]:
                     continue
                 s += len(text[s:e]) - len(text[s:e].lstrip())
                 out.append(Match(s, s + len(value), typ, value, rank=100))
-    return out
+    return _titles_out(out)
 
 
 def _repeated_digits(value: str) -> bool:

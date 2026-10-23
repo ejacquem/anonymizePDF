@@ -424,7 +424,25 @@ Order must never change a result (`order_tests`): a value written with several s
   name). Test: `detector_tests`.
 - Page text normalises Unicode dashes (U+2010…) to `-` one-for-one (`words_to_text`), so spans stay valid.
 - IBAN and phone numbers accept wide gaps between their groups ('FR76  3000  6000 ...', '01  47  36  21  21'): the
-  separators are `[ \t]{0,3}` / `[ .\-/]{0,3}`, and `_v_iban` measures the span on the text, not on single spaces.
+  separators are `[ \t]{0,8}` (IBAN, B1; phone `[ .\-/]{0,3}`), and `_v_iban` measures the span on the text, not on single spaces.
+  An IBAN whose groups sit on one row but whose words the page text gives several lines (a table cell, an OCR that
+  cut the row) is found too: `_detect_words` reads each row of the page (`layout.rows`, cut at gaps over 3 word
+  heights, so two columns stay apart) on its own for the IBAN detectors, and adds the IBANs the page text did not give.
+  The shape variant (`_v_iban_shape`, no checksum) ends at its country's IBAN length (`_IBAN_LENGTH`), else at 34
+  characters: the groups after it are another column. Test: `iban_gap_tests`.
+- A masked card number read by OCR with its zeros as O ('1324 00XX XXXX 1234', '1324 OOXX XXXX 1234', B2): a second
+  CARD_NUMBER pattern takes the mask (X or * groups, OCR digits in them, gaps of up to 3 spaces), it wins over the
+  postcode and town the OCR makes of its first groups, and `_v_postal` never takes a town made of mask characters
+  (`[0OoXx*•]+`). Test: `masked_number_tests`.
+- Title words (B3): 'Monsieur', 'Madame', 'Mademoiselle', 'Messieurs', 'Mesdames', 'MME', 'MMES', 'MLE(S)', 'MR', 'MRS',
+  'MS', 'Me', 'Maître', 'Dr', 'Docteur', 'Heer', 'Mevrouw', 'Dhr' and their OCR misreadings (`is_title_word`: the long
+  ones by likeness >= 0.8 after 'rn' -> m, 'nl' / 'ni' -> m) are never part of a PERSON value. `_without_titles` splits a
+  PERSON match around them (one match per run of name words: 'Jean MME DUPONT' -> 'Jean' and 'DUPONT'), a connector
+  next to a title goes with it ('M. et MME', 'MR ET MME'), and a single 'M' / 'M.' is a title only at the start of a
+  value ('Jean M. Dupont' keeps its initial). Applied in `detect_structured` and `detect_ner`, so every caller (scan,
+  second check, suggestions) gets it. An old config's `find` loses its title words at the edges
+  (`strip_term_titles`, in `parse_config` for replacements and manual replacements; the replacement loses its own
+  edge title words too). Test: `title_tests` (also the anonymized file keeps its titles).
 - SEPA creditor identifiers with the business code ZZZ ('FR16ZZZ001001M1200015436665') are detected by their shape
   (`_v_sepa_zzz`), also when the OCR splits them ('FRI 6ZZZ001001 Ml 200015436665'); `ocr.fix_digits` leaves a token
   holding 'ZZZ' alone (it read the Z as 2). Greetings ('Bonjour', 'Cher', ...) are stop words: never a name.
@@ -948,6 +966,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Export (`export_tests`): the ZIP of a folder tree holds exactly the outputs at their paths (hidden and `__pycache__`
   folders, configs, reports, review flags and `anon_ocr.json` left out), the info names the originals without output, no
   output gives a message, a path outside --root is 403.
+- Wide-gap IBAN (`iban_gap_tests`), masked card read as postcode (`masked_number_tests`), title words never in a
+  value (`title_tests`): the strings of the reports, and the scan + anonymize of a digital letter with titles.
 - Click-to-find (`ocr_data_tests`, needs OCR): the scan saves `anon_ocr.json`; the hits read from it are the fresh hits
   for each term; a changed file, another engine or language reads again; stored pages are read back.
 - Speed-up helpers (`speedup_tests`): morph equals a window reference (edges included) and PIL, the shared skew memo
