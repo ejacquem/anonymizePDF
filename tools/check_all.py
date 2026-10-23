@@ -3903,6 +3903,12 @@ def ruler_tests():
     n = sb.normalized(m, m)
     check("rulers: a normalised value carries both rulers (each over its prediction: 1 for the same crop)",
           n is not None and abs(n["thick"] - 1) < 1e-9 and abs(n["run"] - 1) < 1e-9, str(n))
+    faint = np.full((40, 60), 255.0)
+    for k, v in enumerate([0.5, 0.5, 0.5, 0.25]):           # the same stroke at half the ink: 1.75 px of ink
+        faint[:, 20 + k] = 255 - 255 * v
+    mf = sb.measure(faint, (255.0, 0.0))
+    check("rulers: against the page's paper and ink, a faint stroke measures its own ink (1.75 px, not 3.5)",
+          mf is not None and abs(mf["thick"] * mf["h"] - 1.75) < 1e-6, str(mf and mf["thick"] * mf["h"]))
 
 
 def colour_tests():

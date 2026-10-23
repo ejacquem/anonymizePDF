@@ -335,3 +335,59 @@ What this changes:
 - The null on Test 17 is at its target (5.0 %); on Test 20 it is 4 values out of 23 judged, not a measure of anything yet.
 - The step 3 targets of the plan (median thickness of the original 0.9 to 1.1) were written against the run count: on the
   sub-pixel ruler the regular original sits at 0.57 of its prediction, so the target has to be restated.
+
+## 13. Step 3: the thickness target (fake over original, 0.9 to 1.1), what the ruler got wrong, what was tried
+
+Target (set by the owner): the median over a page of the fake's thickness over its original's, 0.9 to 1.1, on the
+sub-pixel ruler; flagged fakes at most 10 %; nulls about 5 %; no regression on the other Test 17 pages. The ratio is the
+absolute width (thickness x letter height: the same face and size on both sides), not the thickness normalised by the
+crop's own letter height (a fake with accents or descenders has a taller ink, which lowers that ratio).
+
+Corrections to the ruler (section 12), found on the way (`anonymizer/quality.py` `stroke_widths`, `style_bench.measure`):
+1. Blurred neighbours merged: a stroke was the whole run of pixels above 5 %, so two touching blurred strokes counted as
+   one wide stroke (a blur of 1.4 px doubled the width of a candidate). Now a row is cut at the lowest pixel between two
+   peaks: one piece, one stroke (`_row_widths`).
+2. Each crop was normalised by its own darkest pixel: a faint stroke measured as dark as a black one, so a spread that
+   thins the fakes was invisible to the ruler. Now every crop of a page (original, fake, prediction) is measured against
+   the page's paper and ink (`style_bench.page_reference`: the medians over the OCR words of their 90 % and 1 % levels).
+   Test: a faint stroke measures its own ink (`ruler_tests`).
+
+The output responds to the spread on the page reference (Test 20, absolute widths, output over original, blur 1.0 forced,
+spread forced; `ref_width` experiment): spread -1.0: 0.67; -0.5: 0.87; 0: 1.06; +0.5: 1.17. The spread is the lever.
+
+Results with the committed rendering (`style_bench run`, page reference), fake over original, absolute width:
+
+| set, page | dpi | median | in 0.9-1.1 | status |
+|---|---|---|---|---|
+| Test 20, releve p1 | 150 | 1.07 | 60 % | in |
+| Test 20, releve p2 | 150 | 1.06 | 60 % | in |
+| Test 17, contrat p1 | 200 | 1.04 | 74 % | in |
+| Test 17, contrat p2 | 200 | 0.96 | 76 % | in |
+| Test 17, contrat p3 | 150 | 1.02 | 62 % | in |
+| Test 17, paragraphes p1 | 110 | 0.77 | 0 % | out (thin) |
+| Test 17, paragraphes p2 | 100 | 1.00 | 69 % | in |
+| Test 17, paragraphes p3 | 200 | 1.33 | 4 % | out (thick) |
+| Test 17, paragraphes p4 | 200 | 1.03 | 65 % | in |
+| Test 17, polices p1 | 300 | 1.19 | 38 % | out (thick) |
+| Test 17, polices p2 | 200 | 0.99 | 100 % | in |
+| Test 17, polices p3 | 150 | 0.94 | 88 % | in |
+
+Test 17 overall: median 1.00, 7 of 10 pages in the target, the 3 misses above. Outliers (sub-pixel, page reference): Test 17
+19 % flagged fakes, nulls 6 %, identity 13 %, |zT| 90th percentile 3.44; Test 20: 4 % flagged, nulls 0 %. The run count
+(unchanged): Test 17 8 %, Test 20 39 %. The consistency of Test 17 is worse than with the previous sub-pixel definition
+(15 %, |zT| 1.93): the page reference lets the grain of a faint word count as thickness. Not tuned.
+
+Tried, not kept:
+- The spread from the stroke widths of the sample words, within the pixel error tolerance: no effect on the output
+  (Test 20 1.09 to 1.07), more outliers.
+- The spread from the ink area of the sample words, the candidate's area divided by its peak as the painting extrapolates
+  the ink (page units, window of the word): Test 20 0.93 and 0.97 (in the target), but contrat p2 falls from 0.96 to 0.76
+  (a regression), and paragraphes p1, p3 and polices p1 do not move. Its sign disagrees with the output on those three pages.
+- A forced blur of 0.4 (spread 0): fakes thicker (1.21 on Test 20): blur is not the lever.
+- A forced spread of -0.5 on Test 20: 0.87 (too thin): the spread that matches Test 20 is about -0.1 on the page reference,
+  but the fit does not choose it.
+
+Open (not decided here): the three misses need opposite spreads (paragraphes p1 thicker, paragraphes p3 and polices p1
+thinner), and the fit's choice does not give that sign on them. A method that finds it (a per-page spread on the output
+ruler, or the copier and faded cases separately) is the next step; the rendering is not changed until one passes the
+gates (Test 17 with no regression, Test 20 in the target, nulls about 5 %).

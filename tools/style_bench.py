@@ -54,6 +54,8 @@ import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from anonymizer.quality import stroke_widths  # noqa: E402
 SAMPLES = ROOT / "sample_data" / "Dossier Test 17"
 SET = ["polices_scan.pdf", "contrat_assurance_scan.pdf", "paragraphes_scan.pdf"]
 # Dossier Test 20: bank statements at 150 dpi, JPEG 69, as the real client pages (tools/make_test_statement150.py)
@@ -110,26 +112,28 @@ def crop(gray, box):
     return gray[y0:y1, x0:x1].astype(float)
 
 
-HALO = 0.05          # a pixel of less coverage than this is paper: the tails of the blur and the grain stop there
+# the width of the strokes is the one of the anonymizer's fit (one definition, anonymizer/quality.py)
 
 
-def stroke_widths(cov: np.ndarray) -> np.ndarray:
-    """The width of each stroke of a crop, in pixels, from the coverage of its pixels (0 paper .. 1 ink): the coverage of
-    each run of pixels above HALO that holds a stroke (a pixel of 50 % or more) summed along its row. A count of the pixels
-    above the half level is quantised by the grid (a stroke of 3.5 px reads 3); this sum is not: the partly covered edges
-    and the blur are part of the width, so a stroke of 3.5 px measures 3.5 px."""
-    on = np.pad((cov > HALO).astype(np.int8), ((0, 0), (1, 1)))
-    d = np.diff(on, axis=1)
-    run_r, run_s = np.nonzero(d == 1)        # the first ink pixel of each run (column of the crop)
-    _, run_e = np.nonzero(d == -1)           # the first paper pixel after it: the same order, the same rows
-    csum = np.concatenate([np.zeros((cov.shape[0], 1)), np.cumsum(cov, axis=1)], axis=1)
-    strong = np.concatenate([np.zeros((cov.shape[0], 1)), np.cumsum(cov >= 0.5, axis=1)], axis=1)
-    keep = strong[run_r, run_e] - strong[run_r, run_s] > 0
-    return (csum[run_r, run_e] - csum[run_r, run_s])[keep]
+def page_reference(gray: np.ndarray, words: list) -> tuple:
+    """The paper and the ink of a page as the ruler sees them: the medians, over its OCR words, of their 90 % and 1 %
+    levels. The coverage of every crop of the page (original, fake, prediction) is measured against these, so the
+    widths of a fake and of its original are in the same units: a lighter ink covers less, a blur keeps its area."""
+    ps, ins = [], []
+    for w in words:
+        x0, y0 = max(int(w["box"][0]), 0), max(int(w["box"][1]), 0)
+        x1, y1 = min(int(w["box"][2]), gray.shape[1]), min(int(w["box"][3]), gray.shape[0])
+        c = gray[y0:y1, x0:x1]
+        if c.size > 20:
+            ps.append(float(np.percentile(c, 90)))
+            ins.append(float(np.percentile(c, 1)))
+    return (float(np.median(ps)), float(np.median(ins))) if ps else (255.0, 0.0)
 
 
-def measure(c):
-    """The look of the ink in a crop (see the module doc); None when the crop holds no readable ink."""
+def measure(c, ref: tuple | None = None):
+    """The look of the ink in a crop (see the module doc); None when the crop holds no readable ink. ref: (paper, ink)
+    of the page (`page_reference`): the coverage of the strokes is measured against it, not against the crop's own
+    darkest pixel (a crop of faint ink would then look as dark as a crop of black ink)."""
     if c is None:
         return None
     paper = float(np.percentile(c, 90))
@@ -146,7 +150,8 @@ def measure(c):
     for r in ink[top:bot + 1]:
         d = np.diff(np.concatenate(([0], r.astype(np.int8), [0])))
         runs.extend((np.flatnonzero(d == -1) - np.flatnonzero(d == 1)).tolist())
-    widths = stroke_widths(np.clip((paper - c[top:bot + 1]) / contrast, 0, 1))
+    P, I = ref if ref is not None else (paper, paper - contrast)
+    widths = stroke_widths(np.clip((P - c[top:bot + 1]) / max(P - I, 1.0), 0, 1))
     gy, gx = np.gradient(c)
     mag = np.hypot(gx, gy)
     paper_px = c[c >= paper - 0.1 * contrast]
@@ -156,7 +161,7 @@ def measure(c):
             "contrast": contrast, "sharp": float(np.percentile(mag, 95)) / contrast, "h": float(h), "grain": grain}
 
 
-def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int], face=None):
+def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int], face=None, ref=None):
     """The measure of `text` written in `box` in the style of block bid: the block's family and size, the page quality,
     the block's paper and ink, painted by the functions a replacement uses (quality.erase, quality.paint). None when the
     block has no style. The measure of the page is divided by this one, so the content of the text (its capitals,
@@ -192,7 +197,7 @@ def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int], face=None
     quality.erase(canvas, (PAD, PAD, PAD + w, PAD + h), paper, q, ("predict", text))
     quality.paint(canvas, text, font, (PAD, PAD + 0.8 * h), sx, ink, q, ("predict", text))
     grey = np.asarray(canvas.convert("L")).astype(float)
-    return measure(grey[PAD:PAD + h, PAD:PAD + w])
+    return measure(grey[PAD:PAD + h, PAD:PAD + w], ref)
 
 
 def normalized(m: dict | None, p: dict | None) -> dict | None:
@@ -390,6 +395,7 @@ def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[
         fwords = ocr.ocr_words(ocr.render_page(fake_doc[pno - 1], DPI), LANG)
         blocks, block_of = layout.blocks(words)
         pf = fontmatch.PageFonts(gray, words, scanpaint.native_scale(page, DPI))
+        ref = page_reference(gray, words)                 # the units of every measure of this page
         truth_boxes = [[v * DPI / 72 for v in t["box"]] for t in items]
         for bl in blocks:              # the other words of each block: unreplaced, each over its own prediction
             key = f"{tag}:{pno}:{bl['id']}"
@@ -397,11 +403,11 @@ def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[
             for i in bl["words"]:
                 if not any(_covered(words[i]["box"], tb) > 0.3 for tb in truth_boxes):
                     pred = predict(pf, gray, bl["id"], words[i]["text"], words[i]["box"], [i],
-                                   face=pf.face_for(words[i]["box"])[0])
+                                   face=pf.face_for(words[i]["box"])[0], ref=ref)
                     for img, dest in ((fgray, others), (gray, others_orig), (igray, others_id)):
                         if img is None:
                             continue
-                        n = normalized(measure(crop(img, words[i]["box"])), pred)
+                        n = normalized(measure(crop(img, words[i]["box"]), ref), pred)
                         if n:
                             dest[key].append(n)
         for t, truth_box in zip(items, truth_boxes):
@@ -418,15 +424,15 @@ def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[
             face, _ = pf.face_for(box)
             size = pf.metrics(box, face, bool(t.get("bold"))) if face is not None else None
             own = pf.value_words(box)
-            m0 = measure(crop(gray, box))                                    # the original value (nothing replaced)
-            mf = measure(crop(fgray, box))                                   # the fake
-            m1 = measure(crop(igray, box)) if igray is not None else None    # the identity run
-            p0 = predict(pf, gray, bid, t["text"], box, own, face=face)
+            m0 = measure(crop(gray, box), ref)                               # the original value (nothing replaced)
+            mf = measure(crop(fgray, box), ref)                              # the fake
+            m1 = measure(crop(igray, box), ref) if igray is not None else None    # the identity run
+            p0 = predict(pf, gray, bid, t["text"], box, own, face=face, ref=ref)
             style = pf.block_style(bid) if bid is not None else None
             pred_face = (fontmatch.face(style.family, bool(own and pf.is_bold(own, style.family)))
                          if style is not None and style.family else None)
             fake_here = t["fake"] if t.get("fake_exact") else (_shown_text(fwords, truth_box) or t["fake"])
-            pk = predict(pf, gray, bid, fake_here, box, own, face=face)
+            pk = predict(pf, gray, bid, fake_here, box, own, face=face, ref=ref)
             rec = {"file": tag, "page": pno, "label": t.get("label", tag), "text": t["text"], "fake_text": t["fake"],
                    "family": t.get("family"), "bold": t.get("bold"), "det_family": face.family if face else None,
                    "fake_shown": fake_here, "fake_exact": bool(t.get("fake_exact")),
