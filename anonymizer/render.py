@@ -239,17 +239,29 @@ def exact_box(glyph_list: list[dict], value: str, box):
     lines: dict = {}
     for g in glyph_list:
         lines.setdefault(g["line"], []).append(g)
+    # the occurrence of the value that lies in THIS box: with the same value on the lines just above and below (their
+    # word boxes overlap when the lines are close), the first one found is the other line's, and this value would keep
+    # its own glyphs under the new text. The occurrence with the largest overlap with the box wins (B-bug: repeated values)
+    best, best_area, touching = None, 0.0, None
     for chars in lines.values():
         text = "".join(g["c"] for g in chars).translate(_DASHES)
         i = text.find(target)
         while i >= 0:
             seg = chars[i:i + len(target)]
-            if fitz.Rect(seg[0]["bbox"]).intersects(bx) or fitz.Rect(seg[-1]["bbox"]).intersects(bx):
-                x0 = min(g["bbox"][0] for g in seg) + 0.3
-                x1 = max(g["bbox"][2] for g in seg) - 0.3
-                return (x0, min(g["bbox"][1] for g in seg), x1, max(g["bbox"][3] for g in seg))
+            r = fitz.Rect(min(g["bbox"][0] for g in seg), min(g["bbox"][1] for g in seg),
+                          max(g["bbox"][2] for g in seg), max(g["bbox"][3] for g in seg))
+            area = (r & bx).get_area() if r.intersects(bx) else 0.0
+            if area > best_area:
+                best, best_area = seg, area
+            if touching is None and (fitz.Rect(seg[0]["bbox"]).intersects(bx) or fitz.Rect(seg[-1]["bbox"]).intersects(bx)):
+                touching = seg                         # the old rule, kept when no occurrence overlaps the box
             i = text.find(target, i + 1)
-    return None
+    seg = best or touching
+    if seg is None:
+        return None
+    x0 = min(g["bbox"][0] for g in seg) + 0.3
+    x1 = max(g["bbox"][2] for g in seg) - 0.3
+    return (x0, min(g["bbox"][1] for g in seg), x1, max(g["bbox"][3] for g in seg))
 
 
 def _glyph_key(g: dict) -> tuple:

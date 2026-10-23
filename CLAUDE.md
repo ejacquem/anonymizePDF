@@ -602,7 +602,11 @@ Order must never change a result (`order_tests`): a value written with several s
   lines (`scanpaint._cut_lines`, digital and scan), each line with its own baseline.
   A value on one horizontal line is redacted and placed at its own glyphs (`render.exact_box`: the union of the glyph
   boxes of the value, narrowed by 0.3 pt so that the neighbours which only touch are not taken), not at the word box
-  cut in proportion to the characters (wrong for proportional fonts and spaced text). Whatever a redaction still takes
+  cut in proportion to the characters (wrong for proportional fonts and spaced text). When the same value is on the
+  lines just above and below (their word boxes overlap when the lines are close), the occurrence with the largest overlap
+  with the match's box is taken (not the first one found): before, the second copy's redaction took the first line's
+  glyphs and its own original stayed under the new text (`render.exact_box`; test `repeated_value_tests`, which fails on
+  the old code). Whatever a redaction still takes
   beside a value is written again (`render.glyphs` before, `restore_collateral` after, for the digital matches, the
   black boxes and the pixel pass). A digital line that is not horizontal (vertical, skewed: its span `dir` is not (1, 0)) is handled as a whole:
   `render.rotated_extent` reads the exact glyph positions of the value from the characters (a word box of a slanted

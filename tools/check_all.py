@@ -4239,6 +4239,40 @@ def town_region_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def repeated_value_tests():
+    """The same value on two close lines (a line gap of 12 to 14 points, the second line shifted): each copy is replaced
+    and its original is gone from the page. Before the fix, the second copy's redaction took the first line's glyphs
+    (render.exact_box found the first occurrence touching the box), so the second original stayed under the new text."""
+    print("\n== the same value on two close lines")
+    cases = [
+        ("fact: 55224477", "fact: 55224477", 13, 72),
+        ("fact: 55224477", "fact: 55224477", 12, 72),
+        ("fact: 55224477", "fact: 55224477", 14, 72),
+        ("Contract: 12300 55224477 000123", "fact: 55224477", 13, 72),
+    ]
+    tmp = Path(tempfile.mkdtemp(prefix="anon_repeat_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        config = "ocr_lang: fra+eng\nreplacements:\n  - {find: '55224477', replace: '11223344', type: ACCOUNT_NUMBER}\n"
+        for k, (first, second, gap, x) in enumerate(cases):
+            folder = tmp / f"case{k}"
+            folder.mkdir()
+            doc = fitz.open()
+            page = doc.new_page()
+            page.insert_text((x, 110), first, fontname="helv", fontsize=11)
+            page.insert_text((x, 110 + gap), second, fontname="helv", fontsize=11)
+            doc.save(folder / "lignes.pdf")
+            doc.close()
+            engine.run_anonymize(folder, "case", config, "fra+eng", False, lambda m: None)
+            out = fitz.open(folder / "lignes_anonymized.pdf")[0]
+            text = out.get_text()
+            copies = sum(1 for w in out.get_text("words") if w[4] == "11223344")
+            check(f"'{first}' / '{second}' ({gap} pt apart): both copies replaced, no original left",
+                  "55224477" not in text and copies == 2, f"copies {copies}, text {text[:120]!r}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def corrupt_layer_tests():
     """A digital page whose text layer is corrupted (its ToUnicode map gives control characters: copy-paste shows
     unreadable characters, the page looks clean) is read by OCR like a scan, so its values are found and replaced; a
@@ -4563,7 +4597,7 @@ GROUPS = [
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
-    "underline_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests",
+    "underline_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own
