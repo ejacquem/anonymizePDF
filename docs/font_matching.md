@@ -391,3 +391,50 @@ Open (not decided here): the three misses need opposite spreads (paragraphes p1 
 thinner), and the fit's choice does not give that sign on them. A method that finds it (a per-page spread on the output
 ruler, or the copier and faded cases separately) is the next step; the rendering is not changed until one passes the
 gates (Test 17 with no regression, Test 20 in the target, nulls about 5 %).
+
+## 14. Step 4: families, italics and monospace (diagnosis; no rendering change)
+
+Families (`style_bench`, the face found against the truth, per value, committed rendering):
+- Test 17: 20 of 229 values wrong (91 %). The most common: Times New Roman read as Segoe UI (4, paragraphes p2, 100 dpi
+  black and white), Consolas read as Garamond (4), Verdana read as Source Sans 3 (3) or as Roboto (2), 3 with no face.
+  Most of them are coarse copies (100 to 150 dpi) and look-alike sans faces.
+- Test 20: 16 of 50 wrong. 15 of the 16 are the monospace values: 9 with no face at all, the rest read as sans or as
+  Tahoma / Courier Prime.
+- Italics: no value is read as italic on Test 17 or on Test 20. The italic faces of the real file (Consolas Italic,
+  Courier New Italic, Century Gothic Italic on an upright page) are not reproduced by the replicas.
+
+Why a monospace value gets no face: the OCR loses the heavy monospace words. In the monospace band of page 1 of Test 20,
+the words VIRT RECU MARION LEFEVRE are missing from the OCR, and the digit groups are read, each as a sans bold: Tahoma
+Bold 0.73, Source Sans 3 Bold 0.71, Courier New Bold 0.66 for '7392'. The shape scores of the heavy digits favour a
+thicker sans face than Courier New Bold, so the family vote has nothing to choose a monospace from.
+
+Installed monospace faces (stem of 'l', em, the stroke measure of the anonymizer; read from this PC, nothing downloaded):
+
+| face | regular | bold |
+|---|---|---|
+| Courier New | 0.041 | 0.100 |
+| Courier Prime (bundled) | 0.073 | 0.122 |
+| Consolas | 0.086 | 0.122 |
+| Lucida Console | 0.097 | - |
+| Cascadia Mono | 0.104 | - |
+| Noto Mono | 0.089 | - |
+| Liberation Mono (not a Windows default) | 0.088 | 0.137 |
+| DejaVu Sans Mono (not a Windows default) | 0.090 | 0.143 |
+
+Reading: the real heavy monospace is 1.64 times its prediction in Courier New and darker by 78 levels, so its stem sits
+between Courier New regular (0.041) and bold (0.100). The replica cannot settle the question: its monospace original is
+thinner than the generator intended (about 1.9 px, 0.06 em), and 9 of its 18 values have no OCR word. A decision on the
+heavy monospace needs the real monospace stem in em.
+
+Family rules, examined and not implemented:
+- A per-page set of families (1 to 3 per page) would break Test 17's polices pages, where each line is a different font
+  and a page carries 16 of them (real, by design).
+- A block-level vote would force one face on lines of different fonts in the same block.
+- The look-alike errors come from coarse copies; the monospace has no line-level evidence the OCR gives for heavy text.
+
+Open decisions (none taken here):
+1. Which monospace face to offer for the heavy monospace (Courier New Bold is 0.100 em; Consolas and Courier Prime bold
+   0.122 em; Liberation Mono and DejaVu Sans Mono are not Windows defaults and would need a download, not made).
+2. The italic false positives need a replica case before a rule is tested.
+3. The monospace check on the real folder: the em stem of each monospace value and the nearest installed face (no text
+   printed), to decide 1 with data.
