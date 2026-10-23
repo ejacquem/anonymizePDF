@@ -3987,6 +3987,211 @@ def colour_tests():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def iban_gap_tests():
+    """An IBAN with wide gaps between its groups is found (up to 8 spaces), also when its words are on one row but the
+    page text gives them several lines (a table cell, an OCR that cut the row); a row of amounts is no IBAN, and a
+    second column after an IBAN is not part of it (CLAUDE.md 7, B1)."""
+    print("\n== IBAN with wide gaps")
+    norm_value = pii.norm_value
+    line = "FR16     1234     1234     1234     1234     1234     123"
+    valid = "FR76 3000 6000 0112 3456 7890 189"
+
+    def ibans(text: str) -> list[str]:
+        return [norm_value(m.value) for m in pii.detect_all(text, types={"IBAN"})]
+
+    check("five spaces between the groups: the whole IBAN is found", ibans(line) == [norm_value(line)], ibans(line))
+    check("1 to 8 spaces or tabs between the groups: the valid IBAN is found",
+          all(ibans(valid.replace(" ", " " * k)) == [norm_value(valid)] for k in range(1, 9))
+          and ibans(valid.replace(" ", "\t")) == [norm_value(valid)])
+    check("a valid IBAN followed by a second column: only the IBAN is found",
+          ibans(valid + "        1234 5678 9012 3456") == [norm_value(valid)], ibans(valid + "        1234 5678 9012 3456"))
+    check("a row of amounts without a country code is no IBAN",
+          ibans("1234 5678 9012 3456        2345 6789 0123 4567") == [], "found")
+    long_shape = "BE70 0016 9028 4173 1234 5678 9012 3456 7890 1234"
+    shape = ibans(long_shape)
+    check("the shape of an IBAN is at most 34 characters long: the groups after that are another column",
+          shape and all(len(s) <= 34 for s in shape), shape)
+
+    # the words of one row, given to the scan on several lines (each word on its own line id)
+    def words_of(groups: str, lines: list[int]) -> list[dict]:
+        out, x = [], 40.0
+        for g, ln in zip(groups.split(), lines):
+            out.append({"text": g, "box": (x, 100.0, x + 4 * 6.0, 110.0), "line": ln})
+            x += 4 * 6.0 + 14.0                                  # a gap of about 1.4 heights
+        return out
+
+    words = words_of(line, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12][:len(line.split())])
+    found: dict = {}
+    engine._detect_words(found, {}, {}, words, False, None, "x.pdf", 1)
+    got = [norm_value(e["value"]) for e in found.values() if e["type"] == "IBAN"]
+    check("one row of words on as many lines: the IBAN is found once", got == [norm_value(line)], got)
+    found = {}
+    engine._detect_words(found, {}, {}, words_of(valid, [0, 0, 1, 1, 2, 2, 3, 3, 4]), True, None, "x.pdf", 1)
+    got = [norm_value(e["value"]) for e in found.values() if e["type"] == "IBAN"]
+    check("the same IBAN on one line is found once, not twice (OCR page)", got == [norm_value(valid)], got)
+
+    # a digital page: the groups written separately on one row
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=300)
+    x = 40
+    for g in line.split():
+        page.insert_text((x, 150), g, fontsize=10)
+        x += 60
+    found = {}
+    engine._detect_words(found, {}, {}, pii.digital_words(page), False, None, "x.pdf", 1)
+    doc.close()
+    got = [norm_value(e["value"]) for e in found.values() if e["type"] == "IBAN"]
+    check("a digital page with the groups as separate words: the IBAN is found", got == [norm_value(line)], got)
+
+
+def title_tests():
+    """Title words ('Monsieur', 'MME', 'M.', 'Maître', and their OCR misreadings) are never part of a name's value: a
+    name is split around them, an old config's find loses them at its edges, and an anonymized file still says them
+    (CLAUDE.md 7, B3)."""
+    print("\n== title words are never replaced")
+    norm_value = pii.norm_value
+    cases = {
+        "Monsieur Jean DUPONT": ["Jean DUPONT"], "MME DUPONT MARTIN": ["DUPONT MARTIN"],
+        "M. et MME DUPONT MARTIN": ["DUPONT MARTIN"], "DUPONT MME": ["DUPONT"], "MR ET MME DUPONT": ["DUPONT"],
+        "Jean MME DUPONT": ["Jean", "DUPONT"], "rnadame Jean DUPONT": ["Jean DUPONT"],
+        "Mr Paul Martin": ["Paul Martin"], "Mme. Claire Roux": ["Claire Roux"], "MLE MERVE REYS": ["MERVE REYS"],
+    }
+    for text, want in cases.items():
+        got = [m.value for m in pii.detect_all(text, types={"PERSON"}) if m.type == "PERSON"]
+        check(f"'{text}': the name is found without its title", got == want, got)
+    titled = [m.value for t in cases for m in pii.detect_all(t, types={"PERSON"})
+              if any(pii.is_title_word(w) for w in m.value.split())]
+    check("no PERSON value holds a title word", titled == [], titled)
+    check("OCR misreadings of the long titles are title words; a name is not",
+          pii.is_title_word("Nlonsieur") and pii.is_title_word("rnadame") and pii.is_title_word("Maître")
+          and not pii.is_title_word("Monique") and not pii.is_title_word("Madeleine") and not pii.is_title_word("Jean"))
+    check("an initial inside a name is a name word ('Jean M. Dupont')",
+          pii._name_flags(["Jean", "M.", "Dupont"]) == [True, True, True])
+    check("the title of a config entry is taken off its find, and off its replacement when it has one",
+          pii.strip_term_titles("Monsieur Jean Dupont", "Monsieur Paul Martin") == ("Jean Dupont", "Paul Martin")
+          and pii.strip_term_titles("MME DUPONT", "Mme ROUX") == ("DUPONT", "ROUX")
+          and pii.strip_term_titles("M. Dupont", "Martin") == ("Dupont", "Martin"))
+    check("an entry with no title, or with no name word left, is kept as it is",
+          pii.strip_term_titles("Jean M. Dupont", "Jean M. Martin") == ("Jean M. Dupont", "Jean M. Martin")
+          and pii.strip_term_titles("Dupont", "Madame Roux") == ("Dupont", "Madame Roux")
+          and pii.strip_term_titles("M.", "X") == ("M.", "X"))
+
+    from anonymizer import engine as eng_mod
+    cfg = eng_mod.parse_config("replacements:\n"
+                               "  - {find: 'Monsieur Jean DUPONT', replace: 'Monsieur Paul ROUX', type: PERSON}\n"
+                               "manual_replacements:\n"
+                               "  - {find: 'Mme Claire Roux', replace: 'Mme Anne Martin'}\n")
+    check("an old config's titled find is matched without the title (parse_config)",
+          cfg["terms"] == {"Jean DUPONT": "Paul ROUX", "Claire Roux": "Anne Martin"}, cfg["terms"])
+
+    tmp = Path(tempfile.mkdtemp(prefix="anon_titles_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        folder = tmp / "client"
+        folder.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 90), "Monsieur Jean DUPONT demeure a Lyon.", fontsize=11)
+        page.insert_text((72, 120), "MME DUPONT MARTIN Claire signe ici.", fontsize=11)
+        page.insert_text((72, 150), "Jean MME DUPONT", fontsize=11)
+        doc.save(folder / "lettre.pdf")
+        doc.close()
+        res = engine.scan_folder(folder, "client", [], "fra+eng", lambda m: None)
+        terms = eng_mod.parse_config(res["config"])["terms"]
+        check("the scan finds the names, and no entry holds a title word",
+              terms and not any(pii.is_title_word(w) for t in terms for w in t.split()), sorted(terms))
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda m: None)
+        text = " ".join(fitz.open(folder / "lettre_anonymized.pdf")[0].get_text().split())
+        check("the anonymized file still says the titles ('Monsieur', 'MME')",
+              "Monsieur" in text and text.count("MME") >= 2, text[:200])
+        check("the names are replaced", "Jean DUPONT" not in text and "DUPONT MARTIN" not in text, text[:200])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def underline_tests():
+    """Values with an underline, a dotted line or a frame (tools/make_test_underline.py, Dossier Test 21): on a scan,
+    every underline of a replaced value is still there (its ink under the box is not erased with the letters), and no
+    replacement is written in a bold face where the original is regular (B4: the rules are not letter ink)."""
+    print("\n== underlined and framed values (scan)")
+    if not ocr.available():
+        print("  (no OCR engine on this PC: skipped)")
+        return
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("make_test_underline", ROOT / "tools" / "make_test_underline.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_underline_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        src = tmp / "source"
+        gen.build(src)
+        folder = tmp / "client"
+        folder.mkdir()
+        shutil.copy(src / "underlined_scan.pdf", folder / "underlined_scan.pdf")
+        truth = json.loads((src / "underline_truth.json").read_text(encoding="utf-8"))
+        res = engine.scan_folder(folder, "client", [], "fra+eng", lambda m: None)
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda m: None)
+        report = json.loads((folder / engine.REPORT_NAME).read_text(encoding="utf-8"))
+        looks = [t.get("look", "") for f in report["files"] for t in f.get("trace", []) if t.get("replacement")]
+        check("no replacement of a regular value is written in bold",
+              looks and not any("Bold" in look for look in looks), looks)
+
+        def rule_ink(pdf: Path, box: list, ys: list[float]) -> int:
+            """Dark pixels on the rule rows (+- 0.8 point) across the box of the value."""
+            doc = fitz.open(pdf)
+            try:
+                total = 0
+                for y in ys:
+                    clip = fitz.Rect(box[0], y - 0.8, box[2], y + 0.8)
+                    pix = doc[0].get_pixmap(dpi=200, clip=clip, colorspace=fitz.csGRAY)
+                    total += int((np.frombuffer(pix.samples, dtype=np.uint8) < 128).sum())
+                return total
+            finally:
+                doc.close()
+
+        out = folder / "underlined_scan_anonymized.pdf"
+        for item in truth:
+            if not item.get("rule_y"):
+                continue
+            before = rule_ink(src / "underlined_scan.pdf", item["box"], item["rule_y"])
+            after = rule_ink(out, item["box"], item["rule_y"])
+            check(f"'{item['value']}' ({item['decoration']}): its line is still there under the replacement",
+                  before > 20 and after >= 0.6 * before, f"rule ink: original {before}, output {after}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def masked_number_tests():
+    """A masked card number with X, read by OCR with the zeros as O, is one CARD_NUMBER, and no postcode or town is
+    taken from its first groups (CLAUDE.md 7, B2). A real postcode and town are still found."""
+    print("\n== masked number read as a postcode")
+    norm_value = pii.norm_value
+    for number in ("1324 00XX XXXX 1234", "1324 OOXX XXXX 1234", "1324 00XX XXXX 1234".replace(" ", "  "),
+                   "495321XXXXXX7425", "6703 **** **** 4471"):
+        found = pii.detect_all(f"Carte n° {number} valable", types={"CARD_NUMBER", "POSTAL_CITY"})
+        cards = [norm_value(m.value) for m in found if m.type == "CARD_NUMBER"]
+        towns = [m.value for m in found if m.type == "POSTAL_CITY"]
+        check(f"'{number}': one card number, the mask kept, no postcode or town",
+              cards == [norm_value(number)] and not towns, f"cards {cards}, towns {towns}")
+    control = pii.detect_all("Adresse : 12 rue Neuve, 1000 Bruxelles", types={"POSTAL_CITY"})
+    check("a real postcode and town are still found", [m.value for m in control] == ["1000 Bruxelles"],
+          [m.value for m in control])
+    # the same line as the scan reads it: the words on one row, OCR digit fixing
+    words = []
+    x = 40.0
+    for g in "1324 OOXX XXXX 1234".split():
+        words.append({"text": g, "box": (x, 100.0, x + 24.0, 110.0), "line": 0})
+        x += 38.0
+    found: dict = {}
+    engine._detect_words(found, {}, {}, words, True, None, "x.pdf", 1)
+    kinds = sorted(e["type"] for e in found.values())
+    check("the OCR line of a masked card: a card number, no postal city", "CARD_NUMBER" in kinds
+          and "POSTAL_CITY" not in kinds, kinds)
+
+
 def export_tests():
     """The ZIP export (app /api/export): only the anonymized outputs, at their folder's path below the selected folder;
     never an original, a config, a report, a review flag or the OCR data. A folder with no output is a message, not an
@@ -4145,7 +4350,8 @@ GROUPS = [
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
-    "label_and_town_tests", "licence_title_tests",
+    "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
+    "underline_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

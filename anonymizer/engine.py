@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from . import configmodel, faces, fields, ocr, ocrdata, quality, regions, render, timing, verify, workers
+from . import configmodel, faces, fields, layout, ocr, ocrdata, quality, regions, render, timing, verify, workers
 from .fake import Faker, _norm as fake_norm, _pkey, is_town_name
 from .ocr import DIGITAL_DPI, render_page
 from .ocrpage import page_words
@@ -28,7 +28,7 @@ from .pii import (NAME_TYPES, OPERATION_WORDS, PERSON_RANKS, ROLE_RANK, Numberer
                   detect_structured,
                   invisible_chars, is_invisible_word,
                   CAP_SEQUENCE, digital_words, fitz,
-                  invisible_areas, plan_page, strip_operations, words_to_text, norm_value)
+                  invisible_areas, plan_page, strip_operations, strip_term_titles, words_to_text, norm_value)
 from .scanpaint import (PIXEL_MIN_AREA, _adjust, _cut_lines, _inside, _is_removed, _jpeg, _note, _pixel_pass,
                         _pixel_words, _scan_page, _union_box, native_scale, page_fonts, pii_cfg)
 
@@ -315,7 +315,8 @@ def parse_config(text: str) -> dict:
         find = str(item["find"]).strip()
         if not find:
             continue
-        terms[find] = "" if item.get("replace") is None else str(item["replace"])
+        find, rep = strip_term_titles(find, "" if item.get("replace") is None else str(item["replace"]))   # B3
+        terms[find] = rep
         types[norm_value(find)] = str(item.get("type") or "TERM")
     for find, rep in (data.get("terms") or {}).items():
         terms[str(find)] = "" if rep is None else str(rep)
@@ -325,10 +326,11 @@ def parse_config(text: str) -> dict:
     for i, item in enumerate(data.get("manual_replacements") or [], start=1):
         if not isinstance(item, dict) or not str(item.get("find") or "").strip():
             raise ValueError(f"manual_replacements item #{i} must look like: - {{find: \"...\", replace: \"...\"}}")
-        find = str(item["find"]).strip()
+        find, rep = strip_term_titles(str(item["find"]).strip(),
+                                      "" if item.get("replace") is None else str(item["replace"]))   # B3
         for old in [k for k in terms if norm_value(k) == norm_value(find)]:
             del terms[old]
-        terms[find] = "" if item.get("replace") is None else str(item["replace"])
+        terms[find] = rep
         types[norm_value(find)] = "TERM"
     for i, item in enumerate(data.get("manual_blackouts") or [], start=1):
         box = item.get("box") if isinstance(item, dict) else None
@@ -412,6 +414,17 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
         info["files"].add(file)
         info["pages"].add(pno)
     matches = detect_all(text, ner)
+    # an IBAN whose groups sit on one row, but whose words the page text puts on several lines (a table cell, an OCR
+    # that cut the row): each row is read on its own, and the IBANs it has that the page text did not give are added
+    known = {norm_value(m.value) for m in matches if m.type == "IBAN"}
+    for row in layout.rows(words):
+        row_text = " ".join(words[i]["text"] for i in row["idx"])
+        if ocr_page:
+            row_text = ocr.fix_digits(row_text)
+        for m in detect_all(row_text, types={"IBAN"}):
+            if norm_value(m.value) not in known:
+                known.add(norm_value(m.value))
+                matches.append(m)
     # the town at the end of an address is a town of its own: '30900 NÎMES' in 'Adresse : 12 bis rue ..., 30900 NÎMES'
     matches += [pc for m in matches if m.type == "STREET_ADDRESS" for pc in detect_structured(m.value, {"POSTAL_CITY"})]
     for m in matches:

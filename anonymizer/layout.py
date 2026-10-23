@@ -59,6 +59,12 @@ def _segments(words: list[dict]) -> list[dict]:
     return segments
 
 
+def rows(words: list[dict]) -> list[dict]:
+    """The rows of the page, whatever line each word was given: {"idx": [word indices, left to right], "box", "h"}.
+    A row is cut where the gap between two words is over 3 word heights (two columns)."""
+    return _segments(words)
+
+
 def _joins(prev: dict, line: dict) -> bool:
     gap = line["box"][1] - prev["box"][3]                 # vertical gap (negative: the lines overlap)
     if gap > BLOCK_GAP * prev["h"]:

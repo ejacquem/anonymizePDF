@@ -1,0 +1,132 @@
+[
+ {
+  "value": "Gaspard Bastien",
+  "font": "tiro",
+  "size": 11,
+  "decoration": "single",
+  "page": 1,
+  "box": [
+   109.34,
+   111.2,
+   181.74,
+   122.75
+  ]
+ },
+ {
+  "value": "Ludivine",
+  "font": "helv",
+  "size": 11,
+  "decoration": "double",
+  "page": 1,
+  "box": [
+   118.51,
+   137.2,
+   159.47,
+   148.75
+  ]
+ },
+ {
+  "value": "Rue des Tanneurs 14, 1050 Bruxelles",
+  "font": "helv",
+  "size": 11,
+  "decoration": "thick",
+  "page": 1,
+  "box": [
+   126.46,
+   163.2,
+   311.11,
+   174.75
+  ]
+ },
+ {
+  "value": "14/03/1987",
+  "font": "cour",
+  "size": 11,
+  "decoration": "dotted",
+  "page": 1,
+  "box": [
+   177.22,
+   189.2,
+   243.22,
+   200.75
+  ]
+ },
+ {
+  "value": "Mathis Verhaegen",
+  "font": "helv",
+  "size": 11,
+  "decoration": "fullline",
+  "page": 1,
+  "box": [
+   125.23,
+   215.2,
+   214.5,
+   226.75
+  ]
+ },
+ {
+  "value": "BE91 0682 4813 5729",
+  "font": "helv",
+  "size": 11,
+  "decoration": "highlight",
+  "page": 1,
+  "box": [
+   130.14,
+   241.2,
+   239.61,
+   252.75
+  ]
+ },
+ {
+  "value": "+32 471 58 23 96",
+  "font": "tiro",
+  "size": 12,
+  "decoration": "frame",
+  "page": 1,
+  "box": [
+   129.53,
+   280.4,
+   214.3,
+   293.0
+  ]
+ },
+ {
+  "value": "BE66 0016 4820 7391",
+  "font": "helv",
+  "size": 11,
+  "decoration": "tint",
+  "page": 1,
+  "box": [
+   124.63,
+   321.2,
+   234.1,
+   332.75
+  ]
+ },
+ {
+  "value": "Solène Wauters",
+  "font": "cour",
+  "size": 11,
+  "decoration": "descender",
+  "page": 1,
+  "box": [
+   153.36,
+   355.2,
+   239.16,
+   366.75
+  ]
+ },
+ {
+  "value": "Mélodie Pâquet",
+  "font": "helv",
+  "size": 11,
+  "decoration": "table",
+  "page": 1,
+  "box": [
+   226,
+   406,
+   293.87,
+   422
+  ]
+ }
+]

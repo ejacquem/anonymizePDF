@@ -168,6 +168,44 @@ def ink_crop(gray: np.ndarray, box, margin: float = 0.15, cut=(False, False)):
     return a[r0:r1, c0:c1], (xa + c0, ya + r0, xa + c1, ya + r1)
 
 
+RULE_SHARE = 0.75      # a line covers this share of the ink's width (a row) or height (a column) to be a rule
+RULE_THICK = 8         # and is at most this many pixels thick (a 2.4 pt underline is 7 px at 200 dpi)
+DOT_GAP = 4            # the gaps of a dotted or dashed rule up to this many pixels are part of the rule
+
+
+def rules_of(mask: np.ndarray) -> np.ndarray:
+    """The pixels of `mask` (ink, True) that belong to a rule: a thin straight line that runs across the ink, in the
+    lower part of it (an underline; the bar of a letter lies in the body of the letters and is not a rule)."""
+    out = np.zeros_like(mask, dtype=bool)
+    cols = max(int(mask.any(axis=0).sum()), 1)
+    rows = np.nonzero(mask.any(axis=1))[0]
+    if not len(rows):
+        return out
+    low = rows[0] + 0.65 * (rows[-1] - rows[0] + 1)
+    # a dotted or dashed rule has gaps: the gaps of up to DOT_GAP pixels are bridged before the share is measured
+    bridged = mask.copy()
+    for d in range(1, DOT_GAP + 1):
+        bridged[:, d:] |= mask[:, :-d]
+        bridged[:, :-d] |= mask[:, d:]
+    for run in _thin_runs(bridged.sum(axis=1) >= RULE_SHARE * cols):
+        if run[0] >= low:
+            out[run[0]:run[1], :] = mask[run[0]:run[1], :]
+    return out
+
+
+def _thin_runs(flags) -> list[tuple[int, int]]:
+    """The runs of True in `flags` that are at most RULE_THICK long, as (start, end) indices."""
+    out, start = [], None
+    for i, f in enumerate(list(flags) + [False]):
+        if f and start is None:
+            start = i
+        elif not f and start is not None:
+            if i - start <= RULE_THICK:
+                out.append((start, i))
+            start = None
+    return out
+
+
 @lru_cache(maxsize=40000)
 def _rendered_u8(f: Face, text: str):
     """(`text` rendered in face `f` at PROBE pixels, coverage 0..255 (uint8) cropped to its ink; the row of its
@@ -582,6 +620,8 @@ class PageFonts:
                            max(x0 - (0 if cut[0] else pad), 0):x1 + (0 if cut[1] else pad)].astype(float)
         dark = np.clip(np.percentile(region, 90) - region, 0, None)
         dark[dark < 8] = 0                                    # the paper's grain is no ink
+        if dark.max() > 0:                                    # an underline below the word is no ink of the word (B4)
+            dark[rules_of(dark > 0.5 * dark.max())] = 0
         k = (y1 - y0) / tpl.shape[0]
         return float(dark.sum() / (tpl.sum() * k * k))
 
