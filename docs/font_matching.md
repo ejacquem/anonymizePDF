@@ -438,3 +438,29 @@ Open decisions (none taken here):
 2. The italic false positives need a replica case before a rule is tested.
 3. The monospace check on the real folder: the em stem of each monospace value and the nearest installed face (no text
    printed), to decide 1 with data.
+
+### 13.1 The null of the ruler (autonomous run, step 2)
+
+The null is the share of original values (nothing replaced) flagged against their own block by the z-score (thickness or
+darkness beyond the t threshold). Target: about 5 %.
+
+- Test 17, all 180 originals with a z-score: 11 flagged = 6.1 % (thickness 8, darkness 3).
+- Split by the detected family: the 164 values whose family is right give 8 flagged = 4.9 %. The 16 whose family is wrong
+  give 3 flagged = 19 %: Times New Roman read as Segoe UI, Consolas read as Garamond (paragraphes, coarse copies).
+  The prediction of a value is painted in the family it was given, so a wrong family gives a wrong normalised thickness.
+  The excess of the null is the face detection, not the ruler.
+- Sensitivity of the stroke membership (PEAK, HALO patched at run time; nothing committed):
+
+| PEAK / HALO | null, all | null, family right | fakes outside | identity outside | |zT| 90th pct |
+|---|---|---|---|---|---|
+| 0.1 / 0.03 (committed) | 6.1 % | 4.9 % | 19.4 % | 12.8 % | 3.44 |
+| 0.3 / 0.05 (earlier) | 5.6 % | 4.9 % | 14.4 % | 9.4 % | 2.79 |
+
+  The 0.3 / 0.05 setting is more consistent for the fakes, but it drops the strokes of faint ink (a stroke must peak at
+  30 %), which is why the reference sweep of section 13 was run at 0.1 / 0.03. The null is at its target with either.
+  Not changed: no threshold was fitted to one page, and the choice of the thresholds is left to the owner.
+- Test 20: 0 of 23 originals flagged, too few to judge (the replica has fewer values with a z-score). The null check of
+  `ruler_tests` runs on Test 17 (polices, contrat, paragraphes).
+
+Before and after (the step did not change the ruler or the rendering): the per-page fake over original ratios of section
+13 are unchanged. The null check is in `ruler_tests` (`ruler_null_check`).
