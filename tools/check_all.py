@@ -4525,10 +4525,20 @@ def export_tests():
             "A/anon_config.yaml": "ocr_lang: fra", "A/anon_report.json": "{}", "A/anon_review.json": "{}",
             "A/anon_ocr.json": "{}", "A/sub/z.pdf": "original, no output yet", "B/w.pdf": "original",
             "B/w_anonymized.pdf": "out w", ".hidden/q.pdf": "original", ".hidden/q_anonymized.pdf": "out q",
-            "A/__pycache__/junk_anonymized.pdf": "junk"}
+            "A/__pycache__/junk_anonymized.pdf": "junk",
+            # an original whose output is NOT reviewed, and one whose reviewed output changed since (a stale flag)
+            "A/nope.pdf": "original", "A/nope_anonymized.pdf": "out nope",
+            "A/changed.pdf": "original", "A/changed_anonymized.pdf": "out changed"}
         for rel, text in files.items():
             (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
             (tmp / rel).write_text(text, encoding="utf-8")
+        # only the reviewed outputs are exported: x, y (folder A) and w (folder B) are reviewed on their current output
+        reviewed = {"A": ["x.pdf", "y.jpg", "changed.pdf"], "B": ["w.pdf"]}
+        for folder_name, names in reviewed.items():
+            flags = {n: {"at": "2026-10-23 12:00", "sha256": webapp._sha(tmp / folder_name / engine.output_of(Path(n)).name)} for n in names}
+            if "changed.pdf" in flags:
+                flags["changed.pdf"]["sha256"] = "0" * 64              # reviewed, then regenerated: the flag is stale
+            (tmp / folder_name / "anon_review.json").write_text(json.dumps(flags), encoding="utf-8")
         webapp.STATE["root"] = tmp
         client = webapp.app.test_client()
 
@@ -4542,17 +4552,21 @@ def export_tests():
         check("the ZIP of A holds its two outputs, at their paths, and nothing else",
               got == {"x_anonymized.pdf", "y_anonymized.jpg"}, sorted(got))
         got = names("")
-        check("the ZIP of the root holds every output below it (hidden and __pycache__ folders left out)",
+        check("the ZIP of the root holds every REVIEWED output below it (hidden and __pycache__ folders left out)",
               got == {"A/x_anonymized.pdf", "A/y_anonymized.jpg", "B/w_anonymized.pdf"}, sorted(got))
         r = client.get("/api/export?folder=A")
         check("the ZIP is named after its folder", "A_anonymized.zip" in r.headers.get("Content-Disposition", ""),
               r.headers.get("Content-Disposition"))
         info = client.get("/api/export/info?folder=A").get_json()
-        check("the info names the originals with no output yet (and none of the other files)",
-              info["missing"] == ["sub/z.pdf"] and sorted(info["files"]) == ["x_anonymized.pdf", "y_anonymized.jpg"], info)
+        check("the info names the originals with no output yet, and those whose output is not reviewed",
+              info["missing"] == ["sub/z.pdf"] and sorted(info["unreviewed"]) == ["changed.pdf", "nope.pdf"]
+              and sorted(info["files"]) == ["x_anonymized.pdf", "y_anonymized.jpg"], info)
+        got = names("A")
+        check("an output that is not reviewed (or whose review is stale) is never exported",
+              "nope_anonymized.pdf" not in got and "changed_anonymized.pdf" not in got, sorted(got))
         r = client.get("/api/export?folder=A/sub")
         check("a folder with no output is a message, not an empty ZIP", r.status_code == 404
-              and "No anonymized file" in r.get_data(as_text=True), r.status_code)
+              and "No reviewed anonymized file" in r.get_data(as_text=True), r.status_code)
         r = client.get("/api/export?folder=../")
         check("a path outside the root is refused (403)", r.status_code == 403, r.status_code)
         r = client.get("/api/export?folder=A/../../")

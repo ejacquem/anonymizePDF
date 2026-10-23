@@ -2030,9 +2030,11 @@ $("#btnExport").onclick = async () => {
   if (state.folder === null) return;
   try {
     const info = await api(`/api/export/info?folder=${encodeURIComponent(state.folder)}`);
-    if (!info.files.length) { setStatus("Nothing to export: no anonymized file in this folder yet.", "err"); return; }
-    const missing = info.missing.length ? ` · no anonymized file yet for ${info.missing.length}: ${info.missing.join(", ")}` : "";
-    setStatus(`Export: ${info.files.length} anonymized file(s)${missing}`, info.missing.length ? "" : "ok");
+    // only the reviewed outputs go in the ZIP: the others are named, so that the user knows what is left out
+    const left = [...info.unreviewed, ...info.missing];
+    if (!info.files.length) { setStatus("Nothing to export: no reviewed anonymized file in this folder (Mark as reviewed first).", "err"); return; }
+    const skipped = left.length ? ` · not reviewed or not anonymized, left out (${left.length}): ${left.join(", ")}` : "";
+    setStatus(`Export: ${info.files.length} reviewed file(s)${skipped}`, left.length ? "" : "ok");
     location.href = `/api/export?folder=${encodeURIComponent(state.folder)}`;
   } catch (e) {
     setStatus(e.message, "err");

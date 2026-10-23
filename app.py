@@ -497,18 +497,22 @@ def status():
 # original, a config, a report, a review flag or the OCR data (anon_ocr.json).
 # ---------------------------------------------------------------------------
 
-def export_files(base: Path) -> tuple[list[tuple[Path, str]], list[str]]:
-    """(output, name in the ZIP) for every anonymized file below `base`, and the originals with no output yet (names
-    relative to `base`). Folders that are hidden or __pycache__ are left out, as in the tree."""
-    outputs, missing = [], []
+def export_files(base: Path) -> tuple[list[tuple[Path, str]], list[str], list[str]]:
+    """(output, name in the ZIP) for every REVIEWED anonymized file below `base` (its current output is marked as
+    reviewed, see reviewed_files), the originals whose output is not reviewed yet, and the originals with no output
+    (names relative to `base`). Folders that are hidden or __pycache__ are left out, as in the tree."""
+    outputs, unreviewed, missing = [], [], []
     for d in client_folders(base):
+        reviewed = reviewed_files(d)
         for src in eng.list_sources(d):
             out = eng.output_of(src)
-            if out.is_file():
+            if not out.is_file():
+                missing.append(src.relative_to(base).as_posix())
+            elif src.name in reviewed:
                 outputs.append((out, out.relative_to(base).as_posix()))
             else:
-                missing.append(src.relative_to(base).as_posix())
-    return outputs, missing
+                unreviewed.append(src.relative_to(base).as_posix())
+    return outputs, unreviewed, missing
 
 
 @app.get("/api/export/info")
@@ -520,8 +524,8 @@ def export_info():
         return bad("forbidden", 403)
     except FileNotFoundError as e:
         return bad(str(e), 404)
-    outputs, missing = export_files(base)
-    return jsonify({"files": [rel for _, rel in outputs], "missing": missing})
+    outputs, unreviewed, missing = export_files(base)
+    return jsonify({"files": [rel for _, rel in outputs], "unreviewed": unreviewed, "missing": missing})
 
 
 @app.get("/api/export")
@@ -533,9 +537,9 @@ def export():
         return bad("forbidden", 403)
     except FileNotFoundError as e:
         return bad(str(e), 404)
-    outputs, _ = export_files(base)
+    outputs, _, _ = export_files(base)
     if not outputs:
-        return bad("No anonymized file in this folder yet: anonymize it first.", 404)
+        return bad("No reviewed anonymized file in this folder: review the outputs (Mark as reviewed) first.", 404)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for path, rel in outputs:

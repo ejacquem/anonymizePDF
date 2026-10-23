@@ -169,10 +169,12 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   were written again). Black boxes and pixel redactions do the same. Invisible characters are never written again.
 - Export (toolbar, `#btnExport`, enabled when a folder is selected and nothing runs): a ZIP of the anonymized files of the
   selected folder and of every folder below it (`GET /api/export?folder=`, built in memory, sent as
-  `<folder>_anonymized.zip`). Only the outputs go in (`export_files`: `eng.output_of` of each original with an output, at
-  its path relative to the selected folder): never an original, a config, a report, a review flag, the OCR data or a
-  hidden / `__pycache__` folder. `GET /api/export/info?folder=` gives the file names and the originals without output
-  (the status line says it before the download). No output: a message, no empty ZIP. Outside --root: 403.
+  `<folder>_anonymized.zip`). Only the REVIEWED outputs go in (`export_files`: `eng.output_of` of each original whose
+  current output is marked as reviewed, `reviewed_files`, at its path relative to the selected folder): never an
+  original, a config, a report, a review flag, the OCR data or a hidden / `__pycache__` folder, and never an output that
+  is not reviewed or whose review is stale. `GET /api/export/info?folder=` gives the file names, the `unreviewed` originals
+  and the originals without output (the status line names the ones left out, before the download). None reviewed: a
+  message, no empty ZIP. Outside --root: 403. Test: `export_tests`.
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Scan & anonymize** (scan, then anonymize, with no
   review in between: `btnBoth`, `anonymizeFolder()` is the second half; in batch mode the action `scan_anonymize` of
   `/api/batch` does each folder's scan then its anonymization before the next folder), **Anonymize file** (either file of the pair; the
