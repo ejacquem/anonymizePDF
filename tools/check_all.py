@@ -4016,6 +4016,60 @@ def title_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def underline_tests():
+    """Values with an underline, a dotted line or a frame (tools/make_test_underline.py, Dossier Test 21): on a scan,
+    every underline of a replaced value is still there (its ink under the box is not erased with the letters), and no
+    replacement is written in a bold face where the original is regular (B4: the rules are not letter ink)."""
+    print("\n== underlined and framed values (scan)")
+    if not ocr.available():
+        print("  (no OCR engine on this PC: skipped)")
+        return
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("make_test_underline", ROOT / "tools" / "make_test_underline.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_underline_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        src = tmp / "source"
+        gen.build(src)
+        folder = tmp / "client"
+        folder.mkdir()
+        shutil.copy(src / "underlined_scan.pdf", folder / "underlined_scan.pdf")
+        truth = json.loads((src / "underline_truth.json").read_text(encoding="utf-8"))
+        res = engine.scan_folder(folder, "client", [], "fra+eng", lambda m: None)
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda m: None)
+        report = json.loads((folder / engine.REPORT_NAME).read_text(encoding="utf-8"))
+        looks = [t.get("look", "") for f in report["files"] for t in f.get("trace", []) if t.get("replacement")]
+        check("no replacement of a regular value is written in bold",
+              looks and not any("Bold" in look for look in looks), looks)
+
+        def rule_ink(pdf: Path, box: list, ys: list[float]) -> int:
+            """Dark pixels on the rule rows (+- 0.8 point) across the box of the value."""
+            doc = fitz.open(pdf)
+            try:
+                total = 0
+                for y in ys:
+                    clip = fitz.Rect(box[0], y - 0.8, box[2], y + 0.8)
+                    pix = doc[0].get_pixmap(dpi=200, clip=clip, colorspace=fitz.csGRAY)
+                    total += int((np.frombuffer(pix.samples, dtype=np.uint8) < 128).sum())
+                return total
+            finally:
+                doc.close()
+
+        out = folder / "underlined_scan_anonymized.pdf"
+        for item in truth:
+            if not item.get("rule_y"):
+                continue
+            before = rule_ink(src / "underlined_scan.pdf", item["box"], item["rule_y"])
+            after = rule_ink(out, item["box"], item["rule_y"])
+            check(f"'{item['value']}' ({item['decoration']}): its line is still there under the replacement",
+                  before > 20 and after >= 0.6 * before, f"rule ink: original {before}, output {after}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def masked_number_tests():
     """A masked card number with X, read by OCR with the zeros as O, is one CARD_NUMBER, and no postcode or town is
     taken from its first groups (CLAUDE.md 7, B2). A real postcode and town are still found."""
@@ -4202,7 +4256,7 @@ GROUPS = [
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "iban_gap_tests",
-    "masked_number_tests", "title_tests",
+    "masked_number_tests", "title_tests", "underline_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

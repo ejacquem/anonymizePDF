@@ -595,6 +595,16 @@ Order must never change a result (`order_tests`): a value written with several s
   its width stretched to the box (`morph`, or a mask resized on scans). Scans: `stretch_layout` / `write_text`; the
   text takes the font of the words under its box (`PageFonts.face_for`, font_match on) and the page's quality with the
   grain of the box (quality_match on), else Arial, sharp, as before (`render.paint_text_box(face=, q=)`).
+- Underlined, dotted and framed values (B4, `tools/make_test_underline.py`, Dossier Test 21: fake letter, digital and
+  scan, every decoration): a rule is a thin line that runs across the lower part of the ink (`fontmatch.rules_of`:
+  at most 8 px thick, covering 75 % of the ink's width in a row, dotted gaps of up to 4 px bridged). The rules are not
+  letter ink: the ink mass of a word leaves them out (`_mass_of`), so a regular value is not measured as bold because of
+  its underline. The rules inside a value's box are saved before the box is erased and put back after the replacement
+  is painted (`scanpaint._rules_in` / `_restore_rules`), so the line stays. The ink crop used for the font and the
+  height keeps them: removing them there made a regular Courier value bold (its weight score went from 0.19 to 0.40),
+  so `ink_crop` is unchanged. Test: `underline_tests` (the line under each replaced value keeps at least 60 % of its
+  ink; no replacement is written in a Bold face). Limit: a dotted rule can still touch the glyphs of a replacement
+  whose height differs from the original's (the date '27/04/1988' in Arial over a Courier value).
 - Scans, the value's box: a word only partly covered is cut by the Arial widths of its characters (`pii._advance`,
   `match_boxes`). `render.ink_start` skips a colon-like first mark only (narrow, a few rows of the text height, a gap
   after it), so a colon before the value is not counted; a letter is never skipped (an 'A' keeps its foot and is
@@ -966,6 +976,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Export (`export_tests`): the ZIP of a folder tree holds exactly the outputs at their paths (hidden and `__pycache__`
   folders, configs, reports, review flags and `anon_ocr.json` left out), the info names the originals without output, no
   output gives a message, a path outside --root is 403.
+- Underlined and framed values on a scan (`underline_tests`, B4): each underline stays, no replacement is bold where the
+  original is regular.
 - Wide-gap IBAN (`iban_gap_tests`), masked card read as postcode (`masked_number_tests`), title words never in a
   value (`title_tests`): the strings of the reports, and the scan + anonymize of a digital letter with titles.
 - Click-to-find (`ocr_data_tests`, needs OCR): the scan saves `anon_ocr.json`; the hits read from it are the fresh hits

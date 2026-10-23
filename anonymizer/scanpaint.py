@@ -20,7 +20,7 @@ import time
 from dataclasses import replace
 
 import numpy as np
-from PIL import ImageDraw
+from PIL import Image, ImageDraw
 
 from . import faces, fields, fontmatch, memo, quality, regions, render, timing
 from .fake import match_case
@@ -364,6 +364,34 @@ def _pixel_pass(page, pno, cfg, pc, ocr_lang, numberer, records, extras, black, 
     log(f"   page {pno}: {len(todo)} value(s) replaced in images (OCR)" + (", MRZ regenerated" if zone else ""))
 
 
+def _rules_in(img, box):
+    """The rules (an underline, the edge of a frame) inside a value's box, as they are before the box is erased (B4):
+    (corner of the region, mask of the rule pixels, the pixels of the region). None when there is no rule."""
+    x0, y0 = max(int(math.floor(box[0])), 0), max(int(math.floor(box[1])), 0)
+    x1, y1 = min(int(math.ceil(box[2])), img.width), min(int(math.ceil(box[3])), img.height)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    region = img.crop((x0, y0, x1, y1))
+    gray = np.asarray(region.convert("L")).astype(float)
+    paper, ink = np.percentile(gray, 90), np.percentile(gray, 1)
+    if paper - ink < 35:
+        return None
+    rules = fontmatch.rules_of((paper - gray) / (paper - ink) > 0.5)
+    if not rules.any():
+        return None
+    return (x0, y0), rules, np.asarray(region).copy()
+
+
+def _restore_rules(img, saved) -> None:
+    """Puts back the rule pixels of `saved` (see _rules_in): the paint of the value covered them, the line is the page's."""
+    if saved is None:
+        return
+    (x0, y0), rules, before = saved
+    patch = np.asarray(img.crop((x0, y0, x0 + rules.shape[1], y0 + rules.shape[0]))).copy()
+    patch[rules] = before[rules]
+    img.paste(Image.fromarray(patch), (x0, y0))
+
+
 def _redaction_px(b, k: float) -> tuple:
     """The redaction rectangle of a pixel match (its box +- 1 point), in pixels of the page image."""
     return (b[0] - 1 / k, b[1] - 1 / k, b[2] + 1 / k, b[3] + 1 / k)
@@ -602,6 +630,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             b = (render.ink_start(img, b), b[1], b[2], b[3])        # the value starts at its first glyph, not a colon
             box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
             fill = (0, 0, 0) if blackbox else render.background_color(img, box)
+            saved_rules = _rules_in(img, box) if not blackbox else None     # an underline in the box is the page's (B4)
             if q is not None:
                 quality.erase(img, box, fill, q, key)          # the paper colour, with the grain of the scan
             else:
@@ -625,6 +654,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                     else:
                         render.write_text(img, xy, text, font, color, sx)
                     fonts_used[_face_name(f, bd)] = fonts_used.get(_face_name(f, bd), 0) + 1
+            _restore_rules(img, saved_rules)
         records.append({"page": pno, "original": m.value, "replacement": m.replacement,
                         "box": _pt_box(changed), "placed": not blackbox and any(parts)})
     if mrz:
