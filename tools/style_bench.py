@@ -14,7 +14,10 @@ For each file the pipeline runs twice on a temporary copy, with a scratch key (n
   original, without any ground truth for the look).
 
 Measures (300 dpi renderings, the crop of a box; raw pixel differences are not scores):
-- thickness: median horizontal run of ink / letter height; darkness: 5 % darkest level; contrast; sharpness: 95th
+- thickness: the sub-pixel width of the strokes (the coverage of each stroke summed, median) over the letter height
+  (`thick`: the ruler of the scoreboard since the sub-pixel change); run: the old ruler, the median horizontal run of ink
+  over the letter height, a count of pixels (quantised by the grid: 2 px steps at 2 x 2 px blocks), kept for comparison;
+  darkness: 5 % darkest level; contrast; sharpness: 95th
   percentile of the edge gradient / contrast; ink height; grain: MAD of the paper around the ink.
 - round trip, per value: ratio of thickness, of contrast, of sharpness and of height; difference of darkness and of
   grain; 3x3-window SSIM at the best shift of +-2 px (and the shift);
@@ -51,16 +54,26 @@ import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from anonymizer.quality import stroke_widths  # noqa: E402
 SAMPLES = ROOT / "sample_data" / "Dossier Test 17"
 SET = ["polices_scan.pdf", "contrat_assurance_scan.pdf", "paragraphes_scan.pdf"]
+# Dossier Test 20: bank statements at 150 dpi, JPEG 69, as the real client pages (tools/make_test_statement150.py)
+TEST20 = ROOT / "sample_data" / "Dossier Test 20"
+SET20 = ["releve_150_scan.pdf", "releve_150_couleur.pdf"]
+
+
+def folder_of(file: str) -> Path:
+    """The sample folder of a file (its truth is the fonts_truth.json next to it)."""
+    return TEST20 if file in SET20 else SAMPLES
 LANG = "fra+eng"
 DPI = 300
 TEST_KEY = Path(tempfile.gettempdir()) / "anonymizePDF_style_bench_key.txt"       # a scratch key, not the user's
 MIN_OTHERS = 3                  # other words of a block needed to judge a value against them
 # a z-score or a spread is not divided by less than this (a block whose other words are all alike); the normalised
 # measures of the consistency are ratios to the prediction (thickness, sharpness) or levels (darkness)
-FLOOR = {"thick": 0.03, "dark5": 3.0, "sharp": 0.03}
-MEASURES = ("thick", "dark5", "sharp")
+FLOOR = {"thick": 0.03, "dark5": 3.0, "sharp": 0.03, "run": 0.03}
+MEASURES = ("thick", "dark5", "sharp", "run")       # 'thick' is the sub-pixel ruler, 'run' the old one (comparison only)
 PAD = 12                        # pixels around a predicted rendering (the value's box is cut out of it)
 # the outlier of a value is thickness OR darkness beyond its threshold: each of the two gets half of the 5 %
 ALPHA_MEASURE = 0.025
@@ -71,7 +84,7 @@ ALPHA_MEASURE = 0.025
 
 def load_truth(file: str) -> tuple[list[dict], dict[int, str]]:
     """The truth values of one file: [{page, box (PDF points), text, family, bold, size}] and the label of each page."""
-    truth = json.loads((SAMPLES / "fonts_truth.json").read_text(encoding="utf-8"))[file]
+    truth = json.loads((folder_of(file) / "fonts_truth.json").read_text(encoding="utf-8"))[file]
     stem = Path(file).stem.split("_")[0]
     labels = {p["page"]: f"{stem} p{p['page']} {p['dpi']} dpi" for p in truth["pages"]}
     items = []
@@ -99,8 +112,28 @@ def crop(gray, box):
     return gray[y0:y1, x0:x1].astype(float)
 
 
-def measure(c):
-    """The look of the ink in a crop (see the module doc); None when the crop holds no readable ink."""
+# the width of the strokes is the one of the anonymizer's fit (one definition, anonymizer/quality.py)
+
+
+def page_reference(gray: np.ndarray, words: list) -> tuple:
+    """The paper and the ink of a page as the ruler sees them: the medians, over its OCR words, of their 90 % and 1 %
+    levels. The coverage of every crop of the page (original, fake, prediction) is measured against these, so the
+    widths of a fake and of its original are in the same units: a lighter ink covers less, a blur keeps its area."""
+    ps, ins = [], []
+    for w in words:
+        x0, y0 = max(int(w["box"][0]), 0), max(int(w["box"][1]), 0)
+        x1, y1 = min(int(w["box"][2]), gray.shape[1]), min(int(w["box"][3]), gray.shape[0])
+        c = gray[y0:y1, x0:x1]
+        if c.size > 20:
+            ps.append(float(np.percentile(c, 90)))
+            ins.append(float(np.percentile(c, 1)))
+    return (float(np.median(ps)), float(np.median(ins))) if ps else (255.0, 0.0)
+
+
+def measure(c, ref: tuple | None = None):
+    """The look of the ink in a crop (see the module doc); None when the crop holds no readable ink. ref: (paper, ink)
+    of the page (`page_reference`): the coverage of the strokes is measured against it, not against the crop's own
+    darkest pixel (a crop of faint ink would then look as dark as a crop of black ink)."""
     if c is None:
         return None
     paper = float(np.percentile(c, 90))
@@ -117,15 +150,18 @@ def measure(c):
     for r in ink[top:bot + 1]:
         d = np.diff(np.concatenate(([0], r.astype(np.int8), [0])))
         runs.extend((np.flatnonzero(d == -1) - np.flatnonzero(d == 1)).tolist())
+    P, I = ref if ref is not None else (paper, paper - contrast)
+    widths = stroke_widths(np.clip((P - c[top:bot + 1]) / max(P - I, 1.0), 0, 1))
     gy, gx = np.gradient(c)
     mag = np.hypot(gx, gy)
     paper_px = c[c >= paper - 0.1 * contrast]
     grain = 1.4826 * float(np.median(np.abs(paper_px - np.median(paper_px)))) if paper_px.size > 8 else float("nan")
-    return {"thick": float(np.median(runs)) / h if runs else 0.0, "dark5": float(np.percentile(c, 5)),
+    return {"thick": float(np.median(widths)) / h if widths.size else 0.0,
+            "run": float(np.median(runs)) / h if runs else 0.0, "dark5": float(np.percentile(c, 5)),
             "contrast": contrast, "sharp": float(np.percentile(mag, 95)) / contrast, "h": float(h), "grain": grain}
 
 
-def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int], face=None):
+def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int], face=None, ref=None):
     """The measure of `text` written in `box` in the style of block bid: the block's family and size, the page quality,
     the block's paper and ink, painted by the functions a replacement uses (quality.erase, quality.paint). None when the
     block has no style. The measure of the page is divided by this one, so the content of the text (its capitals,
@@ -161,14 +197,16 @@ def predict(pf, gray: np.ndarray, bid, text: str, box, own: list[int], face=None
     quality.erase(canvas, (PAD, PAD, PAD + w, PAD + h), paper, q, ("predict", text))
     quality.paint(canvas, text, font, (PAD, PAD + 0.8 * h), sx, ink, q, ("predict", text))
     grey = np.asarray(canvas.convert("L")).astype(float)
-    return measure(grey[PAD:PAD + h, PAD:PAD + w])
+    return measure(grey[PAD:PAD + h, PAD:PAD + w], ref)
 
 
 def normalized(m: dict | None, p: dict | None) -> dict | None:
     """A measure over its prediction: thickness and sharpness as ratios, darkness as a difference of levels."""
     if not m or not p or p["thick"] <= 0 or p["sharp"] <= 0:
         return None
-    return {"thick": m["thick"] / p["thick"], "dark5": m["dark5"] - p["dark5"], "sharp": m["sharp"] / p["sharp"]}
+    run = m["run"] / p["run"] if p["run"] > 0 else 1.0       # the old ruler: a neutral ratio when the prediction has none
+    return {"thick": m["thick"] / p["thick"], "run": run, "dark5": m["dark5"] - p["dark5"],
+            "sharp": m["sharp"] / p["sharp"]}
 
 
 def _box3(a):
@@ -204,6 +242,7 @@ def roundtrip(c0, c1, m0, m1):
         return None
     s, at = ssim_shift(c0, c1)
     return {"thick": m1["thick"] / m0["thick"] if m0["thick"] > 0 else None,
+            "run": m1["run"] / m0["run"] if m0["run"] > 0 else None,
             "dark5": m1["dark5"] - m0["dark5"],
             "contrast": m1["contrast"] / m0["contrast"],
             "sharp": m1["sharp"] / m0["sharp"] if m0["sharp"] > 0 else None,
@@ -356,6 +395,7 @@ def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[
         fwords = ocr.ocr_words(ocr.render_page(fake_doc[pno - 1], DPI), LANG)
         blocks, block_of = layout.blocks(words)
         pf = fontmatch.PageFonts(gray, words, scanpaint.native_scale(page, DPI))
+        ref = page_reference(gray, words)                 # the units of every measure of this page
         truth_boxes = [[v * DPI / 72 for v in t["box"]] for t in items]
         for bl in blocks:              # the other words of each block: unreplaced, each over its own prediction
             key = f"{tag}:{pno}:{bl['id']}"
@@ -363,32 +403,36 @@ def measure_values(src: Path, fake_out: Path, id_out: Path | None, values: list[
             for i in bl["words"]:
                 if not any(_covered(words[i]["box"], tb) > 0.3 for tb in truth_boxes):
                     pred = predict(pf, gray, bl["id"], words[i]["text"], words[i]["box"], [i],
-                                   face=pf.face_for(words[i]["box"])[0])
+                                   face=pf.face_for(words[i]["box"])[0], ref=ref)
                     for img, dest in ((fgray, others), (gray, others_orig), (igray, others_id)):
                         if img is None:
                             continue
-                        n = normalized(measure(crop(img, words[i]["box"])), pred)
+                        n = normalized(measure(crop(img, words[i]["box"]), ref), pred)
                         if n:
                             dest[key].append(n)
         for t, truth_box in zip(items, truth_boxes):
             # the block of the value: that of the OCR word it overlaps most (None when OCR missed it)
             hits = [(_covered(truth_box, w["box"]), i) for i, w in enumerate(words) if _covered(truth_box, w["box"]) > 0.3]
+            # a value of several words: each word covers only part of its box, so the words inside it count too
+            inside = [w["box"] for w in words if _covered(w["box"], truth_box) > 0.5]
+            if not hits:
+                hits = [(_covered(w["box"], truth_box), i) for i, w in enumerate(words) if _covered(w["box"], truth_box) > 0.5]
             bid = block_of[max(hits)[1]] if hits else None
-            cover = [w["box"] for w in words if _covered(truth_box, w["box"]) > 0.3]
+            cover = [w["box"] for w in words if _covered(truth_box, w["box"]) > 0.3] or inside
             box = (min(b[0] for b in cover), min(b[1] for b in cover), max(b[2] for b in cover),
                    max(b[3] for b in cover)) if cover else truth_box
             face, _ = pf.face_for(box)
             size = pf.metrics(box, face, bool(t.get("bold"))) if face is not None else None
             own = pf.value_words(box)
-            m0 = measure(crop(gray, box))                                    # the original value (nothing replaced)
-            mf = measure(crop(fgray, box))                                   # the fake
-            m1 = measure(crop(igray, box)) if igray is not None else None    # the identity run
-            p0 = predict(pf, gray, bid, t["text"], box, own, face=face)
+            m0 = measure(crop(gray, box), ref)                               # the original value (nothing replaced)
+            mf = measure(crop(fgray, box), ref)                              # the fake
+            m1 = measure(crop(igray, box), ref) if igray is not None else None    # the identity run
+            p0 = predict(pf, gray, bid, t["text"], box, own, face=face, ref=ref)
             style = pf.block_style(bid) if bid is not None else None
             pred_face = (fontmatch.face(style.family, bool(own and pf.is_bold(own, style.family)))
                          if style is not None and style.family else None)
             fake_here = t["fake"] if t.get("fake_exact") else (_shown_text(fwords, truth_box) or t["fake"])
-            pk = predict(pf, gray, bid, fake_here, box, own, face=face)
+            pk = predict(pf, gray, bid, fake_here, box, own, face=face, ref=ref)
             rec = {"file": tag, "page": pno, "label": t.get("label", tag), "text": t["text"], "fake_text": t["fake"],
                    "family": t.get("family"), "bold": t.get("bold"), "det_family": face.family if face else None,
                    "fake_shown": fake_here, "fake_exact": bool(t.get("fake_exact")),
@@ -414,7 +458,7 @@ def process_file(file: str, work: Path, ner, log, code: Path | None = None, abla
                  images: bool = False) -> dict:
     """Every truth value of one file: the fake run and the identity run, then measure_values (see the module doc).
     code: the pipeline of another checkout; ablation: 'own_ink' (see own_ink); images: pictures for the sheet."""
-    src = SAMPLES / file
+    src = folder_of(file) / file
     truth, labels = load_truth(file)
     with own_ink() if ablation == "own_ink" else contextlib.nullcontext():
         fake_out, scan_s, anon_s, fake_cfg = run_pipeline(src, work / "fake", ner, None, log, code)
@@ -542,12 +586,13 @@ def t_critical(df: int, alpha: float = 0.05) -> float:
     return (lo + hi) / 2
 
 
-def _outlier_share(rs: list[dict], name: str):
-    """Share of the values whose thickness or darkness is beyond their own threshold (see judge)."""
+def _outlier_share(rs: list[dict], name: str, ruler: str = "thick"):
+    """Share of the values whose thickness (`ruler`: 'thick' the sub-pixel one, 'run' the old one) or darkness is beyond
+    their own threshold (see judge)."""
     judged = [r for r in rs if name in r]
     if not judged:
         return None
-    return sum(1 for r in judged if max(abs(r[name]["thick"]), abs(r[name]["dark5"])) > r[name]["crit"]) / len(judged)
+    return sum(1 for r in judged if max(abs(r[name][ruler]), abs(r[name]["dark5"])) > r[name]["crit"]) / len(judged)
 
 
 def spread_ratios(records: list[dict], others: dict) -> dict[str, list[float]]:
@@ -589,6 +634,7 @@ def summarize(records: list[dict], pools: dict) -> dict:
             "wt": sum(r["ok_bold"] for r in rs) / len(rs),
             "size": _med([r["size_ratio"] for r in rs if r["size_ratio"]]),
             "rt_thick": _med(thick), "rt_thick_p10": _pct(thick, 10), "rt_thick_p90": _pct(thick, 90),
+            "rt_run": _med([x["run"] for x in rt if x["run"]]),
             "rt_dark_abs": _med([abs(x["dark5"]) for x in rt]),
             "rt_contrast": _med([x["contrast"] for x in rt]),
             "rt_sharp": _med([x["sharp"] for x in rt if x["sharp"]]),
@@ -598,10 +644,13 @@ def summarize(records: list[dict], pools: dict) -> dict:
             "rt_shift": (sum(1 for x in rt if x["shift"]) / len(rt)) if rt else None,
             "cons_n": len(judged),
             "cons_outlier": _outlier_share(rs, "z_fake"),
+            "cons_outlier_run": _outlier_share(rs, "z_fake", "run"),
+            "cons_z_run_p90": _pct([abs(r["z_fake"]["run"]) for r in judged], 90),
             "cons_z_thick_p90": _pct([abs(r["z_fake"]["thick"]) for r in judged], 90),
             "cons_z_dark_p90": _pct([abs(r["z_fake"]["dark5"]) for r in judged], 90),
             # the null: the original values and their identity replacements against their blocks, as the fakes are
             "orig_outlier": _outlier_share(rs, "z_orig"),
+            "orig_outlier_run": _outlier_share(rs, "z_orig", "run"),
             "orig_z_dark_p90": _pct([abs(r["z_orig"]["dark5"]) for r in rs if "z_orig" in r], 90),
             "ident_outlier": _outlier_share(rs, "z_ident"),
             "ident_z_dark_p90": _pct([abs(r["z_ident"]["dark5"]) for r in rs if "z_ident" in r], 90),
@@ -614,9 +663,11 @@ def summarize(records: list[dict], pools: dict) -> dict:
 # commands
 
 COLUMNS = [("n", "n", "{:d}"), ("fam", "fam", "{:.0%}"), ("wt", "wt", "{:.0%}"), ("size", "size", "{:.2f}"),
-           ("rt_thick", "RTthick", "{:.2f}"), ("rt_dark_abs", "RT|dark|", "{:.1f}"), ("rt_sharp", "RTsharp", "{:.2f}"),
+           ("rt_thick", "RTthick", "{:.2f}"), ("rt_run", "RTrun", "{:.2f}"), ("rt_dark_abs", "RT|dark|", "{:.1f}"),
+           ("rt_sharp", "RTsharp", "{:.2f}"),
            ("rt_ssim", "RTssim", "{:.3f}"), ("rt_shift", "RTshift", "{:.0%}"),
-           ("cons_outlier", "outT", "{:.0%}"), ("cons_z_thick_p90", "|zT|90", "{:.2f}"),
+           ("cons_outlier", "outT", "{:.0%}"), ("cons_outlier_run", "outR", "{:.0%}"),
+           ("cons_z_thick_p90", "|zT|90", "{:.2f}"),
            ("cons_z_dark_p90", "|zD|90", "{:.2f}"), ("orig_outlier", "orgT", "{:.0%}"),
            ("ident_outlier", "idnT", "{:.0%}"), ("spread_thick", "sprT", "{:.2f}"),
            ("spread_dark5", "sprD", "{:.2f}"), ("spread_sharp", "sprS", "{:.2f}")]
@@ -658,8 +709,8 @@ def _worst(r: dict) -> float:
     return max(abs(z["thick"]), abs(z["dark5"])) if z else -1.0
 
 
-SHEET_MEASURES = (("thick", "thickness: run / height, ratio"), ("dark5", "darkness: levels, difference"),
-                  ("sharp", "sharpness: edge / contrast, ratio"))
+SHEET_MEASURES = (("thick", "thickness: ink width / height (sub-pixel), ratio"), ("dark5", "darkness: levels, difference"),
+                  ("sharp", "sharpness: edge / contrast, ratio"), ("run", "runs: median run / height (old ruler), ratio"))
 
 SHEET_CSS = """
 body { font: 14px/1.4 system-ui, sans-serif; margin: 0 auto; max-width: 1100px; padding: 16px; color: #1c1c1c; }
@@ -817,7 +868,7 @@ def cmd_run(args) -> int:
     results = []
     work = Path(tempfile.mkdtemp(prefix="style_bench_"))
     try:
-        for file in args.file or SET:
+        for file in args.file or (SET20 if args.set == "20" else SET):
             t0 = time.time()
             res = process_file(file, work / Path(file).stem, ner, lambda *a: None,
                                Path(args.code) if args.code else None, args.ablation)
@@ -844,7 +895,8 @@ def cmd_compare(args) -> int:
     a = json.loads(Path(args.before).read_text(encoding="utf-8"))
     b = json.loads(Path(args.after).read_text(encoding="utf-8"))
     print(f"{'quality':<22}{'measure':<18}{'before':>10}{'after':>10}")
-    shown = ("fam", "wt", "rt_thick", "rt_dark_abs", "rt_sharp", "rt_ssim", "cons_outlier", "cons_z_thick_p90",
+    shown = ("fam", "wt", "rt_thick", "rt_run", "rt_dark_abs", "rt_sharp", "rt_ssim", "cons_outlier", "cons_outlier_run",
+             "cons_z_thick_p90",
              "cons_z_dark_p90", "orig_outlier", "ident_outlier", "spread_thick", "spread_dark5", "spread_sharp")
     fmts = {k: f for k, _, f in COLUMNS}
     for name in sorted(set(a["summary"]) & set(b["summary"]), key=lambda s: (s != "ALL", s)):
@@ -862,7 +914,8 @@ def main() -> int:
     r = sub.add_parser("run")
     r.add_argument("out")
     r.add_argument("--label", default="")
-    r.add_argument("--file", action="append", help="only this sample file of Dossier Test 17 (repeatable)")
+    r.add_argument("--file", action="append", help="only this sample file (repeatable; Dossier Test 17 or 20)")
+    r.add_argument("--set", choices=["17", "20"], default="17", help="the sample set: 17 (default) or 20 (150 dpi statements)")
     r.add_argument("--code", help="run the anonymizer of this other checkout (e.g. a commit exported in a worktree)")
     r.add_argument("--ablation", choices=["own_ink"], help="the replacements take their own paper and ink (ablation)")
     c = sub.add_parser("compare")

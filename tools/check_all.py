@@ -140,6 +140,57 @@ KEEP = {
 # notarial and bank values written right after a colon (':123456789'): good and poor scan (Dossier Test 16)
 SENSITIVE_16 = ["123456789", "0077436639", "AB12345678", "0612345678", "FR7630006000011234567890189", "987654321"]
 # folder -> (sensitive values, {file: (mode, black box kinds, MRZ formats)})
+# Dossier Test 20: bank statements at 150 dpi, JPEG 69, the real pages' look (tools/make_test_statement150.py):
+# the values of its truth file, and their words
+SENSITIVE_20 = [
+ "Madame Héloïse Vandamme",
+ "BE91 0682 4813 5729",
+ "0682 4813 5729",
+ "Rue des Tanneurs 47",
+ "+32 471 58 23 96",
+ "heloise.vandamme@exemple.be",
+ "REF.CLIENT 12345678",
+ "Monsieur Bastien Lambotte",
+ "MARION LEFEVRE",
+ "BE96 0015 7392 0468",
+ "BE94 3631 7052 8846",
+ "Madame Ludivine Mertens",
+ "0015 7392 0468",
+ "+32 486 19 74 30",
+ "Avenue des Platanes 112",
+ "Monsieur Corentin Dewulf",
+ "Chaussée de Waterloo 215",
+ "+32 478 52 19 64",
+ "corentin.dewulf@exemple.be",
+ "REF.CLIENT 44718203",
+ "Madame Anaëlle Verstraete",
+ "BRUNO HENNEBERT",
+ "Monsieur Florian Hennebert",
+ "+32 472 33 08 15",
+ "Rue du Vieux Marché 9",
+ "Héloïse",
+ "Vandamme",
+ "Bastien",
+ "Lambotte",
+ "MARION",
+ "LEFEVRE",
+ "Ludivine",
+ "Mertens",
+ "Corentin",
+ "Dewulf",
+ "Anaëlle",
+ "Verstraete",
+ "BRUNO",
+ "HENNEBERT",
+ "Florian",
+ "Hennebert",
+ "Tanneurs",
+ "Platanes",
+ "Waterloo",
+ "Vieux",
+ "Marché"
+]
+
 EXPECT = {
     "Dossier Test 00": (STATEMENT_0, {
         "releve_compte_fr.pdf": ("digital", [], []),
@@ -234,6 +285,11 @@ EXPECT = {
         "polices_image_collee.pdf": ("mixed", [], []),
         "contrat_assurance_scan.pdf": ("scan", [], []),
         "paragraphes_scan.pdf": ("scan", [], []),
+    }),
+    # bank statements at 150 dpi (JPEG 69, placed in blocks by MuPDF): the scans of the real client pages' look
+    "Dossier Test 20": (SENSITIVE_20, {
+        "releve_150_scan.pdf": ("scan", [], []),
+        "releve_150_couleur.pdf": ("scan", [], []),
     }),
     "Dossier Test 05": (STATEMENT_0, {
         "contrat_image_collee.pdf": ("mixed", [], []),
@@ -3817,6 +3873,44 @@ def scan_props_tests():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def ruler_tests():
+    """tools/style_bench.py: the sub-pixel thickness is not quantised (a stroke of 3.5 px measures 3.5 px, where the old
+    run count reads 3 px), a blurred stroke keeps its area, two strokes in a row are two widths, and the normalised
+    measures carry both rulers."""
+    print("\n== thickness rulers (style_bench)")
+    sys.path.insert(0, str(ROOT / "tools"))
+    import style_bench as sb
+
+    c = np.full((40, 60), 255.0)
+    for k, v in enumerate([1.0, 1.0, 1.0, 0.5]):              # a stroke of 3.5 px, its last pixel half covered
+        c[:, 20 + k] = 255 - 255 * v
+    m = sb.measure(c)
+    check("rulers: a stroke of 3.5 px measures 3.5 px (sub-pixel ruler)",
+          m is not None and abs(m["thick"] - 3.5 / 40) < 1e-9, str(m and m["thick"]))
+    check("rulers: the old run ruler reads the same stroke as 3 px (quantised)",
+          m is not None and abs(m["run"] - 3 / 40) < 1e-9, str(m and m["run"]))
+    x = np.arange(60)
+    prof = np.exp(-0.5 * ((x - 30.0) / 0.9) ** 2)
+    prof = prof / prof.sum() * 2.0
+    cov = np.clip(prof / prof.max(), 0, 1)
+    blurred = np.repeat(255 - 255 * cov[None, :], 40, axis=0)
+    mb = sb.measure(blurred)
+    check("rulers: a blurred stroke keeps its area (the coverage summed, within 0.05 px)",
+          mb is not None and abs(mb["thick"] * mb["h"] - cov.sum()) < 0.05, str(mb and mb["thick"] * mb["h"]))
+    widths = sb.stroke_widths(np.array([[0, 0.3, 1, 1, 0.6, 0, 0, 1, 0.2, 0]]))
+    check("rulers: two strokes in one row are two widths (2.9 and 1.2 px)",
+          np.allclose(widths, [2.9, 1.2]), str(widths))
+    n = sb.normalized(m, m)
+    check("rulers: a normalised value carries both rulers (each over its prediction: 1 for the same crop)",
+          n is not None and abs(n["thick"] - 1) < 1e-9 and abs(n["run"] - 1) < 1e-9, str(n))
+    faint = np.full((40, 60), 255.0)
+    for k, v in enumerate([0.5, 0.5, 0.5, 0.25]):           # the same stroke at half the ink: 1.75 px of ink
+        faint[:, 20 + k] = 255 - 255 * v
+    mf = sb.measure(faint, (255.0, 0.0))
+    check("rulers: against the page's paper and ink, a faint stroke measures its own ink (1.75 px, not 3.5)",
+          mf is not None and abs(mf["thick"] * mf["h"] - 1.75) < 1e-6, str(mf and mf["thick"] * mf["h"]))
+
+
 def colour_tests():
     """Dossier Test 19: white and coloured text on coloured backgrounds, digital and scan (tools/make_test_colours.py).
     No value left in its box; each replacement on the contrast side of its background; the family and the weight the
@@ -4050,7 +4144,8 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
+    "label_and_town_tests", "licence_title_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

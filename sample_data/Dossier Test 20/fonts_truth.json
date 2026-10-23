@@ -1,0 +1,750 @@
+{
+  "releve_150_scan.pdf": {
+    "pages": [
+      {
+        "page": 1,
+        "dpi": 150,
+        "blur": 0.3,
+        "grain": 3.0,
+        "ink": 15,
+        "jpeg": 69,
+        "grey": true
+      },
+      {
+        "page": 2,
+        "dpi": 150,
+        "blur": 0.3,
+        "grain": 3.0,
+        "ink": 15,
+        "jpeg": 69,
+        "grey": true
+      }
+    ],
+    "lines": [
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Titulaire : Madame Héloïse Vandamme",
+        "value": "Madame Héloïse Vandamme",
+        "value_box": [
+          99.5,
+          98.8,
+          216.1,
+          108.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "IBAN : BE91 0682 4813 5729",
+        "value": "BE91 0682 4813 5729",
+        "value_box": [
+          88.5,
+          112.8,
+          178.1,
+          122.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "N° de compte : 0682 4813 5729",
+        "value": "0682 4813 5729",
+        "value_box": [
+          122.1,
+          126.8,
+          187.2,
+          136.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Adresse : Rue des Tanneurs 47",
+        "value": "Rue des Tanneurs 47",
+        "value_box": [
+          100.5,
+          140.8,
+          187.1,
+          150.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Localité : 1000 BRUXELLES",
+        "value": "1000 BRUXELLES",
+        "value_box": [
+          98.5,
+          154.8,
+          174.1,
+          164.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Téléphone : +32 471 58 23 96",
+        "value": "+32 471 58 23 96",
+        "value_box": [
+          110.0,
+          168.8,
+          180.4,
+          178.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Courriel : heloise.vandamme@exemple.be",
+        "value": "heloise.vandamme@exemple.be",
+        "value_box": [
+          99.0,
+          182.8,
+          230.2,
+          192.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Carte : 6703 **** **** 4471",
+        "value": "6703 **** **** 4471",
+        "value_box": [
+          89.5,
+          196.8,
+          165.1,
+          206.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Référence client : REF.CLIENT 12345678",
+        "value": "REF.CLIENT 12345678",
+        "value_box": [
+          132.5,
+          210.8,
+          227.6,
+          220.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "11/09/2024  VIREMENT RECU  Monsieur Bastien Lambotte  +1 200,00",
+        "value": "Monsieur Bastien Lambotte",
+        "value_box": [
+          189.6,
+          351.8,
+          299.1,
+          361.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "VIRT RECU  MARION LEFEVRE   BE96 0015 7392 0468",
+        "value": "MARION LEFEVRE",
+        "value_box": [
+          112.8,
+          390.6,
+          180.0,
+          399.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "VIRT RECU  MARION LEFEVRE   BE96 0015 7392 0468",
+        "value": "BE96 0015 7392 0468",
+        "value_box": [
+          194.4,
+          390.6,
+          285.6,
+          399.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "PRLV SEPA  BE94 3631 7052 8846   AVIS 0417",
+        "value": "BE94 3631 7052 8846",
+        "value_box": [
+          112.8,
+          403.6,
+          204.0,
+          412.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "VIRT RECU  Madame Ludivine Mertens   0015 7392 0468",
+        "value": "Madame Ludivine Mertens",
+        "value_box": [
+          112.8,
+          416.6,
+          223.2,
+          425.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "VIRT RECU  Madame Ludivine Mertens   0015 7392 0468",
+        "value": "0015 7392 0468",
+        "value_box": [
+          237.6,
+          416.6,
+          304.8,
+          425.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Bénéficiaire : Monsieur Bastien Lambotte",
+        "value": "Monsieur Bastien Lambotte",
+        "value_box": [
+          115.3,
+          84.0,
+          228.0,
+          94.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "IBAN bénéficiaire : BE96 0015 7392 0468",
+        "value": "BE96 0015 7392 0468",
+        "value_box": [
+          137.5,
+          99.0,
+          225.6,
+          109.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Compte épargne : 0015 7392 0468",
+        "value": "0015 7392 0468",
+        "value_box": [
+          135.1,
+          114.0,
+          200.4,
+          124.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Contact : +32 486 19 74 30",
+        "value": "+32 486 19 74 30",
+        "value_box": [
+          98.8,
+          129.0,
+          168.5,
+          139.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Domicile : Avenue des Platanes 112",
+        "value": "Avenue des Platanes 112",
+        "value_box": [
+          102.7,
+          144.0,
+          204.1,
+          154.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Numéro de carte : 5495 32XX XXXX 7425",
+        "value": "5495 32XX XXXX 7425",
+        "value_box": [
+          136.2,
+          159.0,
+          224.8,
+          169.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "CARTE  6703 **** **** 4471   Madame Héloïse Vandamme",
+        "value": "6703 **** **** 4471",
+        "value_box": [
+          93.6,
+          313.6,
+          184.8,
+          322.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "CARTE  6703 **** **** 4471   Madame Héloïse Vandamme",
+        "value": "Madame Héloïse Vandamme",
+        "value_box": [
+          199.2,
+          313.6,
+          309.6,
+          322.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "CARTE  5495 32XX XXXX 7425   Monsieur Bastien Lambotte",
+        "value": "5495 32XX XXXX 7425",
+        "value_box": [
+          93.6,
+          326.6,
+          184.8,
+          335.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "CARTE  5495 32XX XXXX 7425   Monsieur Bastien Lambotte",
+        "value": "Monsieur Bastien Lambotte",
+        "value_box": [
+          199.2,
+          326.6,
+          319.2,
+          335.0
+        ]
+      }
+    ]
+  },
+  "releve_150_couleur.pdf": {
+    "pages": [
+      {
+        "page": 1,
+        "dpi": 150,
+        "blur": 0.3,
+        "grain": 3.0,
+        "ink": 15,
+        "jpeg": 69,
+        "grey": false
+      },
+      {
+        "page": 2,
+        "dpi": 150,
+        "blur": 0.3,
+        "grain": 3.0,
+        "ink": 15,
+        "jpeg": 69,
+        "grey": false
+      }
+    ],
+    "lines": [
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Titulaire : Monsieur Corentin Dewulf",
+        "value": "Monsieur Corentin Dewulf",
+        "value_box": [
+          99.5,
+          98.8,
+          203.1,
+          108.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "IBAN : BE94 3631 7052 8846",
+        "value": "BE94 3631 7052 8846",
+        "value_box": [
+          88.5,
+          112.8,
+          178.1,
+          122.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "N° de compte : 0015 7392 0468",
+        "value": "0015 7392 0468",
+        "value_box": [
+          122.1,
+          126.8,
+          187.2,
+          136.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Adresse : Chaussée de Waterloo 215",
+        "value": "Chaussée de Waterloo 215",
+        "value_box": [
+          100.5,
+          140.8,
+          209.6,
+          150.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Localité : 1050 IXELLES",
+        "value": "1050 IXELLES",
+        "value_box": [
+          98.5,
+          154.8,
+          157.6,
+          164.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Téléphone : +32 478 52 19 64",
+        "value": "+32 478 52 19 64",
+        "value_box": [
+          110.0,
+          168.8,
+          180.4,
+          178.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Courriel : corentin.dewulf@exemple.be",
+        "value": "corentin.dewulf@exemple.be",
+        "value_box": [
+          99.0,
+          182.8,
+          215.2,
+          192.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Carte : 5495 32XX XXXX 7425",
+        "value": "5495 32XX XXXX 7425",
+        "value_box": [
+          89.5,
+          196.8,
+          183.1,
+          206.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "Référence client : REF.CLIENT 44718203",
+        "value": "REF.CLIENT 44718203",
+        "value_box": [
+          132.5,
+          210.8,
+          227.6,
+          220.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Arial",
+        "bold": false,
+        "size": 9,
+        "text": "11/09/2024  VIREMENT RECU  Madame Anaëlle Verstraete  +1 200,00",
+        "value": "Madame Anaëlle Verstraete",
+        "value_box": [
+          189.6,
+          351.8,
+          301.1,
+          361.2
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "VIRT RECU  BRUNO HENNEBERT   BE91 0682 4813 5729",
+        "value": "BRUNO HENNEBERT",
+        "value_box": [
+          112.8,
+          390.6,
+          184.8,
+          399.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "VIRT RECU  BRUNO HENNEBERT   BE91 0682 4813 5729",
+        "value": "BE91 0682 4813 5729",
+        "value_box": [
+          199.2,
+          390.6,
+          290.4,
+          399.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "PRLV SEPA  BE96 0015 7392 0468   AVIS 0417",
+        "value": "BE96 0015 7392 0468",
+        "value_box": [
+          112.8,
+          403.6,
+          204.0,
+          412.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "VIRT RECU  Monsieur Florian Hennebert   0682 4813 5729",
+        "value": "Monsieur Florian Hennebert",
+        "value_box": [
+          112.8,
+          416.6,
+          237.6,
+          425.0
+        ]
+      },
+      {
+        "page": 1,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "VIRT RECU  Monsieur Florian Hennebert   0682 4813 5729",
+        "value": "0682 4813 5729",
+        "value_box": [
+          252.0,
+          416.6,
+          319.2,
+          425.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Bénéficiaire : Madame Anaëlle Verstraete",
+        "value": "Madame Anaëlle Verstraete",
+        "value_box": [
+          115.3,
+          84.0,
+          229.5,
+          94.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "IBAN bénéficiaire : BE91 0682 4813 5729",
+        "value": "BE91 0682 4813 5729",
+        "value_box": [
+          137.5,
+          99.0,
+          225.6,
+          109.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Compte épargne : 0682 4813 5729",
+        "value": "0682 4813 5729",
+        "value_box": [
+          135.1,
+          114.0,
+          200.4,
+          124.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Contact : +32 472 33 08 15",
+        "value": "+32 472 33 08 15",
+        "value_box": [
+          98.8,
+          129.0,
+          168.5,
+          139.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Domicile : Rue du Vieux Marché 9",
+        "value": "Rue du Vieux Marché 9",
+        "value_box": [
+          102.7,
+          144.0,
+          196.8,
+          154.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Calibri",
+        "bold": false,
+        "size": 10,
+        "text": "Numéro de carte : 6703 **** **** 4471",
+        "value": "6703 **** **** 4471",
+        "value_box": [
+          136.2,
+          159.0,
+          223.4,
+          169.5
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "CARTE  5495 32XX XXXX 7425   Monsieur Corentin Dewulf",
+        "value": "5495 32XX XXXX 7425",
+        "value_box": [
+          93.6,
+          313.6,
+          184.8,
+          322.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "CARTE  5495 32XX XXXX 7425   Monsieur Corentin Dewulf",
+        "value": "Monsieur Corentin Dewulf",
+        "value_box": [
+          199.2,
+          313.6,
+          314.4,
+          322.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "CARTE  6703 **** **** 4471   Madame Anaëlle Verstraete",
+        "value": "6703 **** **** 4471",
+        "value_box": [
+          93.6,
+          326.6,
+          184.8,
+          335.0
+        ]
+      },
+      {
+        "page": 2,
+        "family": "Courier New",
+        "bold": true,
+        "size": 8,
+        "text": "CARTE  6703 **** **** 4471   Madame Anaëlle Verstraete",
+        "value": "Madame Anaëlle Verstraete",
+        "value_box": [
+          199.2,
+          326.6,
+          319.2,
+          335.0
+        ]
+      }
+    ]
+  }
+}

@@ -258,3 +258,209 @@ Results (Dossier Test 17, 176 values with a z-score; outlier = thickness or dark
   (checked), so on these generated files the block's ink and each word's own ink are the same. A file with uneven ink is
   needed before the block ink can be judged.
 - Not done here: rendering changes. No change to the fakes is justified by these numbers.
+
+## 11. Dossier Test 20: the look of the 150 dpi client scans (step 2 of the thickness work)
+
+The thickness of the regular text of the real client statements came out at about half of what the model paints (the
+original 0.46, the fake 0.86 of its prediction), while Test 17 showed no such split. Dossier Test 20 reproduces the
+real pages, so the next changes can be tested on it. Generator: `tools/make_test_statement150.py`; measures:
+`tools/style_bench.py run <out.json> --set 20`; properties: `tools/scan_props.py "sample_data/Dossier Test 20"`.
+
+What the real pages showed (numbers only, `tools/scan_props.py`, 14 pages of two files):
+- a JPEG (DCT, 8 bit, quality 69, 4:2:0 on colour), placed at 595 x 842 pt at the corner of the page, 1240 x 1754 px;
+- MuPDF draws the picture in blocks on both axes (the scale is just under 2x: an enlargement above 2 gives blocks, exactly
+  2 gives smooth, checked on synthetic pages), and the native grid starts about 1.62 px (= -0.38) above the page origin in y;
+- original strokes one native pixel wide: 52 to 55 % of the runs are 2 px, 30 to 36 % are 4 px, no odd run of 1, 3 or 5 px;
+- hardness 0.56 to 0.61 (grey), ink levels 26 to 67 (median of the words), grain 0.4 to 1.6, fit blur 1.0 to 1.4 px.
+
+How the replica is made (`make_test_statement150.py`): the page is rendered at 600 dpi, the print is thinned there (a
+MaxFilter of 3 = 1 px at 300 dpi less per stroke), the scanner averages 4 x 4 pixels to 150 dpi, the print is degraded
+(ink 15, blur 0.3 at 150 dpi, grain 3), and the JPEG (quality 69) is placed at 595 x 842 pt.
+
+| measure | real pages | Test 20 replica |
+|---|---|---|
+| placed size, picture | 595 x 842 pt, 1240 x 1754 px | the same |
+| scale / blocks x / y (ratio) | < 0.5 / 35 to 38 / 5 to 30 | 0.49995 / 38 to 39 / 10 to 13 |
+| y grid phase (px) | 1.62 on most pages | 1.62 |
+| hardness (mid-tones) | 0.56 to 0.61 | 0.59 |
+| runs 2 px / 4 px | 52 to 55 % / 30 to 36 % | 55 to 59 % / 26 % |
+| ink (median) | 26 to 67 | 31 to 32 |
+| Arial, thickness normalised: original / fake | 0.46 / 0.88 | 0.46 / 0.86 |
+| round trip, thickness (identity run) | not measured | 1.89 |
+| fit blur (px, 300 dpi) | 1.0 to 1.4 | 0.7 to 1.0 |
+| words read per page | 211 to 556 | 117 to 151 |
+| share of values outside the threshold (fakes) | 32 % flagged | 39 % |
+
+Gaps still open (not tuned on purpose):
+- the heavy monospace: its original is 1.69 times its prediction (real 1.64), and its fake 0.85 (real 1.29), but 15 of its
+  18 values have no prediction (its block has no measurable style): step 4;
+- the replica has fewer words per page than the real pages, so fewer neighbours per block;
+- the fit blur is a little lower than the real pages' (0.7 to 1.0 against 1.0 to 1.4 px).
+
+The line that matters for the thickness: the fake's regular strokes are 4 px (two native pixels) where the original's
+are 2 px (one native pixel), in the painting itself (the identity run is 1.89 times its original), not in the measure.
+
+Measure fix made with it: a value of several words was given no block when no single OCR word covered 30 % of its box (each
+covers only part of it): a word that lies more than half inside the value now gives the block (`style_bench.measure_values`,
+only when the old rule finds nothing). Test 17 after the fix: 229 values (180 with a z-score, 176 before), families 91 %,
+weights 98 %, fakes outside the threshold 8 %, nulls 4 %, identity 3 %: the same numbers as section 10.6.
+
+## 12. The thickness ruler: sub-pixel (main) and the run count (kept for comparison)
+
+The run count of section 10 (`thick` = median horizontal run of ink / letter height) is a count of pixels: on the real
+pages and on Test 20 the runs are 2, 4 or 6 px (two native pixels per step), so the thickness of a value could only
+take a few values, and a fake one native pixel wider read as twice as thick. The ruler is now sub-pixel:
+`style_bench.stroke_widths` sums the coverage of each stroke (the run of pixels above 5 % that holds a pixel of 50 %
+or more, the coverage 0 paper .. 1 ink summed), so a stroke of 3.5 px measures 3.5 px (tests: `ruler_tests`). `measure`
+gives both: `thick` (sub-pixel, the ruler of the scoreboard, of the z-scores, of the spreads and of the outlier share)
+and `run` (the old count, z-scored too, reported as RTrun and outR, and as the 'runs' row of the review sheet).
+
+Results (`style_bench run`, z-scores and outlier shares of section 10.6 kept):
+
+| | Test 17, run (old) | Test 17, sub-pixel | Test 20, run (old) | Test 20, sub-pixel |
+|---|---|---|---|---|
+| Arial thickness, normalised: original / fake | - | - | 0.46 / 0.86 | 0.57 / 0.82 |
+| round trip, thickness (identity run) | 1.00 | 1.00 | 1.47 | 1.18 |
+| fakes outside the threshold (outR / outT) | 7.8 % | 10.6 % | 39 % | 48 % |
+| nulls: original values outside (orgT) | 4.4 % | 5.0 % | 0 % | 17 % (4 values) |
+| identity outside (idnT) | 2.8 % | 5.0 % | 57 % | 57 % |
+| |z| thickness, 90th percentile | 1.68 | 1.93 | 3.69 | 6.78 |
+
+Test 17 with the run ruler reproduces section 10.6 exactly (the run ruler is unchanged; checked).
+
+What this changes:
+- The factor of two of the regular text was mostly the count: with the sub-pixel ruler the original Arial strokes are
+  0.57 of their prediction and the fakes 0.82 (fake over original 1.4, not 1.9), and the identity replacement is 1.18
+  times its original (1.47 with the count).
+- The null on Test 17 is at its target (5.0 %); on Test 20 it is 4 values out of 23 judged, not a measure of anything yet.
+- The step 3 targets of the plan (median thickness of the original 0.9 to 1.1) were written against the run count: on the
+  sub-pixel ruler the regular original sits at 0.57 of its prediction, so the target has to be restated.
+
+## 13. Step 3: the thickness target (fake over original, 0.9 to 1.1), what the ruler got wrong, what was tried
+
+Target (set by the owner): the median over a page of the fake's thickness over its original's, 0.9 to 1.1, on the
+sub-pixel ruler; flagged fakes at most 10 %; nulls about 5 %; no regression on the other Test 17 pages. The ratio is the
+absolute width (thickness x letter height: the same face and size on both sides), not the thickness normalised by the
+crop's own letter height (a fake with accents or descenders has a taller ink, which lowers that ratio).
+
+Corrections to the ruler (section 12), found on the way (`anonymizer/quality.py` `stroke_widths`, `style_bench.measure`):
+1. Blurred neighbours merged: a stroke was the whole run of pixels above 5 %, so two touching blurred strokes counted as
+   one wide stroke (a blur of 1.4 px doubled the width of a candidate). Now a row is cut at the lowest pixel between two
+   peaks: one piece, one stroke (`_row_widths`).
+2. Each crop was normalised by its own darkest pixel: a faint stroke measured as dark as a black one, so a spread that
+   thins the fakes was invisible to the ruler. Now every crop of a page (original, fake, prediction) is measured against
+   the page's paper and ink (`style_bench.page_reference`: the medians over the OCR words of their 90 % and 1 % levels).
+   Test: a faint stroke measures its own ink (`ruler_tests`).
+
+The output responds to the spread on the page reference (Test 20, absolute widths, output over original, blur 1.0 forced,
+spread forced; `ref_width` experiment): spread -1.0: 0.67; -0.5: 0.87; 0: 1.06; +0.5: 1.17. The spread is the lever.
+
+Results with the committed rendering (`style_bench run`, page reference), fake over original, absolute width:
+
+| set, page | dpi | median | in 0.9-1.1 | status |
+|---|---|---|---|---|
+| Test 20, releve p1 | 150 | 1.07 | 60 % | in |
+| Test 20, releve p2 | 150 | 1.06 | 60 % | in |
+| Test 17, contrat p1 | 200 | 1.04 | 74 % | in |
+| Test 17, contrat p2 | 200 | 0.96 | 76 % | in |
+| Test 17, contrat p3 | 150 | 1.02 | 62 % | in |
+| Test 17, paragraphes p1 | 110 | 0.77 | 0 % | out (thin) |
+| Test 17, paragraphes p2 | 100 | 1.00 | 69 % | in |
+| Test 17, paragraphes p3 | 200 | 1.33 | 4 % | out (thick) |
+| Test 17, paragraphes p4 | 200 | 1.03 | 65 % | in |
+| Test 17, polices p1 | 300 | 1.19 | 38 % | out (thick) |
+| Test 17, polices p2 | 200 | 0.99 | 100 % | in |
+| Test 17, polices p3 | 150 | 0.94 | 88 % | in |
+
+Test 17 overall: median 1.00, 7 of 10 pages in the target, the 3 misses above. Outliers (sub-pixel, page reference): Test 17
+19 % flagged fakes, nulls 6 %, identity 13 %, |zT| 90th percentile 3.44; Test 20: 4 % flagged, nulls 0 %. The run count
+(unchanged): Test 17 8 %, Test 20 39 %. The consistency of Test 17 is worse than with the previous sub-pixel definition
+(15 %, |zT| 1.93): the page reference lets the grain of a faint word count as thickness. Not tuned.
+
+Tried, not kept:
+- The spread from the stroke widths of the sample words, within the pixel error tolerance: no effect on the output
+  (Test 20 1.09 to 1.07), more outliers.
+- The spread from the ink area of the sample words, the candidate's area divided by its peak as the painting extrapolates
+  the ink (page units, window of the word): Test 20 0.93 and 0.97 (in the target), but contrat p2 falls from 0.96 to 0.76
+  (a regression), and paragraphes p1, p3 and polices p1 do not move. Its sign disagrees with the output on those three pages.
+- A forced blur of 0.4 (spread 0): fakes thicker (1.21 on Test 20): blur is not the lever.
+- A forced spread of -0.5 on Test 20: 0.87 (too thin): the spread that matches Test 20 is about -0.1 on the page reference,
+  but the fit does not choose it.
+
+Open (not decided here): the three misses need opposite spreads (paragraphes p1 thicker, paragraphes p3 and polices p1
+thinner), and the fit's choice does not give that sign on them. A method that finds it (a per-page spread on the output
+ruler, or the copier and faded cases separately) is the next step; the rendering is not changed until one passes the
+gates (Test 17 with no regression, Test 20 in the target, nulls about 5 %).
+
+## 14. Step 4: families, italics and monospace (diagnosis; no rendering change)
+
+Families (`style_bench`, the face found against the truth, per value, committed rendering):
+- Test 17: 20 of 229 values wrong (91 %). The most common: Times New Roman read as Segoe UI (4, paragraphes p2, 100 dpi
+  black and white), Consolas read as Garamond (4), Verdana read as Source Sans 3 (3) or as Roboto (2), 3 with no face.
+  Most of them are coarse copies (100 to 150 dpi) and look-alike sans faces.
+- Test 20: 16 of 50 wrong. 15 of the 16 are the monospace values: 9 with no face at all, the rest read as sans or as
+  Tahoma / Courier Prime.
+- Italics: no value is read as italic on Test 17 or on Test 20. The italic faces of the real file (Consolas Italic,
+  Courier New Italic, Century Gothic Italic on an upright page) are not reproduced by the replicas.
+
+Why a monospace value gets no face: the OCR loses the heavy monospace words. In the monospace band of page 1 of Test 20,
+the words VIRT RECU MARION LEFEVRE are missing from the OCR, and the digit groups are read, each as a sans bold: Tahoma
+Bold 0.73, Source Sans 3 Bold 0.71, Courier New Bold 0.66 for '7392'. The shape scores of the heavy digits favour a
+thicker sans face than Courier New Bold, so the family vote has nothing to choose a monospace from.
+
+Installed monospace faces (stem of 'l', em, the stroke measure of the anonymizer; read from this PC, nothing downloaded):
+
+| face | regular | bold |
+|---|---|---|
+| Courier New | 0.041 | 0.100 |
+| Courier Prime (bundled) | 0.073 | 0.122 |
+| Consolas | 0.086 | 0.122 |
+| Lucida Console | 0.097 | - |
+| Cascadia Mono | 0.104 | - |
+| Noto Mono | 0.089 | - |
+| Liberation Mono (not a Windows default) | 0.088 | 0.137 |
+| DejaVu Sans Mono (not a Windows default) | 0.090 | 0.143 |
+
+Reading: the real heavy monospace is 1.64 times its prediction in Courier New and darker by 78 levels, so its stem sits
+between Courier New regular (0.041) and bold (0.100). The replica cannot settle the question: its monospace original is
+thinner than the generator intended (about 1.9 px, 0.06 em), and 9 of its 18 values have no OCR word. A decision on the
+heavy monospace needs the real monospace stem in em.
+
+Family rules, examined and not implemented:
+- A per-page set of families (1 to 3 per page) would break Test 17's polices pages, where each line is a different font
+  and a page carries 16 of them (real, by design).
+- A block-level vote would force one face on lines of different fonts in the same block.
+- The look-alike errors come from coarse copies; the monospace has no line-level evidence the OCR gives for heavy text.
+
+Open decisions (none taken here):
+1. Which monospace face to offer for the heavy monospace (Courier New Bold is 0.100 em; Consolas and Courier Prime bold
+   0.122 em; Liberation Mono and DejaVu Sans Mono are not Windows defaults and would need a download, not made).
+2. The italic false positives need a replica case before a rule is tested.
+3. The monospace check on the real folder: the em stem of each monospace value and the nearest installed face (no text
+   printed), to decide 1 with data.
+
+### 13.1 The null of the ruler (autonomous run, step 2)
+
+The null is the share of original values (nothing replaced) flagged against their own block by the z-score (thickness or
+darkness beyond the t threshold). Target: about 5 %.
+
+- Test 17, all 180 originals with a z-score: 11 flagged = 6.1 % (thickness 8, darkness 3).
+- Split by the detected family: the 164 values whose family is right give 8 flagged = 4.9 %. The 16 whose family is wrong
+  give 3 flagged = 19 %: Times New Roman read as Segoe UI, Consolas read as Garamond (paragraphes, coarse copies).
+  The prediction of a value is painted in the family it was given, so a wrong family gives a wrong normalised thickness.
+  The excess of the null is the face detection, not the ruler.
+- Sensitivity of the stroke membership (PEAK, HALO patched at run time; nothing committed):
+
+| PEAK / HALO | null, all | null, family right | fakes outside | identity outside | |zT| 90th pct |
+|---|---|---|---|---|---|
+| 0.1 / 0.03 (committed) | 6.1 % | 4.9 % | 19.4 % | 12.8 % | 3.44 |
+| 0.3 / 0.05 (earlier) | 5.6 % | 4.9 % | 14.4 % | 9.4 % | 2.79 |
+
+  The 0.3 / 0.05 setting is more consistent for the fakes, but it drops the strokes of faint ink (a stroke must peak at
+  30 %), which is why the reference sweep of section 13 was run at 0.1 / 0.03. The null is at its target with either.
+  Not changed: no threshold was fitted to one page, and the choice of the thresholds is left to the owner.
+- Test 20: 0 of 23 originals flagged, too few to judge (the replica has fewer values with a z-score). The null check of
+  `ruler_tests` runs on Test 17 (polices, contrat, paragraphes).
+
+Before and after (the step did not change the ruler or the rendering): the per-page fake over original ratios of section
+13 are unchanged. The null check is in `ruler_tests` (`ruler_null_check`).

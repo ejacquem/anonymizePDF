@@ -108,6 +108,11 @@ sample_data/Dossier Test 17/  fonts and scan qualities (tools/make_test_fonts.py
                               sampled with no antialiasing, black and white Times 100 dpi, grey Verdana / Tahoma 200 dpi
                               with copier spread, faded Garamond / Consolas 200 dpi): 38 values, 7 of them dates that are
                               not replaced by design; fonts_truth.json
+sample_data/Dossier Test 20/   bank statements at 150 dpi as the real client scans (tools/make_test_statement150.py): JPEG
+                              quality 69 placed at 595 x 842 pt (blocks at 2 x 2 px, native grid 0.4 px off the page
+                              in y), thin Arial 9 pt text, digit tables, a heavy Courier New block; releve_150_scan.pdf
+                              (grey), releve_150_couleur.pdf (RGB 4:2:0); 25 values per file; fonts_truth.json; section 11
+                              of docs/font_matching.md
 sample_data/Dossier Test Reel/  REAL client documents: git-ignored, never commit, never copy into tests
 tools/                 make_test_statement.py, make_test_passport.py, make_test_idcard.py, make_test_mixed.py,
                        make_test_faces.py, make_test_signatures.py (generators, Windows fonts); test_faces/ (public-domain portraits from
@@ -118,6 +123,7 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        style_bench.py (scoreboard of the replaced text against its block, section 12c);
                        review_summary.py (a review sheet summed up with no client data, to share; section 12c);
                        scan_props.py (properties of the scanned pages of a folder, no client data; section 12c);
+                       make_test_statement150.py (Dossier Test 20: the 150 dpi statements, truth; docs 11);
                        bench.py (time by document and by stage, before / after, section 11b);
                        check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
                        section 12b: the PDFs are downloaded, never committed)
@@ -1014,8 +1020,10 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - How well the replaced text blends into the text around it, on the three fake scans of Dossier Test 17
   (`polices_scan.pdf`, `contrat_assurance_scan.pdf`, `paragraphes_scan.pdf`, truth in `fonts_truth.json`). Each file runs
   twice on a temporary copy with a scratch key: the fake run (what the user gets) and an identity run (every value
-  replaced by itself: the round trip). Measures per value: thickness, darkness, contrast, sharpness, height and grain of
-  its crop; round trip ratios and differences and a 3x3-window SSIM at the best shift of +-2 px; consistency (each
+  replaced by itself: the round trip). Measures per value: thickness (the SUB-PIXEL ruler: `stroke_widths`, the coverage
+  of each stroke summed, median over the letter height, against the page's paper and ink (`page_reference`); the old run
+  count is kept as `run` for comparison, outR / RTrun in the tables; docs 12 and 13), darkness, contrast, sharpness,
+  height and grain of its crop; round trip ratios and differences and a 3x3-window SSIM at the best shift of +-2 px; consistency (each
   measure of the fake divided by its PREDICTION for the same text in the block's style, `predict`; z-scores against the
   unreplaced words of its block, same normalisation; the share beyond the Student t threshold for n-1 others: outT, and
   the same for the original values, the null orgT, and the identity run idnT); detection (family, weight, size) on the

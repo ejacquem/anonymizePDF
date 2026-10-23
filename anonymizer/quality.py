@@ -32,6 +32,8 @@ BLURS = (0.0, 0.4, 0.7, 1.0, 1.4, 1.9, 2.5, 3.2)
 COARSE_SPREADS = (-0.5, 0.0, 0.5, 1.0, 1.5, 2.0)      # page pixels; the fit refines the best by a quarter pixel
 MARGIN = 6                               # pixels around a word's ink for the fit (the blur spills out)
 SPREAD_GAIN = 0.03                       # a stroke spread is kept only if it lowers the fit's error this much
+HALO = 0.03                              # a pixel of less coverage than this is paper (the tails of the blur, the grain)
+PEAK = 0.1                               # a stroke has a pixel of at least this coverage (a faint or blurred one peaks low)
 MIN_SAMPLES = 3                          # words needed to fit the quality of a page
 
 
@@ -281,6 +283,34 @@ def residual(s: Sample, q: Quality) -> float:
 
 def _total(samples: list[Sample], q: Quality) -> float:
     return sum(residual(s, q) for s in samples) / max(len(samples), 1)
+
+
+def _row_widths(r: np.ndarray) -> list:
+    """The strokes of one row: the coverage of each piece of the row (cut at the lowest pixel between two peaks, so one
+    piece holds one stroke) summed. Two blurred strokes that touch are two strokes, not one wide one."""
+    r = np.where(r > HALO, r, 0.0)
+    n = r.size
+    left = np.r_[-1.0, r[:-1]]
+    right = np.r_[r[1:], -1.0]
+    peaks = np.flatnonzero((r >= PEAK) & (r >= left) & (r > right))
+    if peaks.size == 0:
+        return []
+    cuts = [0]
+    for a, b in zip(peaks[:-1], peaks[1:]):
+        cuts.append(a + int(np.argmin(r[a:b + 1])))
+    cuts.append(n)
+    return [float(r[cuts[k]:cuts[k + 1]].sum()) for k in range(peaks.size)]
+
+
+def stroke_widths(cov: np.ndarray) -> np.ndarray:
+    """The width of each stroke of a crop, in pixels, from the coverage of its pixels (0 paper .. 1 ink), row by row.
+    A count of the pixels above the half level is quantised by the grid (a stroke of 3.5 px reads 3); this sum is not:
+    the partly covered edges and the blur are part of the width, so a stroke of 3.5 px measures 3.5 px, and a blurred
+    stroke keeps its area."""
+    out = []
+    for row in cov:
+        out.extend(_row_widths(row))
+    return np.asarray(out, dtype=float)
 
 
 def fit(samples: list[Sample], scale: float = 1.0, hard: bool = False) -> Quality:
