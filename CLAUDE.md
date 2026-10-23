@@ -749,6 +749,12 @@ Order must never change a result (`order_tests`): a value written with several s
   trace look says which block (`block N`). A value with no OCR word under it, or in a block with fewer words: the
   per-value rules, as before. Tried and dropped: giving a value with few letters the block's family (contrat p1 family
   98 % -> 77 %).
+- Monospace values between the regular and the bold weight (`PageFonts.mono_quality`, docs/font_matching.md 16): a regular
+  monospace value whose scan is heavier than its regular rendering at the page's spread (the heavy Courier New of a
+  statement: about 1.4 times the regular, the bold 2.1) is written regular with the stroke spread that gives the scan's
+  grey mass (`mono_spread`: each word's text painted in its face at the value's size, on the paper and ink of the painting
+  `value_colours`, over its ink box widened by 3 px). Raised only, by MONO_SPREAD_MIN or more; bold and the other families
+  are unchanged. Test: `mono_weight_tests`.
 - Limits: close look-alikes are mixed up on soft copies (Arial / Roboto, Courier New / Courier Prime, DejaVu Sans
   Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; ~0.1-0.3 s per value. A value in a
   font other than its line's (an IBAN in Consolas inside a Garamond sentence) takes the line's family: the value's own

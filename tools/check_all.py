@@ -2631,6 +2631,79 @@ def font_unit_tests():
     check("config: the switches survive the review table round trip", not again["font_match"] and again["quality_match"])
 
 
+def mono_weight_tests():
+    """A monospace value between the regular and the bold weight (the heavy Courier New of a statement) is written regular
+    with the stroke spread that gives the original's ink mass (PageFonts.mono_quality): its replacement has the mass of the
+    original, where the regular rendering at the page's spread had less than two thirds of it. A light regular value keeps
+    the page's quality, a bold one keeps its bold face. The inks are the same here: the test checks the spread, not the
+    colours."""
+    print("\n== monospace values between the regular and the bold weight (synthetic page)")
+    from PIL import Image
+
+    from anonymizer import fontmatch, quality
+
+    reg = fontmatch.face("Courier New", False)
+    bold = fontmatch.face("Courier New", True)
+    arial = fontmatch.face("Arial", False)
+    if reg is None or bold is None or arial is None:
+        print("  Courier New or Arial is not installed on this PC: not tested")
+        return
+    paper, ink, size = (240, 238, 230), (40, 40, 40), 40
+    q0 = quality.Quality(blur=1.0)
+    rows = [(reg, quality.Quality(blur=1.0, spread=0.6), "0682 4813 5729 3"),     # heavy: between regular and bold
+            (reg, q0, "0015 7392 0468 7"),                                         # light regular
+            (bold, q0, "1234 5678 9012")]                                          # bold
+    img = Image.new("RGB", (1600, 110 * len(rows) + 60), paper)
+    quality.erase(img, (0, 0, img.width, img.height), paper, q0, ("mono", 0))
+    words, values = [], []
+    for li, (f, qv, value) in enumerate(rows):          # one value a line: no neighbour in the colours' region
+        y, x = 90 + 110 * li, 40
+        value_font = f.font(size)
+        quality.paint(img, value, value_font, (x, y), 1.0, ink, qv, ("mono", li, "value"))
+        boxes = []
+        for w in value.split(" "):
+            l, t, r, b = value_font.getbbox(w, anchor="ls")
+            words.append({"text": w, "box": (x + l, y + t, x + r, y + b), "line": ("s", li), "conf": 100.0})
+            boxes.append(words[-1]["box"])
+            x += value_font.getlength(w + " ")
+        values.append((f, value, value_font, (40, y), boxes))
+
+    gray = np.asarray(img.convert("L"))
+    paper_level = float(np.asarray(Image.new("RGB", (1, 1), paper).convert("L"))[0, 0])
+    pf = fontmatch.PageFonts(gray, words, 1.0)
+
+    def mass(g, box) -> float:
+        x0, y0, x1, y1 = (int(round(v)) for v in box)
+        return float(np.clip((paper_level - g[y0:y1, x0:x1].astype(float)) / (paper_level - ink[0]), 0, 1).sum())
+
+    found = []
+    for f, value, value_font, (x0, y), boxes in values:
+        box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+        look = pf.look(img, box)
+        twin = Image.new("RGB", img.size, paper)
+        quality.paint(twin, value, value_font, (x0, y), 1.0, look.ink or ink, look.quality, ("twin", value))
+        plain = Image.new("RGB", img.size, paper)
+        quality.paint(plain, value, value_font, (x0, y), 1.0, ink, pf.page_quality(), ("plain", value))
+        orig = mass(gray, box)
+        found.append((look, mass(np.asarray(twin.convert("L")), box) / orig,
+                      mass(np.asarray(plain.convert("L")), box) / orig))
+    (heavy, heavy_ratio, heavy_plain), (light, light_ratio, _), (bold_look, bold_ratio, _) = found
+    check("monospace: the heavy value is written regular, with a spread above the page's",
+          heavy.face is not None and heavy.face.family == "Courier New" and not heavy.face.bold
+          and heavy.quality.spread >= 0.2, f"{heavy.face.name if heavy.face else None}, spread {heavy.quality.spread:.2f}")
+    check(f"monospace: the heavy replacement has the ink mass of the original ({heavy_ratio:.2f}; at the page's spread "
+          f"{heavy_plain:.2f})", 0.85 <= heavy_ratio <= 1.15, f"{heavy_ratio:.2f}")
+    check("monospace: a light regular value keeps the page's spread",
+          light.face is not None and not light.face.bold and light.quality.spread < 0.2,
+          f"spread {light.quality.spread:.2f}")
+    check(f"monospace: the light replacement has the ink mass of the original ({light_ratio:.2f})",
+          0.85 <= light_ratio <= 1.15, f"{light_ratio:.2f}")
+    check("monospace: a bold value keeps its bold face",
+          bold_look.face is not None and bold_look.face.bold, bold_look.face.name if bold_look.face else "none")
+    check(f"monospace: the bold replacement has the ink mass of the original ({bold_ratio:.2f})",
+          0.85 <= bold_ratio <= 1.15, f"{bold_ratio:.2f}")
+
+
 def _ocr_page(page):
     img = ocr.render_page(page, 300)
     return img, ocr.ocr_words(img, "fra+eng")
@@ -4558,7 +4631,7 @@ GROUPS = [
     "incremental_report_tests", "scan_anonymize_batch_tests",
     "first_letter_tests", "account_and_street_names_tests", "client_identifier_tests", "manual_text_tests", "rotated_tests", "town_tests", "postcode_consistency_tests",
     "parenthesised_town_tests", "street_code_tests", "order_tests", "town_size_tests", "signature_tests",
-    "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
+    "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "mono_weight_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",

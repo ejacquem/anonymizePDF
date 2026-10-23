@@ -446,6 +446,17 @@ def _overlap(a, b) -> float:
     return max(w, 0) * max(h, 0)
 
 
+def _window(region, box, pad: int = 3) -> tuple:
+    """The rows and columns of a scan sample (its region x0, y0, x1, y1) that the box covers, widened by `pad` pixels:
+    the blur spills a little past the ink, on the scan and on the candidate alike."""
+    H, W = region[3] - region[1], region[2] - region[0]
+    x0, y0, x1, y1 = (int(round(box[0])) - pad, int(round(box[1])) - pad,
+                      int(round(box[2])) + pad, int(round(box[3])) + pad)
+    rows = slice(min(max(y0 - region[1], 0), H), min(max(y1 - region[1], 0), H))
+    cols = slice(min(max(x0 - region[0], 0), W), min(max(x1 - region[0], 0), W))
+    return rows, cols
+
+
 # Weight of a word, two clues averaged (0 = regular, 1 = bold, bold above BOLD_AT):
 # - the error left by the bold rendering against the regular one (degraded like the page): 1 -> 0, 0.4 -> 1;
 # - the ink mass of the word (a blur spreads ink, it keeps its total) against the regular rendering's, relative to
@@ -472,6 +483,11 @@ MIN_BLOCK_WORDS = 4                 # measurable words a block needs for its own
 BLOCK_WORDS = 24                    # the longest measurable words of a block are the ones measured
 BLOCK_SPLIT = 0.25                  # the bold scores of a block are two clusters when their largest gap is this wide
 SIZE_SLACK = 0.12                   # a value whose own size is this close to its block's takes the block's size
+# A monospace value between the regular and the bold weight (the heavy Courier New of a bank statement: its ink mass is
+# about 1.4 times the regular rendering's, the bold's about 2.1) is written regular with the stroke spread that gives the
+# original's ink mass (PageFonts.mono_spread). The spread is only raised: a lighter value keeps the page's spread.
+MONO_SPREADS = (0.0, 0.25, 0.5, 0.75, 1.0)    # the spreads tried, page pixels
+MONO_SPREAD_MIN = 0.2                         # the matched spread is used when it is this much above the page's
 
 
 @dataclass
@@ -937,9 +953,18 @@ class PageFonts:
         style = self.block_style(bid)                  # grain and ink come from the block when it has its own style
         q = replace(q, grain=style.grain if style is not None and style.grain is not None
                     else quality.grain(self.gray, box))
-        by_length = lambda idx: sorted(idx, key=lambda j: -_letters(self.clean[j]["text"]))   # noqa: E731
+        q = self.mono_quality(own, f, q, img)
+        colours = self.value_colours(img, own, bid, q)
+        paper, ink = colours or (None, None)
+        return Look(f, margin, q, paper, ink, bid if style is not None else None)
+
+    def value_colours(self, img, own: list[int], bid: int | None, q: "quality.Quality"):
+        """(paper, ink) a replacement of a value is painted with: the block's when it has a style, else the value's own
+        longest word, else its line's; a value whose ink is lighter than the page's by INK_LIGHTER takes the page's."""
+        style = self.block_style(bid)
         colours = self.block_colours(img, bid) if style is not None else None
         if colours is None:
+            by_length = lambda idx: sorted(idx, key=lambda j: -_letters(self.clean[j]["text"]))   # noqa: E731
             for i in by_length(own) + by_length(self.line_words(own)):
                 colours = self._colours(img, i, q)
                 if colours:
@@ -947,8 +972,80 @@ class PageFonts:
         page = self.page_colours(img)
         if page and (not colours or _lum(colours[1]) > _lum(page[1]) + INK_LIGHTER):
             colours = (colours[0] if colours else page[0], page[1])    # a few short words measure too light an ink
-        paper, ink = colours or (None, None)
-        return Look(f, margin, q, paper, ink, bid if style is not None else None)
+        return colours
+
+    def mono_spread(self, own: list[int], f: Face, q: "quality.Quality", img) -> float | None:
+        """The stroke spread (page pixels) at which the regular face f writes the words of a value with the grey mass of
+        the scan. The painting is simulated: each word's own text is painted in f at the size and baseline of the value
+        (metrics), on the paper and in the ink value_colours gives for that spread, and its darkening (paper minus grey)
+        over the word's ink box, widened by a few pixels, is compared with the scan's over the same box. The mass ratio falls as
+        the spread grows; the spread where it crosses 1 is interpolated. None when the scan is not heavier than the
+        regular rendering at spread 0, when no word can be measured, or when the scan is heavier than the grid reaches
+        (the bold decision stands)."""
+        words = []
+        for i in own:
+            if i in self.skip:
+                continue
+            got = self._ink(i)
+            s = self._sample(i, f) if got is not None else None
+            if s is not None:
+                words.append((i, got[1], s))
+        if not words:
+            return None
+        value = (min(b[0] for _, b, _ in words), min(b[1] for _, b, _ in words),
+                 max(b[2] for _, b, _ in words), max(b[3] for _, b, _ in words))
+        measured = self.metrics(value, f)
+        if measured is None:
+            return None
+        size = max(int(round(measured[0])), 6)
+        font = f.font(size)
+        baseline = measured[1] if measured[1] is not None else value[3]     # no baseline measured: the box's bottom
+
+        def lum(c) -> float:
+            return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+
+        bid = self.block_at(value)
+
+        def ratio(d: float) -> float | None:
+            qd = replace(q, spread=d, grain=0.0)
+            cols = self.value_colours(img, own, bid, qd)     # the paper and ink the painting uses, at this spread
+            if cols is None:
+                return None
+            scan = painted = 0.0
+            for i, box, s in words:
+                paper_l = lum(cols[0])
+                rs, cs = _window(s.region, box)
+                x0, y0 = s.region[0] + cs.start, s.region[1] + rs.start
+                w, h = cs.stop - cs.start, rs.stop - rs.start
+                if w < 2 or h < 2:
+                    return None
+                g = self.gray[y0:y0 + h, x0:x0 + w].astype(float)
+                scan += float(np.clip(paper_l - g, 0, None).sum())
+                text = self.clean[i]["text"].strip()
+                origin = box[0] - font.getbbox(text, anchor="ls")[0]          # the text's origin: its ink's left bearing
+                canvas = Image.new("RGB", (w, h), tuple(cols[0]))
+                quality.paint(canvas, text, font, (origin - x0, baseline - y0), 1.0, tuple(cols[1]), qd, ("mono", i))
+                c = np.asarray(canvas.convert("L")).astype(float)
+                painted += float(np.clip(paper_l - c, 0, None).sum())
+            return scan / painted if painted > 0 else None
+
+        ratios = [ratio(d) for d in MONO_SPREADS]
+        if any(r is None for r in ratios) or ratios[0] <= 1.0:
+            return None
+        for k in range(1, len(MONO_SPREADS)):
+            if ratios[k] <= 1.0:
+                r0, r1 = ratios[k - 1], ratios[k]
+                t = (r0 - 1.0) / (r0 - r1)
+                return MONO_SPREADS[k - 1] + t * (MONO_SPREADS[k] - MONO_SPREADS[k - 1])
+        return None
+
+    def mono_quality(self, own: list[int], f: Face | None, q: "quality.Quality", img) -> "quality.Quality":
+        """`q` with the stroke spread of mono_spread for a regular monospace value whose scan is heavier than the page's
+        spread by MONO_SPREAD_MIN or more; `q` itself for any other value."""
+        if f is None or f.bold or f.kind != "mono" or not own:
+            return q
+        d = self.mono_spread(own, f, q, img)
+        return replace(q, spread=d) if d is not None and d >= q.spread + MONO_SPREAD_MIN else q
 
     @_fonts
     def page_colours(self, img):

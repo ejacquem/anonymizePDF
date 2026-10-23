@@ -516,3 +516,42 @@ So the heavy block lies between Courier New regular and bold, a little above Cou
 (with 10 % tolerance). The real folder: run `scan_props` and read the stems lines of the mono and digit blocks: each block
 gives its stem and the catalog's regular and bold at the same digit height; a stem between the two bold and regular
 values answers the question of the monospace weight (docs 14).
+
+## 16. Monospace values between the regular and the bold weight (`PageFonts.mono_quality`)
+
+The weight_diag output of the real folder (`tools/weight_diag.py`, numbers only) showed three levels of ink mass
+over the page reference: Courier Prime regular 0.84, Courier New in between 1.37 (F1 p1, 57 words; F1 p2, 111 words),
+Courier New bold 1.75 to 1.86 (19 and 20 words). Their residual clue is 0 for the middle words, so the bold score is
+half the mass clue and the cut falls at a mass ratio of about 1.7: the middle words are written regular. Neither face
+matches the middle: its log distance to bold is about the same as to regular.
+
+The change: a regular monospace value whose scan is heavier than its regular rendering at the page's spread is written
+regular with the stroke spread that gives the scan's grey mass.
+
+- `mono_spread`: each word's own text is painted in the face at the value's size (metrics), on the paper and ink of the
+  painting (`value_colours`, the same as the replacement's at that spread), and its darkening over its ink box widened by
+  3 px is compared with the scan's over the same box. The ratio falls as the spread grows (MONO_SPREADS 0 .. 1 px); the
+  spread where it crosses 1 is interpolated. None when the scan is not heavier at spread 0.
+- `mono_quality`: used only when the spread is MONO_SPREAD_MIN (0.2) or more above the page's. Bold values and the other
+  families are unchanged. `look()` takes it; the painting uses the look.
+- The paper and ink of a value in a block with a style are the block's, measured at the page's quality, so they do not
+  change with the spread (`value_colours`, shared by look() and the mass model).
+
+Tests:
+- `mono_weight_tests` (synthetic page, one value a line): a heavy Courier New value (blur 1.0, spread 0.6) is written
+  regular at a spread of about 0.6 and its replacement has the mass of the original (0.99); at the page's spread it had
+  0.59. A light regular value keeps the page's spread (mass 0.99); a bold one keeps its bold face (1.01).
+- Test 17 (`polices_scan.pdf`, 229 records of the scoreboard): 1 record changed. A Consolas regular value on page 3:
+  identity round trip 0.84 -> 1.01 of its original's thickness. The Courier New date of the same page is unchanged.
+- Test 20 (50 records): none changed (no monospace face is found on its replica).
+- check_all: 1855 passed, 0 failed.
+
+Limits and what is not known:
+- The real folder's effect is not measured yet: the expected change is on the middle Courier New values (F1 p1, F1 p2).
+  The sub-pixel thickness and darkness of those values after the change need a new `style_bench sheet` and
+  `review_summary` on the real folder.
+- The mass model writes the value's own text, not the fake's: for digits in a monospace face the width is the same, for
+  letters it differs a little.
+- The spread is capped at 1 px (MONO_SPREADS): a scan heavier than that stays with the bold decision.
+- In the synthetic checks the paper and ink are the same as the original's; on real pages the colour model (the ink
+  extrapolated from the darkest pixels at the spread) moves the ink too, as before this change.
