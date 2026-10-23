@@ -293,5 +293,23 @@ def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
                     for r, rf in replacements_folded) or _read_back(key, replacements_folded, originals_folded, original_groups):
                 continue
             seen.add(key)
-            out.append({"page": pno, "type": typ, "value": value})
-    return out
+            out.append({"page": pno, "type": typ, "value": value, "hits": _locate(page, pno, value)})
+    # one place, one line: a value that is part of a longer value found on the same page ('rue Neuve' in '12 rue Neuve,
+    # 1000 Bruxelles') is the same text read again by another detector, and is left out
+    return [s for s in out if not any(o is not s and o["page"] == s["page"]
+                                      and len(norm_value(o["value"])) > len(norm_value(s["value"]))
+                                      and norm_value(s["value"]) in norm_value(o["value"]) for o in out)]
+
+
+def _locate(page: PageRead, pno: int, value: str) -> list[dict]:
+    """Where a value the second check still reads is on the page: {page, box in PDF points}, for the viewer (the same
+    places as the leftovers: the text layer first, else the OCR of the page)."""
+    if page.layer_words:
+        text, spans = words_to_text(page.layer_words)
+        hits = _hit_boxes(page.layer_words, text, spans, term_regex(value), pno)
+        if hits:
+            return hits
+    if page.ocr:
+        text, spans = words_to_text(page.words)
+        return _hit_boxes(page.words, text, spans, term_regex(value, ocr=True), pno, 72 / 300)
+    return []

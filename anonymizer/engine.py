@@ -1656,10 +1656,8 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
             with timing.stage("check"):
                 entry["suspects"] = verify.leak_suspects(read, cfg)
             if entry["suspects"]:
+                # one line per value in the Recap (each one clickable, see report 'suspects'): not a warning text here
                 shown = ", ".join(f"{s['type']} '{s['value']}' p.{s['page']}" for s in entry["suspects"][:8])
-                entry["warnings"].append(f"{len(entry['suspects'])} value(s) still readable in the output, not replaced: "
-                                         f"{shown}. They are suggestions in the Config (not active): tick the ones that "
-                                         f"are right, then anonymize again.")
                 log(f"   WARNING: {len(entry['suspects'])} value(s) still readable in the output: {shown}")
         except Exception as e:  # noqa: BLE001
             entry["error"] = f"{type(e).__name__}: {e}"      # the type too: some exceptions have no message

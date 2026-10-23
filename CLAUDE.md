@@ -219,6 +219,11 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   works but the app no longer sends anything in it.)
 - Recap: per file items, leftovers, warnings, pills for black boxes (■ photos / QR codes / signatures) and MRZ format;
   a note with a button to the Config tab when the second check's values were offered there as suggestions.
+  Each value the second check still reads (report `suspects`, with `hits` = its places in PDF points, `verify._locate`)
+  is one line of its own with the warning sign, clickable like a leftover (`locateSuspect` / `locateHits`): the viewer
+  frames its places in orange (`.lbox.sbox`, from `leftoverHits`). A value that is part of a longer one on the same page
+  is left out (one place, one line). No combined warning text is written any more (`warnings` stays for other notes).
+  Test: `suspect_hits_tests`.
 - The OCR engine and the names models are chosen in ⚙ Settings (`POST /api/settings`, sent again at each start from
   localStorage). The top bar shows no OCR or model text. `STATE["spacy_models"]`: None = every installed model, [] = rules only.
 - The Text tool is switched off when an anonymization finishes (`runJob`), not when it starts.

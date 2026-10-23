@@ -4161,6 +4161,42 @@ def title_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def suspect_hits_tests():
+    """A value the second check still reads is listed with where it is on the page (`hits`, PDF points), so the Recap
+    can show it in the anonymized file as it does for a leftover; the run keeps no combined warning text (UI item)."""
+    print("\n== second check: each suspect has its place")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_suspect_hits_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        folder = tmp / "client"
+        folder.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 100), "Compte BE68 5390 0754 7034 ouvert", fontsize=11)
+        page.insert_text((72, 130), "Adresse : 12 rue Neuve, 1000 Bruxelles", fontsize=11)
+        doc.save(folder / "lettre.pdf")
+        doc.close()
+        # a config that replaces nothing of the letter (one term that is not in it): every value is still there for the
+        # second check
+        engine.run_anonymize(folder, "client", "ocr_lang: fra+eng\nreplacements:\n  - {find: Zorglub, replace: Bidule, type: TERM}\n",
+                             "fra+eng", False, lambda m: None)
+        report = json.loads((folder / engine.REPORT_NAME).read_text(encoding="utf-8"))
+        f = report["files"][0]
+        sus = f.get("suspects") or []
+        check("the second check lists the IBAN it still reads", any(s["type"] == "IBAN" for s in sus), str(sus)[:300])
+        check("every suspect has its places on its page (boxes in PDF points, inside the page)",
+              sus and all(s.get("hits") and all(h["page"] == s["page"] and 0 <= h["box"][0] < h["box"][2] <= 595.5
+                                              and 0 <= h["box"][1] < h["box"][3] <= 842.5 for h in s["hits"])
+                          for s in sus), str(sus)[:300])
+        keys = [pii.norm_value(s["value"]) for s in sus]
+        check("one place, one line: no suspect is part of another one on its page",
+              not any(a != b and a in b for a in keys for b in keys), str(keys))
+        check("the run keeps no combined warning text (each suspect is a line of its own in the Recap)",
+              not f.get("warnings"), str(f.get("warnings"))[:200])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def underline_tests():
     """Values with an underline, a dotted line or a frame (tools/make_test_underline.py, Dossier Test 21): on a scan,
     every underline of a replaced value is still there (its ink under the box is not erased with the letters), and no
@@ -4402,7 +4438,7 @@ GROUPS = [
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
-    "underline_tests",
+    "underline_tests", "suspect_hits_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

@@ -134,11 +134,14 @@ main:not(.native) .viewer .pages { cursor: grab; user-select: none; }
 /* original text still found in the anonymized file (the verification): red frames, the current place thicker */
 .lbox { position: absolute; border: 2px solid #e53935; box-sizing: border-box; pointer-events: none; z-index: 2; }
 .lbox.current { border-width: 3px; background: rgba(229, 57, 53, .25); }
+.lbox.sbox { border-color: var(--warn); }                 /* a suspect (still readable, not replaced): orange, not red */
+.lbox.sbox.current { background: rgba(245, 158, 11, .25); }
 /* a value of the config, found in the selected original file: blue frame */
 .tlbox { position: absolute; border: 2px solid #1f78d1; background: rgba(31, 120, 209, .2); box-sizing: border-box; pointer-events: none; z-index: 2; }
 .efind.lookup, .mfind { cursor: pointer; }
 .efind.lookup:hover, .mfind:hover { text-decoration: underline; }
 button.lfind { font: inherit; font-size: 12px; text-align: left; padding: 1px 4px; border-color: #e53935; color: inherit; }
+button.sfind { font: inherit; font-size: 12px; text-align: left; padding: 1px 4px; border-color: var(--warn); color: inherit; }
 .bbox.draft { background: rgba(0, 0, 0, .35); outline: 1px dashed #fff; cursor: crosshair; pointer-events: none; }
 .bhandle { position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px; background: #fff; border: 1px solid #333; box-sizing: border-box; }
 .bhandle.h-nw { left: 0; top: 0; cursor: nwse-resize; } .bhandle.h-se { left: 100%; top: 100%; cursor: nwse-resize; }

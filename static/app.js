@@ -768,6 +768,9 @@ function leftoverHits() {
   const out = [];
   if (!f) return out;
   f.leftovers.forEach((l, li) => (l.hits || []).forEach((h, hi) => out.push({ key: li + "|" + hi, page: h.page, box: h.box, find: l.find })));
+  // the values the second check still reads: the same frames, orange (see locateSuspect)
+  (f.suspects || []).forEach((s, si) => (s.hits || []).forEach((h, hi) =>
+    out.push({ key: "s" + si + "|" + hi, page: h.page, box: h.box, find: s.value, suspect: true })));
   return out;
 }
 
@@ -847,21 +850,33 @@ async function locateLeftover(file, li) {
   const l = f && f.leftovers[li];
   if (!l) return;
   if (!(l.hits || []).length) { notify("No position for this text: anonymize the file again", "err"); return; }
+  await locateHits(file, file + "|" + li, li, l.find, l.hits);
+}
+
+// a value the second check still reads (report 'suspects'): the same cycling through its places as a leftover
+async function locateSuspect(file, si) {
+  const f = state.report && (state.report.files || []).find((x) => x.file === file);
+  const s = f && (f.suspects || [])[si];
+  if (!s) return;
+  if (!(s.hits || []).length) { notify("No position for this value: anonymize the file again", "err"); return; }
+  await locateHits(file, file + "|s" + si, "s" + si, s.value, s.hits);
+}
+
+async function locateHits(file, cycle, sel, label, hits) {
   if (nativeMode()) setViewMode("viewer");
   if (currentFileName() !== file) {
     await openFile((state.folder ? state.folder + "/" : "") + file);
     await waitFor(() => viewers.anon.pages.length > 0);
   }
-  const cycle = file + "|" + li;
-  const n = l.hits.length;
+  const n = hits.length;
   const i = ((leftCycle[cycle] ?? -1) + 1) % n;
   leftCycle[cycle] = i;
-  const h = l.hits[i];
+  const h = hits[i];
   centerOn("anon", h);
   leftSel.file = file;
-  leftSel.key = li + "|" + i;
+  leftSel.key = sel + "|" + i;
   drawBoxes();
-  setStatus(`“${l.find}” · place ${i + 1} of ${n} (page ${h.page}), click again for the next one`, "ok");
+  setStatus(`“${label}” · place ${i + 1} of ${n} (page ${h.page}), click again for the next one`, "ok");
 }
 
 // every black box of the selected file: { key, type, idx, page, box, kind, label }
@@ -909,8 +924,9 @@ function drawBoxes() {
     leftoverHits().filter((h) => h.page === i + 1).forEach((h) => {
       const d = document.createElement("div");
       const current = leftSel.file === currentFileName() && leftSel.key === h.key;
-      d.className = "lbox" + (current ? " current" : "");
-      d.title = `Original text still in the output: “${h.find}”`;
+      d.className = "lbox" + (h.suspect ? " sbox" : "") + (current ? " current" : "");
+      d.title = h.suspect ? `Still readable in the output, not replaced: “${h.find}”`
+        : `Original text still in the output: “${h.find}”`;
       Object.assign(d.style, { left: h.box[0] * k + "px", top: h.box[1] * k + "px",
         width: (h.box[2] - h.box[0]) * k + "px", height: (h.box[3] - h.box[1]) * k + "px" });
       el.appendChild(d);
@@ -2144,7 +2160,7 @@ function renderRecap() {
     if (f.error) pills.push(`<span class="pill bad">error</span>`);
     else if (f.leftovers.length) pills.push(`<span class="pill bad">⚠ ${f.leftovers.length} left</span>`);
     else pills.push(`<span class="pill ok">✓ clean</span>`);
-    if (f.warnings.length) pills.push(`<span class="pill warn">warning</span>`);
+    if ((f.warnings || []).length || (f.suspects || []).length) pills.push(`<span class="pill warn">warning</span>`);
     const fnode = state.nodes[(state.folder ? state.folder + "/" : "") + f.file];
     if (fnode && fnode.anon) pills.push(fnode.reviewed ? `<span class="pill ok">✓ reviewed</span>` : `<span class="pill">not reviewed</span>`);
     const black = f.blackouts || [];
@@ -2160,7 +2176,14 @@ function renderRecap() {
     h += `<details class="file" ${(f.leftovers.length || f.error) ? "open" : ""}><summary><b>${esc(f.file)}</b> ${pills.join(" ")}
       <button class="mini" data-open="${esc(f.file)}">view</button></summary>`;
     if (f.error) h += `<div class="note bad">Error: ${esc(f.error)}</div>`;
-    f.warnings.forEach((w) => { h += `<div class="note warn">⚠ ${esc(w)}</div>`; });
+    (f.warnings || []).forEach((w) => { h += `<div class="note warn">⚠ ${esc(w)}</div>`; });
+    // one line per value the second check still reads: clickable, it shows the value in the anonymized file
+    (f.suspects || []).forEach((s, si) => {
+      const where = s.hits && s.hits.length ? "click to find it" : "no position: anonymize the file again";
+      h += `<div class="note warn">⚠ <button class="sfind" data-sfile="${esc(f.file)}" data-si="${si}"${s.hits && s.hits.length ? "" : " disabled"}
+        title="Show it in the anonymized file (click again for the next place)">${esc(s.type)} “${esc(s.value)}” · p.${s.page}</button>
+        still readable in the output, not replaced <span class="muted small">(${where}; a suggestion in the Config)</span></div>`;
+    });
     if ((f.suggested || []).length) {
       h += `<div class="note warn">${f.suggested.length} value(s) offered as suggestions in the Config (not active):
         <button class="mini" data-config="1">open the Config</button></div>`;
@@ -2184,6 +2207,9 @@ function renderRecap() {
   box.querySelectorAll("button[data-config]").forEach((b) => { b.onclick = () => showTab("config"); });
   box.querySelectorAll("button.lfind").forEach((b) => {
     b.onclick = () => locateLeftover(b.dataset.lfile, +b.dataset.li);
+  });
+  box.querySelectorAll("button.sfind").forEach((b) => {
+    b.onclick = () => locateSuspect(b.dataset.sfile, +b.dataset.si);
   });
   box.querySelectorAll("button[data-open]").forEach((b) => {
     b.onclick = (ev) => {
