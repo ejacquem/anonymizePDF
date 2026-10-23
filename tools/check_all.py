@@ -3900,6 +3900,7 @@ def ruler_tests():
     widths = sb.stroke_widths(np.array([[0, 0.3, 1, 1, 0.6, 0, 0, 1, 0.2, 0]]))
     check("rulers: two strokes in one row are two widths (2.9 and 1.2 px)",
           np.allclose(widths, [2.9, 1.2]), str(widths))
+    ruler_null_check()
     n = sb.normalized(m, m)
     check("rulers: a normalised value carries both rulers (each over its prediction: 1 for the same crop)",
           n is not None and abs(n["thick"] - 1) < 1e-9 and abs(n["run"] - 1) < 1e-9, str(n))
@@ -3909,6 +3910,32 @@ def ruler_tests():
     mf = sb.measure(faint, (255.0, 0.0))
     check("rulers: against the page's paper and ink, a faint stroke measures its own ink (1.75 px, not 3.5)",
           mf is not None and abs(mf["thick"] * mf["h"] - 1.75) < 1e-6, str(mf and mf["thick"] * mf["h"]))
+
+
+def ruler_null_check() -> None:
+    """The null of the ruler on the original values of Test 17 (nothing replaced): the share flagged against their own
+    blocks (z-scores beyond the t threshold). The original stands in as its own fake: no pipeline run, only the OCR of the
+    pages. Reported on all values and on the values whose family the detector finds right (a wrong face gives a wrong
+    prediction, see docs 13.1): the null must stay near the 5 % of the t test."""
+    import style_bench as sb
+
+    rows = []
+    for name in ("polices_scan.pdf", "contrat_assurance_scan.pdf", "paragraphes_scan.pdf"):
+        truth, _ = sb.load_truth(name)
+        values = [dict(page=t["page"], box=t["box"], text=t["text"], fake=t["text"], fake_exact=False, label=name,
+                       family=t["family"], bold=t["bold"], size=t["size"]) for t in truth]
+        src = sb.SAMPLES / name
+        res = sb.measure_values(src, src, None, values)
+        rows += [r for r in res["records"] if "z_orig" in r]
+    ok = [r for r in rows if r.get("ok_family")]
+
+    def share(rs):
+        return sum(1 for r in rs if max(abs(r["z_orig"]["thick"]), abs(r["z_orig"]["dark5"])) > r["z_orig"]["crit"]) / max(len(rs), 1)
+
+    check("ruler null: originals flagged against their blocks, all values (at most 10 %)", share(rows) <= 0.10,
+          f"{share(rows):.1%} of {len(rows)}")
+    check("ruler null: originals flagged, values whose family is right (at most 8 %)", share(ok) <= 0.08,
+          f"{share(ok):.1%} of {len(ok)}")
 
 
 def colour_tests():
