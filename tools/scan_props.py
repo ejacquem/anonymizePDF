@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT))
 
 import pymupdf as fitz  # noqa: E402
 
-from anonymizer import engine, fontmatch, ocr, ocrpage, quality, scanpaint  # noqa: E402
+from anonymizer import engine, fontmatch, layout, ocr, ocrpage, quality, scanpaint  # noqa: E402
 
 LANG = "fra+eng"
 DPI = 300                   # the resolution the app renders and reads a scan at
@@ -257,6 +257,118 @@ def strokes(gray: np.ndarray, boxes: list, scale: float) -> dict | None:
             "paper": float(np.median(paper_all)), "ink": float(np.median(ink_all))}
 
 
+# ---------------------------------------------------------------------------
+# the stems of the digit and monospace blocks (step 4): numbers only
+# ---------------------------------------------------------------------------
+
+MONO_FAMILIES = [name for name, kind, *_ in fontmatch.CATALOG if kind == "mono"]   # Courier New, Consolas, Courier Prime...
+DIGIT_SHARE = 0.5           # a block whose characters are at least this share digits is a digit block
+MONO_MIN_WORDS = 3          # words a block needs to be measured
+MONO_PROBE = "0123"         # the text the catalog faces are set in, at the block's digit height
+
+
+def _digit_rows(cov: np.ndarray) -> int:
+    """The rows holding ink (coverage 50 % or more): the digit height (the cap height of the figures)."""
+    return int(np.count_nonzero((cov >= 0.5).any(axis=1)))
+
+
+def _stem_ratio(cov: np.ndarray, h: int) -> float | None:
+    """The median width of the strokes of a crop (the sub-pixel ruler: horizontal pieces of the rows are the vertical
+    stems) over its digit height h."""
+    widths = quality.stroke_widths(cov)
+    if h < 4 or widths.size < 3:
+        return None
+    return float(np.median(widths)) / h
+
+
+def _height_at(face, size: int) -> int:
+    """The digit height of MONO_PROBE set in `face` at `size` px, sharp."""
+    cov, _ = quality.text_coverage(face.font(size), MONO_PROBE, (4, size * 1.4), 1.0, quality.SHARP)
+    return _digit_rows(cov)
+
+
+def catalog_stems(pf, digit_px: float) -> dict:
+    """Each catalog monospace face, regular and bold: its stem over its digit height, the digits set at the block's digit
+    height and degraded with the page's quality (blur, spread, resolution), as the replacements are."""
+    q = pf.page_quality()
+    out = {}
+    for fam in MONO_FAMILIES:
+        row = {}
+        for bold in (False, True):
+            f = fontmatch.face(fam, bold)
+            if f is None:
+                continue
+            ref = _height_at(f, 100)
+            if ref <= 0:
+                continue
+            size = max(int(round(100 * digit_px / ref)), 6)
+            cov, _ = quality.text_coverage(f.font(size), MONO_PROBE, (4, size * 1.4), 1.0, q)
+            r = _stem_ratio(cov, _digit_rows(cov))
+            if r is not None:
+                row["bold" if bold else "regular"] = r
+        out[fam] = row
+    return out
+
+
+def page_reference(pf) -> tuple:
+    """The paper and the ink of the page as the style bench's ruler sees them: the medians, over the OCR words, of their
+    90 % and 1 % levels (the page's own coverage is measured against them)."""
+    ps, ins = [], []
+    for w in pf.clean:
+        x0, y0 = max(int(w["box"][0]), 0), max(int(w["box"][1]), 0)
+        x1, y1 = min(int(w["box"][2]), pf.gray.shape[1]), min(int(w["box"][3]), pf.gray.shape[0])
+        c = pf.gray[y0:y1, x0:x1]
+        if c.size > 20:
+            ps.append(float(np.percentile(c, 90)))
+            ins.append(float(np.percentile(c, 1)))
+    return (float(np.median(ps)), float(np.median(ins))) if ps else (255.0, 0.0)
+
+
+def mono_blocks(pf) -> list[dict]:
+    """The blocks that are mostly digits, or whose words the fit reads as a monospace face. Each word is measured on the
+    page's own coverage (the page reference of the ruler): its stem over its digit height, then the block's median.
+    The digit height is the cap height of the figures (the rows of ink of the digits)."""
+    P, I = page_reference(pf)
+    out = []
+    blocks, _ = layout.blocks(pf.clean)
+    for bl in blocks:
+        ws = [pf.clean[j] for j in bl["words"]]
+        alnum = [c for w in ws for c in w["text"] if c.isalnum()]
+        if not alnum:
+            continue
+        digits_block = sum(c.isdigit() for c in alnum) / len(alnum) >= DIGIT_SHARE
+        if not digits_block:
+            if not any(fontmatch_family(pf, w["box"]) in MONO_FAMILIES for w in ws):
+                continue
+        ratios, heights = [], []
+        for w in ws:
+            if digits_block and not any(c.isdigit() for c in w["text"]):
+                continue
+            x0, y0, x1, y1 = (int(round(v)) for v in w["box"])
+            g = pf.gray[max(y0, 0):y1, max(x0, 0):x1].astype(float)
+            if g.size < 20:
+                continue
+            cov = np.clip((P - g) / max(P - I, 1.0), 0, 1)
+            h = _digit_rows(cov)
+            r = _stem_ratio(cov, h)
+            if r is not None:
+                ratios.append(r)
+                heights.append(h)
+        if len(ratios) >= MONO_MIN_WORDS:
+            digit_px = float(np.median(heights))
+            out.append({"kind": "digits" if digits_block else "monospace", "words": len(ratios),
+                        "digit_px": digit_px, "stem": float(np.median(ratios)),
+                        "y": float(np.median([w["box"][1] for w in ws])),      # where the block sits on the page (px)
+                        "catalog": catalog_stems(pf, digit_px)})
+    return out
+
+
+def fontmatch_family(pf, box) -> str | None:
+    """The family the fit gives a word (None when it cannot be measured): only its family is kept."""
+    face, _ = pf.face_for(box)
+    return face.family if face is not None else None
+
+
 def scan_measures(page, pics: list[dict]) -> dict:
     """What the app measures on a scan page: its native scale, the block test, the mid-tones, the fit, the strokes."""
     img = ocr.render_page(page, DPI)
@@ -269,7 +381,8 @@ def scan_measures(page, pics: list[dict]) -> dict:
     grains = [quality.grain(gray, b) for b in boxes[:60]]
     out = {"words": len(words), "scale": scale, "fit": q, "grain": float(np.median(grains)) if grains else 0.0,
            "blocks": block_test(gray, boxes, scale), "strokes": strokes(gray, boxes, scale),
-           "mid": quality.hardness(gray, boxes, scale) if scale < 0.95 else None}
+           "mid": quality.hardness(gray, boxes, scale) if scale < 0.95 else None,
+           "mono": mono_blocks(pf)}
     if pics:
         big = max(pics, key=lambda p: p["area"])                  # the picture the scan is taken from
         out["edge"] = (big["x0"] * DPI / 72, big["y0"] * DPI / 72)
@@ -349,6 +462,12 @@ def _scan_lines(s: dict) -> list[str]:
         lines.append(f"    strokes  median {st['px']:.2f} px = {st['native']:.2f} native px | runs: {shares} "
                      f"({st['runs']} runs)")
         lines.append(f"    levels   paper {st['paper']:.0f} | ink {st['ink']:.0f} (medians of the words)")
+    for b in s.get("mono", []):
+        lines.append(f"    stems    {b['kind']} block of {b['words']} words: stem {b['stem']:.3f} of the digit height "
+                     f"({b['digit_px']:.1f} px, cap height of the figures)")
+        for fam, row in b["catalog"].items():
+            lines.append(f"      {fam:16s} regular {row.get('regular', float('nan')):.3f}   "
+                         f"bold {row.get('bold', float('nan')):.3f}")
     return lines
 
 

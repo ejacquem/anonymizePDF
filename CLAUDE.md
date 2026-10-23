@@ -1058,7 +1058,9 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   block test (grey change across the native pixel edges against inside them, along x and y, at the best phase and at
   phase 0, and the phase of the image's edge), the hardness (mid-tones on the native grid), the fit (blur, spread,
   black and white, error, grain), the strokes (median run in page and native px, the share of each run length) and the
-  paper / ink levels. The scan pages are read as the app reads them (OCR needed). `scan_props_tests`.
+  paper / ink levels, and the stems of the digit and monospace blocks against the catalog's monospace faces (regular and
+  bold, at the block's digit height; docs 14.1). The scan pages are read as the app reads them (OCR needed).
+  `scan_props_tests`, `monospace_stems_test`.
 - `compare <before.json> <after.json>` prints the measures side by side. Takes about 5 minutes (the pipeline runs twice
   per file). Not part of check_all. Results: docs/font_matching.md section 10.
 - Not built: a synthetic paragraph generator of its own (the Test 17 paragraph file is the set), and the public-domain

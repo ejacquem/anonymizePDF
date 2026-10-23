@@ -490,3 +490,29 @@ measured after the JPEG. The model cannot be trusted to set the spread without a
 Decision: no rendering change. `anonymizer/` is unchanged (the candidate is reverted; its diff is kept in the autonomous
 run's scratch). The three pages stay out of the target: paragraphes p1 0.77, paragraphes p3 1.33, polices p1 1.19. The
 next candidate would need a model of the colour painting (the RGB ink of the page), tested on the pipeline's own output.
+
+### 14.1 Step 4, autonomous run: the stem of the digit and monospace blocks (`tools/scan_props.py`, numbers only)
+
+Per scan page, `scan_props` now lists the blocks that are mostly digits (or whose words the fit reads as a monospace face):
+the stem of each word over its digit height, the block's median, and beside it, for every catalog monospace face
+(Courier New, Consolas, Courier Prime and their italic entries: regular and bold), the same measure on the digits set at
+the block's digit height and degraded with the page's quality.
+
+- The stem: the median width of the strokes of the word, on the sub-pixel ruler (`quality.stroke_widths`), over its digit
+  height (the rows holding ink at 50 % or more: the cap height of the figures). The scan is measured against the page's
+  paper and ink (the ruler's page reference); the catalog faces are full ink, so the two are on the same scale only where
+  the page's darkest level is the ink (a sharp scan). This is the approximation of the tool.
+- A regular face whose strokes never reach the threshold gives no value (printed as nan).
+- No monospace rendering is changed. The output prints numbers and family names only (the guard checks the text).
+
+Test 20, page 1 (the heavy Courier block of the replica, generated as Courier New bold with a stroke on top):
+
+| block (digit height 26 to 28 px) | stem | Courier New regular | Courier New bold | Consolas bold | Courier Prime bold |
+|---|---|---|---|---|---|
+| band 1600 to 1800 px (heavy Courier) | 0.069 | 0.046 | 0.062 | 0.068 | 0.072 |
+
+So the heavy block lies between Courier New regular and bold, a little above Courier New bold. `monospace_stems_test` (in
+`scan_props_tests`) checks that it is heavier than Courier New regular and not heavier than the heaviest catalog bold
+(with 10 % tolerance). The real folder: run `scan_props` and read the stems lines of the mono and digit blocks: each block
+gives its stem and the catalog's regular and bold at the same digit height; a stem between the two bold and regular
+values answers the question of the monospace weight (docs 14).

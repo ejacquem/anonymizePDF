@@ -3871,6 +3871,30 @@ def scan_props_tests():
               text[:300])
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    monospace_stems_test(sp)
+
+
+def monospace_stems_test(sp) -> None:
+    """scan_props (step 4): the stem of the digit block of the heavy monospace (Dossier Test 20, page 1: the monospace band
+    of the statement) against the catalog's monospace faces at the same digit height. The heavy block is generated as
+    Courier New bold with a stroke on top, so it must be heavier than Courier New regular, and not heavier than the
+    heaviest catalog bold (with 10 % tolerance). The numbers are printed by the tool, the test reads them."""
+    print("\n== scan properties: the stems of the monospace (no client data)")
+    page = fitz.open(ROOT / "sample_data" / "Dossier Test 20" / "releve_150_scan.pdf")[0]
+    blocks = sp.scan_measures(page, [])["mono"]
+    band = [b for b in blocks if 1600 <= b["y"] <= 1800 and b["kind"] == "digits"]
+    check("scan props: the monospace band of Test 20 has a digit block of at least 3 words",
+          len(band) >= 1, f"{len(blocks)} blocks measured")
+    if not band:
+        return
+    b = band[0]
+    cat = b["catalog"]
+    cn_regular = cat["Courier New"]["regular"]
+    heaviest_bold = max(row["bold"] for row in cat.values() if "bold" in row)
+    check("scan props: the heavy Courier block is heavier than Courier New regular",
+          b["stem"] > cn_regular, f"block {b['stem']:.3f}, Courier New regular {cn_regular:.3f}")
+    check("scan props: the heavy Courier block is not heavier than the heaviest catalog bold (10 %)",
+          b["stem"] <= 1.1 * heaviest_bold, f"block {b['stem']:.3f}, heaviest catalog bold {heaviest_bold:.3f}")
 
 
 def ruler_tests():
