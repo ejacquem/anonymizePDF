@@ -121,6 +121,8 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        Test 2 and 11); make_test_names.py (Dossier Test 12); check_all.py (section 12); key_hunt.py (many random keys on one file);
                        snapshot_results.py (before / after comparison of the results, section 11b);
                        style_bench.py (scoreboard of the replaced text against its block, section 12c);
+                       make_test_challenge.py + challenge_bench.py (challenge scans with a ground truth and the scorecard
+                       of the replacement against it: background, decorations, geometry, fonts, tone; section 12d);
                        review_summary.py (a review sheet summed up with no client data, to share; section 12c);
                        scan_props.py (properties of the scanned pages of a folder, no client data; section 12c);
                        make_test_statement150.py (Dossier Test 20: the 150 dpi statements, truth; docs 11);
@@ -1130,6 +1132,33 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   per file). Not part of check_all. Results: docs/font_matching.md section 10.
 - Not built: a synthetic paragraph generator of its own (the Test 17 paragraph file is the set), and the public-domain
   scans (not downloaded).
+
+### 12d. Challenge scorecard: `python tools/challenge_bench.py run <out.json> [--only PREFIX] [--split dev|held] [--sheet s.html]`
+
+- The oracle the other benches lack: `tools/make_test_challenge.py` builds each page from layers, so for every case it can
+  render the page WITHOUT the five values (`clean`: what a perfect erasure leaves) and WITH other texts in the same font,
+  size, geometry and scan effects (`ideal`: what a perfect forger writes, `render_case(spec, texts=)`). 45 deterministic
+  one-page scans (1650 x 900 px, 200 dpi, fake values: name, IBAN, phone, address, e-mail), families `bg_` (flat, paper,
+  gradients, vignette, zebra stripes with the edge across the value, guilloche, ruled), `deco_` (underlines, strike, marker
+  opaque / multiply / half the value, tinted box, frame, table cell, pen circle, stamp over the value, crease, specks),
+  `geom_` (tilt 1..18 degrees, book bend, wave, perspective, bend + tilt), `font_` (ten fonts NOT in `fontmatch.CATALOG`
+  plus three controls), `tone_` (boosted, binarised, halo, dark, faded, coarse, blue ink, searchable scan with an
+  invisible text layer in a wrong font). Each case is `dev` or `held`: tune on dev, a change is accepted when held does not
+  get worse. `python tools/make_test_challenge.py [folder]` writes the PDFs (folder `sample_data/Dossier Test 22`, git-ignored,
+  regenerated on demand), `--preview x.html` a contact sheet. Windows fonts are read from `C:\Windows\Fonts`.
+- The bench scans and anonymizes ALL selected cases in one temporary folder (a scratch key, as `style_bench`), then per
+  value: `found` (the report boxes cover it), `bg` (distance to the clean page over the pixels where neither the output nor the
+  ideal has ink; `floor` = the same for the original, the noise alone; `bg_excess` = bg - floor, `bg95` = its 95th
+  percentile: an artefact), `ink_rel` (|output - ideal| over the ink the ideal writes, best fit over a 2 px shift: 0 = the
+  ideal, 1 = erased and nothing written; the text of the fake differs from the ideal's letters only by spacing, so a
+  floor of about 0.5 is normal), `mass` / `dark` / `height` (weight, darkness, size of the ink against the ideal), `dx` /
+  `dy` (ink centre shift), `coll` (pixels far from any value changed by more than 40 levels, per 10 000). `compare a b`
+  prints before / after per group (family, deco, geom, bg, font, tone, split); `--sheet` writes the worst values with the
+  original, clean, ideal and output crops. The numbers are for comparing two runs of the same bench, not absolute.
+- It is a scorecard, not a gate: the gate stays `check_all.py` (no leak, no regression). Not part of check_all. The pages are
+  rendered in parallel processes (cores - 1, 4 at most); the full run takes about 5 minutes, 9 cases (`--only bg_`) 50 s. Same
+  selection of cases = same numbers (deterministic); the fakes of a case depend on the other cases in the folder, so compare
+  runs of the SAME selection. First baseline and its reading: `docs/challenge_baseline.md`.
 
 ## 13. Known limits / ideas
 
