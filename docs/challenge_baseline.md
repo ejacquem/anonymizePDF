@@ -83,3 +83,47 @@ tone:faded                   5      100%      0.82       3.9       2.1      0.64
 tone:halo                    5      100%     -0.18       4.5       2.0      0.74      0.90      31.1      1.04       0.2       1.7       0.0
 tone:textlayer               5      100%      0.56       3.2       1.9      0.78      0.74      47.7      0.95       0.1       5.2       0.0
 ```
+
+
+## Whole-page documents (`doc_`, `--only doc_`, 6 pages, 94 values; `det` column added to the bench afterwards)
+
+Bank statement, insurance letter and lease, each laid out with several fonts, bold / italic runs, a zebra table,
+highlighter (yellow / blue / magenta over values and ordinary words), then scanned: tilt, bend, wave, perspective.
+Much harder than the five-row cases: 70 % found, collateral 20 per 10 000.
+
+- Highlighter: of the values under a highlighter, detection saw 14 of 16 (the config has them) but only 6 were painted at
+  their place: magenta 0 of 4, blue 2 of 6, yellow 4 of 6. The text under a highlighter is not read (or not at its place) by the OCR. The
+  rest: 60 of 74 plain values found. Missing plain ones are mostly the second occurrence of a value on a bent or tilted page.
+- Two reference kinds (`police n° AUT-9035127`, `HAB-4471902` in Courier / Book Antiqua) are not detected at all (detection, not rendering;
+  they stay in the set: a leak the second check should offer).
+- `coll` counts changes away from the marked values: the run also replaces words the page does not mark as values (a town in
+  'Delhaize Namur', 'Liège, le ...'): over-redaction, accepted by design, so only compare `coll` between runs.
+- Bad backgrounds: `doc_releve_bend` bg_excess 7.1 (bg95 25), the tinted table rows under a bend; `deco:hl_yellow` bg95 151,
+  `hl_blue` 91: the patch of a value on a highlighter is the wrong colour.
+
+```
+group                        n     found bg_excess      bg95  bg_worst   ink_rel      mass      dark    height        dy        dx      coll
+ALL                         94       70%      0.87       5.8      48.1      0.92      1.24       8.2      1.04       0.9       4.0      20.6
+family:doc                  94       70%      0.87       5.8      48.1      0.92      1.24       8.2      1.04       0.9       4.0      20.6
+split:dev                   47       74%      0.71       5.8      48.1      0.79      1.25       6.9      1.04       0.6       3.7      20.6
+split:held                  47       66%      0.94       5.9      29.2      1.05      1.19      12.9      1.05       1.1       5.3      19.2
+case:doc_assurance_bendtilt  16       50%      1.50       6.9      14.1      1.37      1.28      17.1      1.04       1.2       3.6       4.5
+case:doc_assurance_wave     16       75%      0.81       6.2      13.3      0.79      1.24       6.8      1.00       0.2       3.5       7.3
+case:doc_contrat_bend       16       75%      0.76       5.5      18.4      1.00      1.34       9.3      1.11       1.6       4.0      46.0
+case:doc_contrat_persp      16       88%      0.59       4.8      11.6      0.92      1.23      13.7      1.05       1.2       4.9      34.4
+case:doc_releve_bend        15       60%      7.09      25.5      29.2      1.09      1.06       6.5      1.05       1.1       6.8      19.2
+case:doc_releve_tilt        15       73%      0.56       5.8      48.1      0.45      1.25       6.5      1.09       0.5       1.4      20.6
+deco:hl_blue                 6       33%      9.09      91.1      14.1      2.03      0.99      29.8      0.94       3.6       3.4      11.8
+deco:hl_magenta              4        0%         -         -       0.0         -         -         -         -         -         -         -
+deco:hl_yellow               6       67%     19.63     151.4      48.1      1.47      0.84      28.9      0.80       4.4       8.1      27.5
+font:arial                  30       67%      0.87       5.9      48.1      0.72      1.22       6.5      1.08       0.7       5.5      20.6
+font:bookman                 2        0%         -         -       0.0         -         -         -         -         -         -         -
+font:calibri                28       93%      0.72       5.5      18.4      0.98      1.28      11.3      1.08       1.3       4.3      34.4
+font:courier                 4        0%         -         -       0.0         -         -         -         -         -         -         -
+font:garamond               30       67%      1.03       6.2      14.1      0.97      1.25       7.5      1.00       0.6       3.5       7.3
+geom:bend+rotate            31       68%      0.87       5.9      29.2      1.02      1.21       8.5      1.09       1.2       6.0      46.0
+geom:persp+wave             16       88%      0.59       4.8      11.6      0.92      1.23      13.7      1.05       1.2       4.9      34.4
+geom:rotate                 15       73%      0.56       5.8      48.1      0.45      1.25       6.5      1.09       0.5       1.4      20.6
+geom:rotate+bend            16       50%      1.50       6.9      14.1      1.37      1.28      17.1      1.04       1.2       3.6       4.5
+geom:wave+rotate            16       75%      0.81       6.2      13.3      0.79      1.24       6.8      1.00       0.2       3.5       7.3
+```

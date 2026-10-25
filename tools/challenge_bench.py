@@ -10,7 +10,8 @@ the generator can render exactly:
 Measures per value (all on 200 dpi pixels, both images blurred a little so that grain and JPEG noise do not count):
 
   found     the replacement boxes of the report cover the value (share of its box); a value that is not found is left
-            out of the other measures and counted as a miss
+            out of the other measures and counted as a miss. det: the config has a replacement for (a part of) the
+            value, i.e. the DETECTION saw it: found < det means it was seen but not painted at its place
   bg        mean distance (RGB, 0..441) between the output and the clean page over the pixels where neither the output
             nor the ideal page has ink: the BACKGROUND under and around the new text (patch colour, gradient, stripes,
             highlighter, underline kept or lost, specks). bg95 is its 95th percentile (an artefact, not the average).
@@ -99,15 +100,16 @@ def coverage(box_px, items: list[dict]) -> float:
     return min(got / area, 1.0)
 
 
-def render(path: Path) -> np.ndarray:
+def render(path: Path, shape: tuple) -> np.ndarray:
+    """The first page at the scan resolution, as an (H, W, 3) float array of the given shape."""
     import pymupdf as fitz
 
     doc = fitz.open(path)
     pix = doc[0].get_pixmap(dpi=gen.DPI, alpha=False)
     doc.close()
     a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)
-    if a.shape[:2] != (gen.H, gen.W):
-        a = np.asarray(Image.fromarray(a).resize((gen.W, gen.H), Image.BILINEAR))
+    if a.shape[:2] != tuple(shape[:2]):
+        a = np.asarray(Image.fromarray(a).resize((shape[1], shape[0]), Image.BILINEAR))
     return a.astype(np.float32)
 
 
@@ -118,9 +120,9 @@ def grey(a):
     return a.mean(axis=-1)
 
 
-def region(bbox):
+def region(bbox, shape=(gen.H, gen.W)):
     x0, y0, x1, y1 = bbox
-    return max(x0 - PAD, 0), max(y0 - PAD, 0), min(x1 + PAD, gen.W), min(y1 + PAD, gen.H)
+    return max(x0 - PAD, 0), max(y0 - PAD, 0), min(x1 + PAD, shape[1]), min(y1 + PAD, shape[0])
 
 
 def cut(a, reg, extra=0):
@@ -145,7 +147,7 @@ def dilate(mask: np.ndarray, r: float = 2.0) -> np.ndarray:
 
 
 def measure_row(orig, out, clean, ideal, bbox) -> dict:
-    reg = region(bbox)
+    reg = region(bbox, orig.shape)
     c = blurred_crops({"o": orig, "x": out, "c": clean, "i": ideal}, reg)
     cg, og, xg, ig = grey(c["c"]), grey(c["o"]), grey(c["x"]), grey(c["i"])
     ink_i, ink_x = (cg - ig) > INK, (cg - xg) > INK
@@ -177,7 +179,7 @@ def measure_row(orig, out, clean, ideal, bbox) -> dict:
 
 def collateral(orig, out, bboxes) -> float:
     """Pixels far from every value that the run changed by more than 40 levels, per 10 000."""
-    keep = np.ones((gen.H, gen.W), bool)
+    keep = np.ones(orig.shape[:2], bool)
     for x0, y0, x1, y1 in bboxes:
         keep[max(y0 - FAR, 0):y1 + FAR, max(x0 - FAR, 0):x1 + FAR] = False
     diff = np.abs(gen.gblur(out, 1.0) - gen.gblur(orig, 1.0)).max(axis=-1)
@@ -194,7 +196,7 @@ def jpeg64(a, q=82) -> str:
 
 
 def sheet_crop(orig, clean, ideal, out, bbox) -> str:
-    reg = region(bbox)
+    reg = region(bbox, orig.shape)
     parts = [cut(a, reg) for a in (orig, clean, ideal, out)]
     diff = np.clip(np.abs(parts[3] - parts[2]) * 3, 0, 255)
     sep = np.full((3, parts[0].shape[1], 3), 255, np.float32)
@@ -236,15 +238,15 @@ def run_cases(specs: list[dict], log=lambda *a: None, with_crops: bool = False) 
             ideal_texts = ideals[name]
             r_clean, r_ideal = truths[name]
             bboxes = [r["bbox"] for r in r_clean["rows"]]
-            orig = render(folder / f"{name}.pdf")
-            out = render(folder / f["output"]) if f.get("output") and not err else None
+            orig = render(folder / f"{name}.pdf", r_clean["clean"].shape)
+            out = render(folder / f["output"], r_clean["clean"].shape) if f.get("output") and not err else None
             coll = collateral(orig, out, bboxes) if out is not None else None
             for i, row in enumerate(spec["rows"]):
                 tv = truth[name]["values"][i]
                 cov = coverage(bboxes[i], f.get("items", [])) if out is not None else 0.0
                 rec = {"case": name, "row": i, "family": spec["family"], "split": spec["split"], "deco": row["deco"],
                        "bgkind": spec["tags"]["bg"], "geom": spec["tags"]["geom"], "font": row["font"],
-                       "tone": spec["tags"]["tone"], "found": cov >= FOUND, "cov": round(cov, 2),
+                       "tone": spec["tags"]["tone"], "found": cov >= FOUND, "cov": round(cov, 2), "det": ideal_texts[i] != row["value"],
                        "ideal": ideal_texts[i], "value": row["value"], "error": err}
                 if out is not None and rec["found"]:
                     rec.update(measure_row(orig, out, r_clean["clean"], r_ideal["with"], bboxes[i]))
@@ -269,6 +271,8 @@ def groups_of(r: dict) -> list[str]:
         g.append(f"geom:{r['case'].split('geom_')[-1]}" if r["family"] == "geom" else f"geom:{r['geom']}")
     if r["family"] == "bg":
         g.append(f"bg:{r['bgkind']}")
+    if r["family"] == "doc":
+        g.append(f"case:{r['case']}")
     if r["tone"] != "none":
         g.append(f"tone:{r['case'].split('tone_')[-1]}")
     return g
@@ -286,7 +290,8 @@ def summarize(records: list[dict]) -> dict:
             by.setdefault(g, []).append(r)
     out = {}
     for g, rs in by.items():
-        s = {"n": len(rs), "found": round(sum(r["found"] for r in rs) / len(rs), 3)}
+        s = {"n": len(rs), "found": round(sum(r["found"] for r in rs) / len(rs), 3),
+             "det": round(sum(r.get("det", True) for r in rs) / len(rs), 3)}
         for k in MEASURES:
             vals = [abs(r.get(k)) if k in ("dx", "dy", "dark") and r.get(k) is not None else r.get(k) for r in rs]
             s[k] = med(vals)
@@ -301,7 +306,7 @@ def cell(v, fmt="{:.2f}"):
 
 
 def print_summary(summary: dict) -> None:
-    cols = (("found", "{:.0%}"), ("bg_excess", "{:.2f}"), ("bg95", "{:.1f}"), ("bg_worst", "{:.1f}"), ("ink_rel", "{:.2f}"),
+    cols = (("found", "{:.0%}"), ("det", "{:.0%}"), ("bg_excess", "{:.2f}"), ("bg95", "{:.1f}"), ("bg_worst", "{:.1f}"), ("ink_rel", "{:.2f}"),
             ("mass", "{:.2f}"), ("dark", "{:.1f}"), ("height", "{:.2f}"), ("dy", "{:.1f}"), ("dx", "{:.1f}"),
             ("coll", "{:.1f}"))
     print(f"{'group':<26}{'n':>4}" + "".join(f"{c:>10}" for c, _ in cols))

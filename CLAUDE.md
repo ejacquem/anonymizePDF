@@ -1144,7 +1144,9 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   `geom_` (tilt 1..18 degrees, book bend, wave, perspective, bend + tilt), `font_` (ten fonts NOT in `fontmatch.CATALOG`
   plus three controls), `tone_` (boosted, binarised, halo, dark, faded, coarse, blue ink, searchable scan with an
   invisible text layer in a wrong font). Each case is `dev` or `held`: tune on dev, a change is accepted when held does not
-  get worse. `python tools/make_test_challenge.py [folder]` writes the PDFs (folder `sample_data/Dossier Test 22`, git-ignored,
+  get worse. Six whole-page documents (`tools/make_test_documents.py`, family `doc_`: bank statement, insurance letter, lease; mixed
+  fonts with bold / italic, zebra table, highlighter, tilt / bend / wave / perspective; `--only doc_`, about 3 minutes) are the
+  realism check. `python tools/make_test_challenge.py [folder]` writes the PDFs (folder `sample_data/Dossier Test 22`, git-ignored,
   regenerated on demand), `--preview x.html` a contact sheet. Windows fonts are read from `C:\Windows\Fonts`.
 - The bench scans and anonymizes ALL selected cases in one temporary folder (a scratch key, as `style_bench`), then per
   value: `found` (the report boxes cover it), `bg` (distance to the clean page over the pixels where neither the output nor the

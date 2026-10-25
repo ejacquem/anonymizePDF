@@ -191,7 +191,8 @@ def gblur(a: np.ndarray, sigma: float) -> np.ndarray:
 # ---------------------------------------------------------------------------------------------------------------------
 # backgrounds
 
-def background(kind: str, rng) -> np.ndarray:
+def background(kind: str, rng, size=None) -> np.ndarray:
+    W, H = size or (globals()["W"], globals()["H"])             # (width, height) of the page in pixels
     base = np.empty((H, W, 3), np.float32)
     base[:] = PAPER
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
@@ -229,7 +230,8 @@ def background(kind: str, rng) -> np.ndarray:
 # ---------------------------------------------------------------------------------------------------------------------
 # decorations: each one draws into the page (`base`, before the values) and / or the multiply map `m` (after them)
 
-HL = {"yellow": (255, 238, 64), "green": (150, 240, 120), "pink": (255, 170, 205)}
+HL = {"yellow": (255, 238, 64), "green": (150, 240, 120), "pink": (255, 170, 205), "blue": (130, 200, 255),
+      "magenta": (255, 110, 220)}
 INKGREY = (60, 60, 64)
 
 
@@ -314,9 +316,10 @@ def decorate(deco: str | None, box, y: float, base, m, rng):
 # ---------------------------------------------------------------------------------------------------------------------
 # geometry: the source position of every output pixel
 
-def geometry_maps(ops):
+def geometry_maps(ops, size=None):
     if not ops:
         return None
+    W, H = size or (globals()["W"], globals()["H"])
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
     sx, sy = xx.copy(), yy.copy()
     cx, cy = W / 2.0, H / 2.0
@@ -328,7 +331,7 @@ def geometry_maps(ops):
             sx, sy = cx + dx * math.cos(t) - dy * math.sin(t), cy + dx * math.sin(t) + dy * math.cos(t)
         elif kind == "bend":                                 # a page curved like a book: lines arc, edges foreshortened
             amp, squeeze = op[1], op[2]
-            bx = 650.0                                       # the crest of the page, over the value column
+            bx = float(op[3]) if len(op) > 3 else 650.0      # the crest of the page (default: over the value column)
             u = (sx - bx) / bx
             sy = sy + amp * (1 - u ** 2)
             sx = bx + (sx - bx) * (1 + squeeze * u ** 2)
@@ -376,8 +379,8 @@ def scan_effects(a: np.ndarray, sc: dict, rng, noise: bool) -> np.ndarray:
     if sc.get("fade"):                                       # a washed out copy: contrast shrinks toward white
         a = 255.0 - (255.0 - a) * sc["fade"]
     if noise and sc.get("noise", 2.5) > 0:
-        a = a + rng.normal(0, sc.get("noise", 2.5), (H, W, 1)).astype(np.float32) \
-            + rng.normal(0, sc.get("noise", 2.5) / 3, (H, W, 3)).astype(np.float32)
+        a = a + rng.normal(0, sc.get("noise", 2.5), (a.shape[0], a.shape[1], 1)).astype(np.float32) \
+            + rng.normal(0, sc.get("noise", 2.5) / 3, (a.shape[0], a.shape[1], 3)).astype(np.float32)
     return np.clip(a, 0, 255)
 
 
@@ -441,6 +444,9 @@ def cases() -> list[dict]:
             ("blue", {"blur": 1.0}, {"ink": (30, 45, 125)}, "held"),
             ("textlayer", {"sigmoid": (9.0, 0.55), "noise": 1.5}, {"text_layer": True, "font": "rockwell"}, "dev")):
         add(f"tone_{name}", "tone", split, scan=scan, **kw)
+    import make_test_documents
+
+    out.extend(make_test_documents.doc_cases())
     return out
 
 
@@ -460,6 +466,10 @@ def render_case(spec: dict, texts: dict | None = None, noise: bool = False) -> d
     """The page of a case. texts: {row index: text} written instead of the row's value (the ideal replacement).
     Returns {'with': float page with the values, 'clean': float page without them, 'rows': [{'box', 'mask', 'bbox'}],
     'layout': positions of the visible texts (for the invisible text layer)}; box and bbox are in output pixels."""
+    if spec.get("kind") == "doc":                            # a whole page of text (tools/make_test_documents.py)
+        import make_test_documents
+
+        return make_test_documents.render_doc(spec, texts, noise)
     rng = np.random.default_rng(spec["seed"])
     base = background(spec["bg"], rng)
     m = np.ones((H, W, 3), np.float32)
@@ -510,17 +520,17 @@ def write_pdf(spec: dict, path: Path) -> dict:
 
     r = render_case(spec, noise=True)
     doc = fitz.open()
-    page = doc.new_page(width=W * PT, height=H * PT)
+    page = doc.new_page(width=r["with"].shape[1] * PT, height=r["with"].shape[0] * PT)
     page.insert_image(page.rect, stream=to_jpeg(r["with"], spec["scan"]["jpeg"]))
-    if spec["text_layer"]:                                   # a searchable scan: invisible text in a wrong font
+    if spec.get("text_layer"):                                   # a searchable scan: invisible text in a wrong font
         for text, x, y in r["layout"]:
             page.insert_text((x * PT, y * PT), text, fontname="helv", fontsize=11, render_mode=3)
     doc.save(path)
     doc.close()
     return {"file": path.name, "name": spec["name"], "family": spec["family"], "split": spec["split"],
             "tags": spec["tags"], "scan": spec["scan"],
-            "values": [{"row": i, "label": row["label"], "value": row["value"], "deco": row["deco"], "font": row["font"],
-                        "bold": row["bold"], "box": [round(v * PT, 2) for v in r["rows"][i]["bbox"]],
+            "values": [{"row": i, "label": row.get("label"), "value": row["value"], "deco": row["deco"], "font": row["font"],
+                        "bold": row.get("bold", False), "box": [round(v * PT, 2) for v in r["rows"][i]["bbox"]],
                         "box_px": list(r["rows"][i]["bbox"])} for i, row in enumerate(spec["rows"])]}
 
 
@@ -558,7 +568,7 @@ def preview(specs: list[dict], path: Path):
         r = render_case(s, noise=True)
         pair = []
         for key in ("with", "clean"):
-            im = Image.fromarray(np.round(r[key]).astype(np.uint8)).resize((W // 2, H // 2), Image.LANCZOS)
+            im = Image.fromarray(np.round(r[key]).astype(np.uint8)).resize((r[key].shape[1] // 2, r[key].shape[0] // 2), Image.LANCZOS)
             buf = io.BytesIO()
             im.save(buf, "JPEG", quality=80)
             pair.append(f"<img src='data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode()}'>")

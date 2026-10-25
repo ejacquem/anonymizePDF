@@ -1,0 +1,480 @@
+"""Whole-page synthetic documents for the challenge bench (see tools/make_test_challenge.py, which lists them as the
+`doc_` family): a bank statement, an insurance letter and a lease contract, each laid out like a real page and then
+scanned.
+
+What a page holds:
+  - several paragraphs (justified), a table with zebra rows, a header, a footer, bullet lists, signature blocks
+  - runs of bold, italic and bold-italic text, and several fonts on one page (Arial / Calibri, Garamond / Book Antiqua /
+    Palatino, Cambria / Georgia / Courier New): the old style faces are in the middle of sentences too
+  - the values to replace (names, IBAN, phone, e-mail, street, town, policy reference, birth date) in the address
+    blocks, the tables AND inside sentences, some of them glued to a comma or a bracket
+  - highlighter (yellow, blue, magenta) over some values and some ordinary words
+  - the scan: the whole page is tilted, bent like a book or warped by a wave, blurred, noisy, JPEG, and for one page
+    contrast-boosted
+
+Like the five-row cases, the generator knows the page WITHOUT the values (`clean`) and WITH other texts (`ideal`), so the
+bench scores every value of a page the same way. The layout is computed once (a word is placed at an absolute position,
+so a replacement never reflows the page: as in the real anonymizer). A value is one unbreakable token on one line.
+"""
+from __future__ import annotations
+
+import numpy as np
+from PIL import ImageFont
+
+import make_test_challenge as gen
+
+DW, DH = 1654, 2339                         # A4 at 200 dpi
+SS = gen.SS
+INK = (28, 28, 34)
+# regular, bold, italic, bold italic
+FAM4 = {
+    "arial": ("arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"),
+    "times": ("times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf"),
+    "georgia": ("georgia.ttf", "georgiab.ttf", "georgiai.ttf", "georgiaz.ttf"),
+    "garamond": ("GARA.TTF", "GARABD.TTF", "GARAIT.TTF", "GARABD.TTF"),
+    "bookman": ("BOOKOS.TTF", "BOOKOSB.TTF", "BOOKOSI.TTF", "BOOKOSBI.TTF"),
+    "palatino": ("pala.ttf", "palab.ttf", "palai.ttf", "palabi.ttf"),
+    "calibri": ("calibri.ttf", "calibrib.ttf", "calibrii.ttf", "calibriz.ttf"),
+    "cambria": ("cambria.ttc", "cambriab.ttf", "cambriai.ttf", "cambriaz.ttf"),
+    "courier": ("cour.ttf", "courbd.ttf", "couri.ttf", "courbi.ttf"),
+    "verdana": ("verdana.ttf", "verdanab.ttf", "verdanai.ttf", "verdanaz.ttf"),
+}
+_FONTS: dict = {}
+
+
+def dfont(fam: str, size_pt: float, bold: bool = False, italic: bool = False):
+    """A PIL font at SS times the pixel size of `size_pt` points at the scan resolution."""
+    key = (fam, round(size_pt * 4), bold, italic)
+    if key not in _FONTS:
+        name = FAM4[fam][int(bold) + 2 * int(italic)]
+        path = gen.WIN / name
+        if not path.exists():                               # not a Windows PC: a bundled font stands in
+            path = gen.FONT_DIR / ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")
+        _FONTS[key] = ImageFont.truetype(str(path), max(round(size_pt * gen.DPI / 72 * SS), 4))
+    return _FONTS[key]
+
+
+def R(text: str, **kw) -> dict:
+    """A run of text: v = the kind of value to replace (name, iban, ...), hl = highlighter colour, b / i / fam / size / color."""
+    return {"t": text, **kw}
+
+
+class Page:
+    """Collects the drawing operations of one page: rects and rules (base), words, highlights, and the values."""
+
+    def __init__(self):
+        self.ops: list = []
+        self.values: list[dict] = []
+        self.hl: list = []                                  # [colour name, (x0, y0, x1, y1), baseline y]
+
+    # -- runs, tokens, lines ---------------------------------------------------------------------------------------
+    def _segs(self, runs, style):
+        out = []
+        for r in ([runs] if isinstance(runs, (str, dict)) else runs):
+            r = {"t": r} if isinstance(r, str) else r
+            a = {"fam": "arial", "size": 10.5, "b": False, "i": False, "color": INK, "v": None, "hl": None}
+            a.update(style)
+            a.update({k: v for k, v in r.items() if k != "t"})
+            out.append((r["t"], a))
+        return out
+
+    @staticmethod
+    def _tokens(segs):
+        tokens, cur = [], []
+        for text, a in segs:
+            if a["v"]:                                      # a value is one token, kept whole
+                cur.append((text, a))
+                continue
+            for j, part in enumerate(text.split(" ")):
+                if j > 0 and cur:
+                    tokens.append(cur)
+                    cur = []
+                if part:
+                    cur.append((part, a))
+        if cur:
+            tokens.append(cur)
+        return tokens
+
+    @staticmethod
+    def _font(a):
+        return dfont(a["fam"], a["size"], a["b"], a["i"])
+
+    def _width(self, token):
+        return sum(self._font(a).getlength(t) / SS for t, a in token)
+
+    def _space(self, token):
+        return self._font(token[-1][1]).getlength(" ") / SS
+
+    def _place(self, tokens, x, y, extra=0.0):
+        """Writes the tokens on one baseline from x; returns the x after the line."""
+        for k, tok in enumerate(tokens):
+            for text, a in tok:
+                f = self._font(a)
+                w = f.getlength(text) / SS
+                em = a["size"] * gen.DPI / 72
+                if a["v"]:
+                    self.values.append({"id": len(self.values), "text": text, "kind": a["v"], "x": x, "y": y,
+                                        "fam": a["fam"], "size": a["size"], "b": a["b"], "i": a["i"], "color": a["color"],
+                                        "box": [x, y - 0.85 * em, x + w, y + 0.25 * em], "hl": a["hl"]})
+                    self.ops.append(("word", text, x, y, (a["fam"], a["size"], a["b"], a["i"]), a["color"],
+                                     len(self.values) - 1))
+                else:
+                    self.ops.append(("word", text, x, y, (a["fam"], a["size"], a["b"], a["i"]), a["color"], None))
+                if a["hl"]:
+                    self.hl.append([a["hl"], [x - 3, y - 0.92 * em, x + w + 3, y + 0.3 * em], y])
+                x += w
+            if k < len(tokens) - 1:
+                x += self._space(tok) + extra
+        return x
+
+    def line(self, x, y, runs, align="left", **style):
+        """One line, no wrapping; x is its left edge, its right edge (align='right') or its centre."""
+        tokens = self._tokens(self._segs(runs, style))
+        if not tokens:
+            return
+        total = sum(self._width(t) for t in tokens) + sum(self._space(t) for t in tokens[:-1])
+        self._place(tokens, x if align == "left" else x - total if align == "right" else x - total / 2, y)
+
+    def para(self, x, y, width, runs, align="justify", leading=1.32, **style) -> float:
+        """A wrapped paragraph; y is the first baseline. Returns the baseline the next block starts under."""
+        tokens = self._tokens(self._segs(runs, style))
+        size = style.get("size", 10.5)
+        step = size * gen.DPI / 72 * leading
+        lines, cur, cur_w = [], [], 0.0
+        for tok in tokens:
+            w = self._width(tok)
+            add = w + (self._space(cur[-1]) if cur else 0)
+            if cur and cur_w + add > width:
+                lines.append((cur, cur_w))
+                cur, cur_w = [tok], w
+            else:
+                cur.append(tok)
+                cur_w += add
+        if cur:
+            lines.append((cur, cur_w))
+        for k, (toks, w) in enumerate(lines):
+            last = k == len(lines) - 1
+            extra = (width - w) / max(len(toks) - 1, 1) if align == "justify" and not last and len(toks) > 1 else 0.0
+            self._place(toks, x, y + k * step, extra)
+        return y + len(lines) * step
+
+    # -- shapes ----------------------------------------------------------------------------------------------------
+    def rect(self, box, color):
+        self.ops.append(("rect", tuple(box), color))
+
+    def rule(self, a, b, width=2.0, color=(60, 60, 64)):
+        self.ops.append(("rule", a, b, width, color))
+
+    def frame(self, box, width=2.0, color=(60, 60, 64)):
+        x0, y0, x1, y1 = box
+        for a, b in (((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))):
+            self.rule(a, b, width, color)
+
+    def merged_highlights(self):
+        """The highlighter rectangles of words that follow each other on a line are one band."""
+        out = []
+        for colour, box, y in sorted(self.hl, key=lambda h: (round(h[2]), h[1][0])):
+            if out and out[-1][0] == colour and abs(out[-1][2] - y) < 2 and box[0] - out[-1][1][2] < 22:
+                out[-1][1][2] = box[2]
+            else:
+                out.append([colour, list(box), y])
+        return out
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the people and the three documents
+
+def _iban(first10):
+    return gen.iban_be(first10)
+
+
+PEOPLE = [
+    dict(civ="Madame", first="Solène", last="Wauters", street="Chaussée de Namur 31", town="5000 Namur",
+         phone="+32 486 12 47 35", email="solene.wauters@example.be", iban=_iban("0016482073"), birth="14/03/1987",
+         ref="HAB-4471902", other="Gaspard Delcourt", agent="Claire Dubois"),
+    dict(civ="Monsieur", first="Mathis", last="Verhaegen", street="Rue des Tanneurs 14", town="1050 Bruxelles",
+         phone="+32 471 58 23 96", email="mathis.verhaegen@example.be", iban=_iban("0682481357"), birth="02/11/1979",
+         ref="AUT-9035127", other="Mélodie Pâquet", agent="Étienne Lambert"),
+    dict(civ="Monsieur", first="Gaspard", last="Delcourt", street="Avenue des Arts 8", town="4000 Liège",
+         phone="+32 495 67 80 13", email="g.delcourt@example.be", iban=_iban("3101884752"), birth="21/07/1992",
+         ref="HAB-5120368", other="Solène Wauters", agent="Claire Dubois"),
+]
+
+
+def full(p):
+    return f"{p['first']} {p['last']}"
+
+
+def build_releve(p, hl) -> Page:
+    """A bank statement: Arial and Calibri, a framed information block, a justified paragraph, a table with zebra rows."""
+    g = Page()
+    navy = (30, 60, 120)
+    g.line(150, 150, [R("Banque Mosane", b=True, size=23, color=navy)], fam="calibri")
+    g.line(150, 190, [R("Votre banque, ici et maintenant", i=True, size=10, color=(90, 90, 96))], fam="calibri")
+    g.line(1504, 150, [R("RELEVÉ DE COMPTE", b=True, size=14)], align="right", fam="arial")
+    g.line(1504, 190, "Période du 01/09/2024 au 30/09/2024", align="right", fam="arial", size=9.5)
+    g.line(1504, 222, [R("Page 1 / 1", size=9, color=(90, 90, 96))], align="right", fam="arial")
+    g.rule((150, 250), (1504, 250), 3, navy)
+    # the address block and the information frame
+    g.line(150, 340, [R(p["civ"] + " "), R(full(p), v="name", hl=hl.get("name"))], fam="arial", size=11.5)
+    g.line(150, 380, [R(p["street"], v="street", hl=hl.get("street"))], fam="arial", size=11.5)
+    g.line(150, 420, [R(p["town"], v="town", hl=hl.get("town"))], fam="arial", size=11.5)
+    g.frame((860, 300, 1504, 560), 2.0, navy)
+    rows = [("Titulaire", [R(full(p), v="name")]), ("IBAN", [R(p["iban"], v="iban", hl=hl.get("iban"))]),
+            ("Téléphone", [R(p["phone"], v="phone")]), ("Gestionnaire", [R(p["agent"], v="name")])]
+    for k, (lab, val) in enumerate(rows):
+        y = 355 + 52 * k
+        g.line(885, y, [R(lab, b=True, size=9.5, color=navy)], fam="arial")
+        g.line(1080, y, val, fam="arial", size=10.5)
+    # a justified paragraph with value, bold and italic runs
+    y = g.para(150, 650, 1354, [
+        R(p["civ"] + " "), R(p["last"], v="name"), R(", veuillez trouver ci-dessous le détail des opérations "
+                                                    "enregistrées sur votre compte "),
+        R("courant", b=True), R(" numéro "), R(p["iban"], v="iban"),
+        R(" pour la période indiquée. Votre gestionnaire "), R(p["agent"], v="name", hl=hl.get("agent")),
+        R(" reste à votre disposition au "), R(p["phone"], v="phone"), R(" ou par e-mail à "),
+        R(p["email"], v="email", hl=hl.get("email")), R(". "),
+        R("Les opérations passées en fin de mois peuvent apparaître avec un délai de traitement.", i=True)],
+        fam="arial", size=10.5)
+    # the table: header, nine rows, zebra
+    cols = {"date": 150, "lib": 290, "deb": 1240, "cre": 1504}
+    top = y + 40
+    g.rect((150, top - 36, 1504, top + 22), navy)
+    for key, lab, al in (("date", "Date", "left"), ("lib", "Libellé de l'opération", "left"), ("deb", "Débit", "right"),
+                         ("cre", "Crédit", "right")):
+        g.line(cols[key], top, [R(lab, b=True, size=10, color=(255, 255, 255))], align=al, fam="arial")
+    ops = [("02/09", [R("Virement reçu de "), R(p["other"], v="name", hl=hl.get("other"))], None, "1.250,00"),
+           ("03/09", [R("Paiement par carte Delhaize Namur")], "54,32", None),
+           ("05/09", [R("Domiciliation Engie Electrabel")], "87,10", None),
+           ("08/09", [R("Retrait distributeur Rue de Fer")], "100,00", None),
+           ("12/09", [R("Virement à "), R(full(p), v="name"), R(" - loyer septembre", i=True)], "650,00", None),
+           ("15/09", [R("Paiement par carte Brico Jambes")], "41,90", None),
+           ("19/09", [R("Remboursement "), R(p["other"], v="name"), R(" frais de voyage")], None, "180,00"),
+           ("24/09", [R("Prélèvement SEPA Assurances Mosane")], "62,45", None),
+           ("30/09", [R("Intérêts créditeurs")], None, "0,84")]
+    for k, (d, lib, deb, cre) in enumerate(ops):
+        yy = top + 62 * (k + 1)
+        if k % 2 == 1:
+            g.rect((150, yy - 38, 1504, yy + 20), (234, 239, 247))
+        g.line(cols["date"], yy, d, fam="arial", size=10)
+        g.line(cols["lib"], yy, lib, fam="arial", size=10)
+        if deb:
+            g.line(cols["deb"], yy, deb, align="right", fam="arial", size=10)
+        if cre:
+            g.line(cols["cre"], yy, cre, align="right", fam="arial", size=10)
+    end = top + 62 * (len(ops) + 1)
+    g.rule((150, end - 40), (1504, end - 40), 2.0, navy)
+    g.line(1504, end + 8, [R("Solde au 30/09/2024 : ", b=True), R("1.482,67 EUR", b=True, color=navy)], align="right",
+           fam="arial", size=11.5)
+    g.rule((150, 2150), (1504, 2150), 1.5, (150, 150, 155))
+    g.para(150, 2200, 1354, [R("Banque Mosane SA, société anonyme de droit belge, inscrite à la Banque-Carrefour des "
+                               "Entreprises. Les dépôts sont couverts par le système belge de protection des dépôts "
+                               "jusqu'à 100.000 EUR par personne et par établissement. ", i=True),
+                             R("Conservez ce relevé.", i=True, b=True)], fam="times", size=8.5, align="justify")
+    return g
+
+
+def build_assurance(p, hl) -> Page:
+    """An insurance letter in old style faces: Garamond body, Book Antiqua titles, Palatino asides."""
+    g = Page()
+    wine = (120, 30, 40)
+    g.line(150, 160, [R("Assurances Meuse & Vesdre", b=True, size=22, color=wine)], fam="bookman")
+    g.line(150, 205, [R("Société mutuelle d'assurances - agréée sous le n° 0123", i=True, size=10.5)], fam="garamond")
+    g.rule((150, 235), (1504, 235), 2.5, wine)
+    g.line(1504, 290, [R("Liège, le 12 octobre 2024", i=True)], align="right", fam="garamond", size=12.5)
+    g.line(980, 400, [R(p["civ"])], fam="garamond", size=13)
+    g.line(980, 442, [R(full(p), v="name", hl=hl.get("name"), b=True)], fam="garamond", size=13)
+    g.line(980, 484, [R(p["street"], v="street", hl=hl.get("street"))], fam="garamond", size=13)
+    g.line(980, 526, [R(p["town"], v="town")], fam="garamond", size=13)
+    g.line(150, 650, [R("Objet : ", b=True), R("Votre contrat d'assurance habitation - police n° "),
+                      R(p["ref"], v="ref", hl=hl.get("ref"), b=True)], fam="bookman", size=11.5)
+    g.line(150, 740, [R(("Chère " if p["civ"] == "Madame" else "Cher ") + p["civ"] + " "),
+                      R(p["last"], v="name"), R(",")], fam="garamond", size=13)
+    y = g.para(150, 810, 1354, [
+        R("Nous avons bien enregistré la modification de votre contrat concernant le logement situé "),
+        R(p["street"], v="street"), R(", "), R(p["town"], v="town", hl=hl.get("town")),
+        R(". La prime annuelle est prélevée sur le compte "), R(p["iban"], v="iban", hl=hl.get("iban")),
+        R(" dont vous êtes titulaire. "),
+        R("Cette modification prend effet dès réception de ce courrier", b=True, i=True),
+        R(" et remplace toutes les conditions antérieures. Les garanties "), R("incendie", b=True),
+        R(" et "), R("dégâts des eaux", b=True), R(" restent inchangées, comme convenu lors de notre entretien du "
+                                                   "mois dernier, tandis que la franchise "),
+        R("(voir les conditions particulières)", fam="palatino", i=True, size=11.5), R(" est portée à 250 EUR.")],
+        fam="garamond", size=12.5, leading=1.38)
+    y = g.para(150, y + 36, 1354, [
+        R("Nous avons conservé vos coordonnées: téléphone "), R(p["phone"], v="phone", hl=hl.get("phone")),
+        R(" et adresse électronique "), R(p["email"], v="email"), R(". Selon nos dossiers, vous êtes né"
+                                                                   + ("e" if p["civ"] == "Madame" else "") + " le "),
+        R(p["birth"], v="birth"), R(". Si l'une de ces informations est inexacte, merci de nous le signaler "
+                                    "sans attendre, car elle conditionne la validité de votre couverture. "),
+        R("Pour les sinistres urgents, une permanence est assurée jour et nuit.", fam="palatino", size=12)],
+        fam="garamond", size=12.5, leading=1.38)
+    g.line(150, y + 36, [R("En pratique, vous pouvez :", b=True)], fam="bookman", size=11.5)
+    items = [[R("nous écrire à "), R(p["email"], v="email"), R(" en rappelant votre numéro de police ")],
+             [R("téléphoner à votre gestionnaire "), R(p["agent"], v="name"), R(" au "), R(p["phone"], v="phone")],
+             [R("vérifier le prélèvement sur le compte "), R(p["iban"], v="iban")]]
+    yy = y + 96
+    for it in items:
+        g.line(190, yy, [R("•")], fam="garamond", size=12.5)
+        yy = g.para(240, yy, 1264, it, fam="garamond", size=12.5, align="left")
+        yy += 14
+    y = g.para(150, yy + 30, 1354, [
+        R("Veuillez agréer, "), R(p["civ"]), R(", l'expression de mes salutations distinguées.", i=True)],
+        fam="garamond", size=12.5, align="left")
+    g.line(1100, y + 110, [R(p["agent"], v="name", hl=hl.get("agent"), i=True)], fam="garamond", size=14)
+    g.line(1100, y + 150, [R("Gestionnaire de dossiers", size=11)], fam="garamond")
+    g.rule((150, 2150), (1504, 2150), 1.5, (150, 150, 155))
+    g.para(150, 2200, 1354, [R("Ce courrier est établi à titre informatif et ne constitue pas une modification des "
+                               "conditions générales. En cas de litige, vous pouvez vous adresser au service de médiation "
+                               "des assurances.", i=True)], fam="palatino", size=8.5, align="justify")
+    return g
+
+
+def build_contrat(p, hl) -> Page:
+    """A lease contract: Cambria headings, Calibri body, Georgia notes, Courier New for the fields."""
+    g = Page()
+    g.line(827, 170, [R("CONTRAT DE BAIL DE RÉSIDENCE PRINCIPALE", b=True, size=16)], align="center", fam="cambria")
+    g.rule((300, 205), (1354, 205), 2.0)
+    g.line(150, 300, [R("Entre les soussignés :", b=True)], fam="cambria", size=12)
+    y = g.para(150, 360, 1354, [
+        R("Le bailleur : ", b=True), R(p["other"], v="name"), R(", domicilié à "),
+        R("Rue de Fer 22", v="street"), R(", "), R("5000 Namur", v="town"), R(", téléphone "),
+        R("+32 497 11 20 45", v="phone"), R(", ci-après dénommé le bailleur,")], fam="calibri", size=11)
+    y = g.para(150, y + 18, 1354, [
+        R("Le preneur : ", b=True), R(p["civ"] + " "), R(full(p), v="name", hl=hl.get("name")), R(", né"
+                                                                                                 + ("e" if p["civ"] == "Madame" else "")
+                                                                                                 + " le "),
+        R(p["birth"], v="birth"), R(", domicilié à "), R(p["street"], v="street", hl=hl.get("street")), R(", "),
+        R(p["town"], v="town", hl=hl.get("town")), R(", adresse électronique "),
+        R(p["email"], v="email"), R(", ci-après dénommé le preneur.")], fam="calibri", size=11)
+    g.line(150, y + 70, [R("Article 1 - Objet", b=True, hl=hl.get("art1"))], fam="cambria", size=12)
+    y = g.para(150, y + 124, 1354, [
+        R("Le bailleur donne en location au preneur, qui accepte, le logement situé "), R(p["street"], v="street"),
+        R(", "), R(p["town"], v="town"), R(", composé d'un séjour, de deux chambres, d'une cuisine équipée et d'une "
+                                          "salle de bains. "),
+        R("Le preneur déclare avoir visité les lieux et les prendre dans l'état où ils se trouvent", i=True),
+        R(", sous réserve de l'état des lieux d'entrée établi contradictoirement.")], fam="calibri", size=11)
+    g.line(150, y + 50, [R("Article 2 - Loyer et garantie", b=True)], fam="cambria", size=12)
+    y = g.para(150, y + 104, 1354, [
+        R("Le loyer mensuel est fixé à "), R("750 EUR", b=True), R(", payable avant le cinq de chaque mois par virement "
+                                                                    "sur le compte "),
+        R(p["iban"], v="iban", fam="courier", size=10.5, hl=hl.get("iban")),
+        R(" ouvert au nom du bailleur. Une garantie locative de deux mois est constituée sur un compte bloqué au nom du "
+          "preneur, "), R(p["last"], v="name"), R(".")], fam="calibri", size=11)
+    g.line(150, y + 50, [R("Article 3 - Durée", b=True)], fam="cambria", size=12)
+    y = g.para(150, y + 104, 1354, [
+        R("Le bail est conclu pour une durée de "), R("trois ans", b=True, hl=hl.get("duree")),
+        R(" prenant cours le "), R("1er novembre 2024", hl=hl.get("date")),
+        R(" et se terminant le "), R("31 octobre 2027", hl=hl.get("date")),
+        R(". Il peut être résilié par le preneur moyennant un préavis de trois mois. "),
+        R("Référence du contrat : ", fam="georgia", i=True), R(p["ref"], v="ref", fam="courier", size=10.5)],
+        fam="calibri", size=11)
+    g.para(150, y + 40, 1354, [
+        R("Note du rédacteur : ", fam="georgia", b=True, i=True, size=10.5),
+        R("les parties peuvent joindre au présent contrat tout document utile, notamment l'attestation d'assurance "
+          "incendie du preneur, valable pour la durée du bail.", fam="georgia", i=True, size=10.5)],
+        fam="georgia", size=10.5)
+    g.line(150, 1850, [R("Fait à Namur, le 25 octobre 2024, en deux exemplaires.")], fam="calibri", size=11)
+    g.line(150, 1960, [R("Le bailleur", b=True)], fam="calibri", size=11)
+    g.line(1000, 1960, [R("Le preneur", b=True)], fam="calibri", size=11)
+    g.rule((150, 2090), (600, 2090), 1.5)
+    g.rule((1000, 2090), (1450, 2090), 1.5)
+    g.line(150, 2130, [R("Gaspard Delcourt" if p["last"] != "Delcourt" else "Solène Wauters", v="name")],
+           fam="calibri", size=10.5)
+    g.line(1000, 2130, [R(full(p), v="name")], fam="calibri", size=10.5)
+    return g
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the cases and the rendering
+
+HL_FILL = {   # which values carry a highlighter in each document: {value key: colour}
+    "releve": {"name": "yellow", "iban": "blue", "email": "magenta"},
+    "assurance": {"ref": "yellow", "iban": "blue", "phone": "magenta"},
+    "contrat": {"name": "yellow", "iban": "blue", "date": "magenta", "duree": "yellow", "art1": "blue"},
+}
+BUILD = {"releve": build_releve, "assurance": build_assurance, "contrat": build_contrat}
+
+
+def doc_spec(name: str, doc: str, person: int, split: str, geom, scan, seed: int, ink=INK) -> dict:
+    page = BUILD[doc](PEOPLE[person], HL_FILL[doc])
+    rows = [{"label": f"{doc}/{v['kind']}", "value": v["text"], "deco": f"hl_{v['hl']}" if v["hl"] else None,
+             "font": v["fam"], "size": v["size"], "bold": v["b"]} for v in page.values]
+    layout = {"ops": page.ops, "hl": page.merged_highlights(), "boxes": [v["box"] for v in page.values],
+              "values": [{"id": v["id"], "x": v["x"], "y": v["y"], "font": (v["fam"], v["size"], v["b"], v["i"]),
+                          "color": v["color"]} for v in page.values]}
+    return {"kind": "doc", "name": name, "family": "doc", "split": split, "seed": seed, "bg": "paper", "rows": rows,
+            "layout": layout, "geom": [list(o) for o in geom], "scan": scan, "ink": list(ink), "text_layer": False,
+            "tags": {"bg": "paper", "geom": "+".join(o[0] for o in geom) or "none", "font": doc, "tone": "none"}}
+
+
+def doc_cases() -> list[dict]:
+    q = {"blur": 0.8, "noise": 3.0, "jpeg": 82}
+    return [
+        doc_spec("doc_releve_tilt", "releve", 0, "dev", [("rotate", 2.2)], q, 2001),
+        doc_spec("doc_releve_bend", "releve", 1, "held", [("bend", 34, 0.06, 827), ("rotate", -0.8)],
+                 {"blur": 0.9, "noise": 3.5, "jpeg": 74}, 2002),
+        doc_spec("doc_assurance_wave", "assurance", 1, "dev", [("wave", 8, 1250.0), ("rotate", 1.1)],
+                 {"blur": 0.9, "noise": 3.5, "jpeg": 72}, 2003),
+        doc_spec("doc_assurance_bendtilt", "assurance", 2, "held", [("rotate", -4.2), ("bend", 28, 0.05, 827)],
+                 {"blur": 0.8, "noise": 3.0, "jpeg": 80, "sigmoid": (8.0, 0.52)}, 2004),
+        doc_spec("doc_contrat_bend", "contrat", 2, "dev", [("bend", 42, 0.08, 800), ("rotate", 2.6)],
+                 {"blur": 1.0, "noise": 4.0, "jpeg": 68}, 2005, ink=(26, 30, 44)),
+        doc_spec("doc_contrat_persp", "contrat", 0, "held", [("persp", 0.10), ("wave", 6, 900.0)],
+                 {"blur": 0.8, "noise": 3.0, "jpeg": 78}, 2006),
+    ]
+
+
+def render_doc(spec: dict, texts: dict | None = None, noise: bool = False) -> dict:
+    """The page of a document case: {'with', 'clean', 'rows': [{'box', 'mask', 'bbox'}], 'layout': []} (see
+    make_test_challenge.render_case). texts: {value index: text} written instead of the value."""
+    lay = spec["layout"]
+    size = (DW, DH)
+    rng = np.random.default_rng(spec["seed"])
+    base = gen.background(spec["bg"], rng, size)
+    m = np.ones((DH, DW, 3), np.float32)
+    for op in lay["ops"]:                                    # the shapes first, then the words that are not values
+        if op[0] == "rect":
+            x0, y0, x1, y1 = op[1]
+            loc = gen.Local(x0, y0, x1, y1)
+            loc.rect(op[1])
+            gen.blend(base, loc, op[2])
+        elif op[0] == "rule":
+            (xa, ya), (xb, yb) = op[1], op[2]
+            loc = gen.Local(min(xa, xb) - 4, min(ya, yb) - 4, max(xa, xb) + 4, max(ya, yb) + 4)
+            loc.line(op[1], op[2], op[3])
+            gen.blend(base, loc, op[4])
+    for op in lay["ops"]:
+        if op[0] == "word" and op[6] is None:
+            _, text, x, y, fk, color, _ = op
+            gen.blend(base, gen.text_local(text, dfont(*fk), x, y), color)
+    clean = base * 1.0
+    withv = base.copy()
+    for op in lay["ops"]:
+        if op[0] == "word" and op[6] is not None:
+            _, text, x, y, fk, color, vid = op
+            gen.blend(withv, gen.text_local((texts or {}).get(vid, text), dfont(*fk), x, y), color)
+    # the highlighter is laid over everything (multiply): over the paper, the ink and the values alike
+    jrng = np.random.default_rng(spec["seed"] + 3)
+    for colour, (x0, y0, x1, y1), _ in lay["hl"]:
+        j = jrng.uniform(-1.5, 1.5, 4)
+        loc = gen.Local(x0 - 6, y0 - 6, x1 + 6, y1 + 6)
+        loc.d.rounded_rectangle([loc.p(x0 + j[0], y0 + j[1]), loc.p(x1 + j[2], y1 + j[3])], radius=5 * SS, fill=255)
+        gen.multiply(m, loc, gen.HL[colour])
+    clean = clean * m
+    withv = withv * m
+    maps = gen.geometry_maps([tuple(o) for o in spec["geom"]], size)
+    rows = []
+    for box in lay["boxes"]:
+        if maps is None:
+            mk = np.zeros((DH, DW), bool)
+            mk[int(box[1]):int(np.ceil(box[3])) + 1, int(box[0]):int(np.ceil(box[2])) + 1] = True
+        else:                                                # an output pixel is in the value when its source is
+            sx, sy = maps
+            mk = (sx >= box[0]) & (sx <= box[2]) & (sy >= box[1]) & (sy <= box[3])
+        ys, xs = np.nonzero(mk)
+        rows.append({"box": box, "mask": mk, "bbox": (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)})
+    sc_rng = np.random.default_rng(spec["seed"] + 7)
+    clean = gen.scan_effects(gen.warp(clean, maps), spec["scan"], sc_rng, False)
+    withv = gen.scan_effects(gen.warp(withv, maps), spec["scan"], sc_rng, noise)
+    return {"with": withv, "clean": clean, "rows": rows, "layout": []}
