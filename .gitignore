@@ -23,3 +23,4 @@ sample_data/Dossier Public*/
 
 # generated challenge scans (tools/make_test_challenge.py regenerates them): not committed
 sample_data/Dossier Test 22/
+docs/overnight/runs/

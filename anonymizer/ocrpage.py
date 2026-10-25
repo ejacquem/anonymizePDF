@@ -24,7 +24,7 @@ import unicodedata
 
 import numpy as np
 
-from . import ocr
+from . import backdrop, ocr
 
 # the other readings: (scale, resampling) of the 300 dpi image, the most precise boxes first (a word found by two of
 # them keeps the box of the first)
@@ -289,7 +289,9 @@ def page_words(img, lang: str = "fra+eng") -> list[dict]:
 
     base = ocr.ocr_words(img, lang)
     alts = []
-    for k, (factor, name) in enumerate(ALT_READINGS):
+    if backdrop.tinted(img):                      # under a highlighter the text is read badly: the page without its tints
+        alts.append(_scaled(ocr.ocr_words(backdrop.flatten(img), lang), 1.0, "flat"))
+    for k, (factor, name) in enumerate(ALT_READINGS, start=len(alts)):
         small = img.resize((max(int(img.width * factor), 1), max(int(img.height * factor), 1)),
                            getattr(Image, name))
         alts.append(_scaled(ocr.ocr_words(small, lang), factor, f"alt{k}"))

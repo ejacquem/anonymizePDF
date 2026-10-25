@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from . import morph, quality
+from . import backdrop, morph, quality
 from .pii import fitz
 
 # ---------------------------------------------------------------------------
@@ -888,7 +888,8 @@ def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: boo
         d.rectangle(t, fill=(0, 0, 0))
     else:
         if q is not None:
-            quality.erase(turned, t, paper, q, key)
+            surf = backdrop.Surface(turned, t)
+            quality.erase(turned, t, surf.colour(t, paper), q, key, surf)
         else:
             d.rectangle(t, fill=paper)
         if new:
@@ -1115,13 +1116,16 @@ def ink_tail(gray: np.ndarray, box, others=()):
     return ax0, ay0, (morph.square_max(tail.astype(np.uint8), 3) > 0) & ~inside      # + the soft edge of the strokes
 
 
-def erase_tail(img, tail, paper, q=None, key=None):
-    """Paint the pixels of an ink tail (see ink_tail) with the paper colour, and the grain of the paper when the
-    quality is matched (`q`)."""
+def erase_tail(img, tail, paper, q=None, key=None, surface=None):
+    """Paint the pixels of an ink tail (see ink_tail) with the paper colour (the `surface` there, when it has one), and
+    the grain of the paper when the quality is matched (`q`)."""
     x0, y0, mask = tail
     h, w = mask.shape
-    patch = np.empty((h, w, 3))
-    patch[:] = paper
+    if surface is not None and surface.ok:
+        patch = surface.crop((x0, y0, x0 + w, y0 + h), paper)
+    else:
+        patch = np.empty((h, w, 3))
+        patch[:] = paper
     if q is not None:
         patch += quality.noise((h, w), q, ("tail", key))[..., None]
     img.paste(Image.fromarray(np.clip(np.round(patch), 0, 255).astype(np.uint8)), (x0, y0),

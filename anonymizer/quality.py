@@ -401,17 +401,21 @@ def noise(shape, q: Quality, key) -> np.ndarray:
     return n * q.grain
 
 
-def erase(img: Image.Image, box, paper, q: Quality, key):
+def erase(img: Image.Image, box, paper, q: Quality, key, surface=None):
     """Paint a box with the paper colour and the grain of the paper: exactly the pixels ImageDraw.rectangle(box)
-    paints (the rectangle is drawn as the mask the grainy paper goes through)."""
+    paints (the rectangle is drawn as the mask the grainy paper goes through). `surface` (backdrop.Surface): the
+    background the page would show there (highlighter, stripes, gradient), `paper` where it has none."""
     x0, y0 = max(int(math.floor(box[0])) - 1, 0), max(int(math.floor(box[1])) - 1, 0)
     x1, y1 = min(int(math.ceil(box[2])) + 2, img.width), min(int(math.ceil(box[3])) + 2, img.height)
     if x1 <= x0 or y1 <= y0:
         return
     mask = Image.new("L", (x1 - x0, y1 - y0), 0)
     ImageDraw.Draw(mask).rectangle((box[0] - x0, box[1] - y0, box[2] - x0, box[3] - y0), fill=255)
-    patch = np.empty((y1 - y0, x1 - x0, 3))
-    patch[:] = paper
+    if surface is not None and surface.ok:
+        patch = surface.crop((x0, y0, x1, y1), paper)
+    else:
+        patch = np.empty((y1 - y0, x1 - x0, 3))
+        patch[:] = paper
     patch += noise(patch.shape[:2], q, ("erase", key))[..., None]
     img.paste(Image.fromarray(np.clip(np.round(patch), 0, 255).astype(np.uint8)), (x0, y0), mask)
 

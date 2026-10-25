@@ -22,7 +22,7 @@ from dataclasses import replace
 import numpy as np
 from PIL import Image, ImageDraw
 
-from . import faces, fields, fontmatch, memo, quality, regions, render, timing
+from . import backdrop, faces, fields, fontmatch, memo, quality, regions, render, timing
 from .fake import match_case
 from .ocr import ocr_words, render_page
 from .ocrpage import page_words
@@ -391,6 +391,11 @@ def _rules_in(img, box):
     rules = fontmatch.rules_of((paper - gray) / (paper - ink) > 0.5)
     if not rules.any():
         return None
+    grown = rules.copy()
+    for dy in (1, 2):                                # the soft edge of a line (a scan blurs it by a pixel or two)
+        grown[dy:] |= rules[:-dy]
+        grown[:-dy] |= rules[dy:]
+    rules = grown
     return (x0, y0), rules, np.asarray(region).copy()
 
 
@@ -414,7 +419,8 @@ def _erase_patch(canvas, b, bg, look, key, k: float):
     paper colour (and its grain when the quality is matched)."""
     r = _redaction_px(b, k)
     if look is not None and look.quality is not None:
-        quality.erase(canvas, r, bg, look.quality, key)
+        surf = backdrop.Surface(canvas, r)                # the background the picture shows under the value
+        quality.erase(canvas, r, surf.colour(r, bg), look.quality, key, surf)
     else:
         ImageDraw.Draw(canvas).rectangle(r, fill=tuple(bg))
 
@@ -642,16 +648,19 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             b = (render.ink_start(img, b), b[1], b[2], b[3])        # the value starts at its first glyph, not a colon
             box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
             fill = (0, 0, 0) if blackbox else render.background_color(img, box)
+            surf = backdrop.Surface(img, box) if q is not None and not blackbox else None   # the page without the value
+            if surf is not None and surf.ok:
+                fill = surf.colour(box, fill)
             saved_rules = _rules_in(img, box) if not blackbox else None     # an underline in the box is the page's (B4)
             if q is not None:
-                quality.erase(img, box, fill, q, key)          # the paper colour, with the grain of the scan
+                quality.erase(img, box, fill, q, key, surf)    # the background, with the grain of the scan
             else:
                 draw.rectangle(box, fill=fill)
             # a descender or an ascender the OCR box cut (the tail of a Garamond 'J') is ink of the value too
             others = covered + [r for w in words for r in _beside(w["box"], b)]
             tail = render.ink_tail(gray, box, others)
             if tail is not None:
-                render.erase_tail(img, tail, fill, q, key)
+                render.erase_tail(img, tail, fill, q, key, surf)
             _note(extras, pno, [v * 72 / 300 for v in box], "scan match (" + ("replaced" if part else "removed") + ")",
                   m.value, part, described if part else "")
             changed.append(box)
