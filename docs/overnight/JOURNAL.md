@@ -133,3 +133,14 @@ it. Decision: `paint_tilted` keeps the flat patch (the page's bend is handled by
 from a band grown by 30 or 60 % (the height of an OCR box) did not remove the failures (1 of 16, 2 of 24).
 The soft edge of a rule (+-2 px) is now put back only where no ink of a letter is within 2 px (a descender that crosses the line would leave a piece
 of the value): bg95 of `deco:underline` stays at 5.7.
+
+## P3-4 speed (tools/bench.py, the 8 documents, scan + anonymize)
+
+First measure of the branch: 159.6 s -> 232.2 s (+45 %). Profile (cProfile of the contract, one process): `dewarp.Field.at` 20 s of 81 (a sum of 280
+Gaussians per point over the reduced page), `_warp_rows` / flatten / compose 18 s, on pages the field had been fitted to although they
+only are turned by 1 degree (the field was a tilt). Done: the Gaussians are separable on a regular grid, one product of two small matrices
+per point (`Field.at`, same values); the gain is evaluated on a coarse grid; a field is used only when it BENDS the page by 16 px or more
+once its plane is taken out (`Field.bend`, a tilt is not a bend: the contract pages 14.6 / 15.6 px, the bent pages 17 .. 100 px).
+Result: 159.6 -> 170.6 s (+7 %: weight match and Surface). Bench: found / measures unchanged (p3h vs p3f: nothing worse), full run 468 s
+against 381 s at the baseline: the five-row cases are all turned or bent or coloured pages by design.
+A scalar point in `Field.at` lost the Gaussian part for a while (found 94 -> 56 % on doc_contrat_persp in the intermediate run p3g): fixed.

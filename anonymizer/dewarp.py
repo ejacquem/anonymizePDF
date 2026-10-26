@@ -25,6 +25,7 @@ MIN_ANGLE = 2.0                  # degrees: a page turned by less is left as it 
 FIND_SCALE = 4                   # the skew and the lines are measured on the page reduced this many times
 STRIP = 16                       # width of a strip of the reduced page where the lines are found
 MIN_CHAIN = 5                    # strips a line is followed through to count
+MIN_BEND = 16.0                  # pixels (300 dpi): a field that bends the page by less than this (a slightly turned page) is not used
 MIN_GAIN = 1.2                   # the field is used when the rows of text come out this much more contrasted (see _rows_gain)
 SPACING = 170.0                  # pixels between the centres of the radial functions of the field
 MAX_RESIDUAL = 4.0               # pixels: a field that fits the lines worse than this is not trusted
@@ -87,17 +88,35 @@ def _lines(ink: np.ndarray) -> tuple[list[list[tuple]], float]:
 
 class Field:
     """The vertical displacement of a bent page: d(x, y) = a0 + a1 x + a2 y + a sum of Gaussians (radial functions) on a
-    grid, fitted to the displacement of the lines (pixels of the rotated page)."""
+    regular grid of centres, fitted to the displacement of the lines (pixels of the rotated page)."""
 
-    def __init__(self, centres: np.ndarray, sigma: float, weights: np.ndarray, affine: np.ndarray):
-        self.centres, self.sigma, self.weights, self.affine = centres, sigma, weights, affine
+    def __init__(self, xs: np.ndarray, ys: np.ndarray, sigma: float, weights: np.ndarray, affine: np.ndarray):
+        self.xs, self.ys, self.sigma = np.asarray(xs, float), np.asarray(ys, float), sigma
+        self.weights = np.asarray(weights, float).reshape(len(ys), len(xs))      # one per centre, a row per y
+        self.affine = affine
 
     def at(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """d at the points (x, y) (arrays of one shape). The Gaussians are separable and the centres are a grid: the sum
+        is one product of two small matrices per point."""
         x, y = np.asarray(x, float), np.asarray(y, float)
-        out = self.affine[0] + self.affine[1] * x + self.affine[2] * y
-        for (cx, cy), w in zip(self.centres, self.weights):
-            out = out + w * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * self.sigma ** 2))
-        return out
+        out = np.array(self.affine[0] + self.affine[1] * x + self.affine[2] * y, dtype=float)     # an array, also for one point
+        k = -0.5 / self.sigma ** 2
+        flat_x, flat_y = x.ravel(), y.ravel()
+        for i in range(0, flat_x.size, 200000):                                 # in pieces: the memory
+            gx = np.exp(k * (flat_x[i:i + 200000, None] - self.xs) ** 2)
+            gy = np.exp(k * (flat_y[i:i + 200000, None] - self.ys) ** 2)
+            part = ((gy @ self.weights) * gx).sum(axis=1)
+            out.flat[i:i + 200000] += part
+        return out if out.ndim else float(out)
+
+    def bend(self, size: tuple) -> float:
+        """How much the field bends the page over `size`: the spread (2nd to 98th percentile) of d once the plane (a slant of
+        the whole page, a small tilt) is taken out, in pixels."""
+        xs, ys = np.meshgrid(np.linspace(0, size[0], 30), np.linspace(0, size[1], 40))
+        d = self.at(xs, ys).ravel()
+        design = np.column_stack([np.ones(d.size), xs.ravel(), ys.ravel()])
+        r = d - design @ np.linalg.lstsq(design, d, rcond=None)[0]
+        return float(np.percentile(r, 98) - np.percentile(r, 2))
 
 
 def _fit_field(chains: list, spacing_px: float, size: tuple, scale: int):
@@ -112,7 +131,8 @@ def _fit_field(chains: list, spacing_px: float, size: tuple, scale: int):
         ds += list(pts[:, 1] - mean_y)
     x, y, d = np.array(xs), np.array(ys), np.array(ds)
     nx, ny = max(int(round(size[0] / SPACING)), 2) + 1, max(int(round(size[1] / SPACING)), 2) + 1
-    gx, gy = np.meshgrid(np.linspace(0, size[0], nx), np.linspace(0, size[1], ny))
+    cxs, cys = np.linspace(0, size[0], nx), np.linspace(0, size[1], ny)
+    gx, gy = np.meshgrid(cxs, cys)
     centres = np.column_stack([gx.ravel(), gy.ravel()])
     sigma = SPACING
 
@@ -130,15 +150,17 @@ def _fit_field(chains: list, spacing_px: float, size: tuple, scale: int):
         w = 1.0 / np.maximum(np.abs(A @ coef - d) / 3.0, 1.0)
     if float(np.median(np.abs(A @ coef - d))) > MAX_RESIDUAL:
         return None
-    return Field(centres, sigma, coef[3:], np.array([coef[0], coef[1] / size[0], coef[2] / size[1]]))
+    return Field(cxs, cys, sigma, coef[3:], np.array([coef[0], coef[1] / size[0], coef[2] / size[1]]))
 
 
 def _rows_gain(ink: np.ndarray, field: "Field", scale: int) -> float:
     """How much more contrasted the rows of ink are once the page is flattened by `field` (ink: the reduced page, bool):
     the variance of the row sums, flat over as it is. Straight lines gain nothing; bent lines gain a lot."""
     h, w = ink.shape
-    gx, gy = np.meshgrid((np.arange(w) + 0.5) * scale, (np.arange(h) + 0.5) * scale)
-    src = np.arange(h, dtype=np.float32)[:, None] + (field.at(gx, gy) / scale).astype(np.float32)
+    step = 2                                           # the field on a grid of every other pixel, bilinear between
+    gx, gy = np.meshgrid((np.arange(0, w // step + 2) * step + step / 2.0) * scale, (np.arange(0, h // step + 2) * step + step / 2.0) * scale)
+    coarse = field.at(gx, gy) / scale
+    src = np.arange(h, dtype=np.float32)[:, None] + _upsample(coarse, step, (w, h)).astype(np.float32)
     flat = _warp_rows((ink * 255).astype(np.uint8), src, 0).astype(float) / 255.0
     before = float(ink.astype(float).sum(axis=1).var())
     return float(flat.sum(axis=1).var()) / max(before, 1e-6)
@@ -300,7 +322,7 @@ def _field_of(turned_small: Image.Image, canvas: tuple) -> "Field | None":
     if len(chains) < 3 or spacing <= 0:
         return None
     field = _fit_field(chains, spacing * FIND_SCALE, canvas, FIND_SCALE)
-    if field is None or _rows_gain(ink, field, FIND_SCALE) < MIN_GAIN:
+    if field is None or field.bend(canvas) < MIN_BEND or _rows_gain(ink, field, FIND_SCALE) < MIN_GAIN:
         return None
     return field
 
