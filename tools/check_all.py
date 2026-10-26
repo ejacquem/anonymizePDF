@@ -5079,6 +5079,21 @@ def stage_a_backdrop_tests():
     bx = (58, 66, 60 + int(font.getlength("Mathis Verhaegen")) + 2, 110)
     check("A3 white text on a thin navy band (the ring around the value is navy): the paper is dark",
           backdrop.is_dark_paper(np.asarray(band), bx), "")
+    # a band exactly as tall as the box (the ring above and below it is the light page, left and right of it the band): still dark paper
+    tight = Image.new("RGB", (560, 170), paper)
+    ImageDraw.Draw(tight).rectangle((40, 66, 500, 110), fill=navy)
+    ImageDraw.Draw(tight).text((60, 100), "Mathis Verhaegen", font=font, fill=(255, 255, 255), anchor="ls")
+    check("A3 white text on a band as tall as the box (the ring is light above and below, navy beside): the paper is dark",
+          backdrop.is_dark_paper(np.asarray(tight), bx), "")
+    surf = backdrop.Surface(tight, bx)
+    out = tight.copy()
+    quality.erase(out, bx, surf.colour(bx, render.background_color(tight, bx)), quality.Quality(grain=0.0), ("t",), surf)
+    lum = np.asarray(out.convert("L")).astype(float)[bx[1]:bx[3], bx[0]:bx[2]]
+    check("A3 ... and erased, the box shows the band (lightest pixel under 60)", float(lum.max()) < 60, f"{lum.max():.0f}, rung {surf.rung}")
+    # a faint copy: the levels a ghost may keep follow the contrast (4 % and a few grain levels, not 6 of 28)
+    g = backdrop.Ghost(6.0, 0.0, 30.0)
+    check("A1 a faint copy (contrast 30): a ghost of 6 levels is not clean (it is 20 % of the strokes); 6 levels of 220 is",
+          not g.clean and backdrop.Ghost(6.0, 0.0, 220.0).clean and backdrop.Ghost(3.0, 0.0, 30.0).clean, "")
     plain = Image.new("RGB", (560, 170), paper)
     ImageDraw.Draw(plain).text((60, 100), "Mathis Verhaegen", font=font, fill=(25, 25, 30), anchor="ls")
     check("A3 dark text on plain paper: the paper is light", not backdrop.is_dark_paper(np.asarray(plain), bx), "")

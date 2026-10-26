@@ -807,7 +807,7 @@ Order must never change a result (`order_tests`): a value written with several s
   0.68 -> 0.69. Not kept: choosing the curve by the residual alone (the shapes differ more than the edges: it never chose one); the
   soft five-row pages have the same edge ratio (1.1-1.4) as the hard ones, only the mid-tone share and a ratio of 1.5 tell them apart.
 - **Typewritten text** (`PageFonts.mono_block`, stage A4: it was a whole-page rule, `mono_page`): among the 40 longest words (>= 5 letters,
-  >= 4 measured) of the BLOCK of the value's own words (else, when the block has too few, of its line) the share whose best face is a
+  >= 4 measured) of the BLOCK of the value's own words (else, when the block has too few, of its line; else, when nothing around the value tells, of the page: local evidence always wins) the share whose best face is a
   monospace one (`MONO_SHARE` 0.33: typed text 0.35-0.57 because the long words go to Courier New / Courier Prime / Consolas, proportional
   text 0.00-0.30) gives `face_for` a prior: a bonus (`MONO_BONUS` per unit of evidence weight) on the monospace families, the others stay in
   the vote. A value of few letters (a town, digits) cannot tell Courier from Georgia on a coarse copy; the text around it can. A page
@@ -839,7 +839,7 @@ Order must never change a result (`order_tests`): a value written with several s
   JOURNAL P1-3). Tests: `backdrop_tests`.
 
 - **The surface does not keep the strokes** (run 2, review of run 1; stage A closed the three ways it failed open): the polarity is decided on the
-  paper just OUTSIDE the value's box, a ring 1-4 px wide (`is_dark_paper`; the box itself called a heavy dark value that covers more than half
+  paper just OUTSIDE the value's box, a ring 1-4 px wide, or its left / right (above / below) sides when the band is only as tall (wide) as the box (`is_dark_paper`; the box itself called a heavy dark value that covers more than half
   of it dark paper: the closing then kept the strokes as the paper; a name in white on a thin navy band has the band all around its box), and
   `ghost_parts` measures what is left of the strokes in the level over the strongest ink pixels of the box, in grey levels: the SMEAR (the
   level is darker there than the paper next to the strokes, taken from the pixels of the same colour only, so the rim of a highlighter or the
@@ -848,12 +848,13 @@ Order must never change a result (`order_tests`): a value written with several s
   heavy value has almost no ink mask: the level follows it). The paper of the contrast is the larger of the box's and the ring's. A box
   that cannot be measured is UNSAFE, never clean (stage A1: contrast under 2 x MIN_INK, fewer than 8 strong pixels, no paper beside the
   strokes even in the ring grown around the box, none of it of the colour of the level: `Ghost` is infinite). Clean = at most `GHOST_MAX`
-  (4 %) of the contrast and at least `GHOST_LEVELS` (6) levels. Ladder: closing 0.3 / 0.55 heights, a closing of 0.9, the level lifted
+  (4 %) of the contrast, with a few levels of grain allowed (`GHOST_LEVELS` 6, never more than 4 % + 2 levels: 6 levels of faint strokes are not clean). Ladder: closing 0.3 / 0.55 heights, a closing of 0.9, the level lifted
   around the strokes (`_fill_around_ink`, a bounded rise); none clean: NO surface (stage A2: the old 'least bad under 12 %' is gone, it
   left a shadow of the letters under the fake). Then the box is flat: the ring colour of the caller (`background_color`), or, when the area
   is a tint (a highlighter that ends at the box: the ring is the page's white), the area's colour (`flat_colour`: the 80th percentile per
-  channel of the pixels around the box that are not strokes, only when it differs from the ring's by more than 12 levels; the surface is
-  then a constant window, rung '... tint'). `Surface.rung` says which was used. Tests: `sharp_review_tests`, `stage_a_backdrop_tests`.
+  channel of the pixels INSIDE the box that are not strokes, a tint only when its chroma differs from the ring's by more than 20 levels or it is
+  more than 12 levels lighter: a darkening by what is left of the strokes keeps the hue; the surface is then a constant window, rung
+  '... tint'). `Surface.rung` says which was used. Tests: `sharp_review_tests`, `stage_a_backdrop_tests`.
 
 ## 10d. Turned and bent pages (`dewarp.py`)
 

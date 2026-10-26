@@ -63,25 +63,39 @@ POLARITY_GAP, POLARITY_WIDTH = 1, 3      # pixels: the ring of paper just outsid
 POLARITY_MIN = 30                        # pixels the ring must have (else the box itself decides)
 
 
-def _ring_mask(shape, core, gap: int, width: int) -> np.ndarray:
-    """The pixels of a window from `gap` to `gap + width` outside the box `core` = (x0, y0, x1, y1), on all four sides."""
+def _ring_mask(shape, core, gap: int, width: int, sides: str = "all") -> np.ndarray:
+    """The pixels of a window from `gap` to `gap + width` outside the box `core` = (x0, y0, x1, y1): on all four sides, or only
+    on the left and right ('h') or only above and below ('v')."""
     x0, y0, x1, y1 = (int(round(v)) for v in core)
     out = np.zeros(shape, bool)
     out[max(y0 - gap - width, 0):max(y1 + gap + width, 0), max(x0 - gap - width, 0):max(x1 + gap + width, 0)] = True
     out[max(y0 - gap, 0):max(y1 + gap, 0), max(x0 - gap, 0):max(x1 + gap, 0)] = False
+    if sides == "h":                                   # beside the box: its own rows only
+        out[:max(y0, 0)] = False
+        out[max(y1, 0):] = False
+    elif sides == "v":                                 # above and below it: its own columns only
+        out[:, :max(x0, 0)] = False
+        out[:, max(x1, 0):] = False
     return out
 
 
 def is_dark_paper(win: np.ndarray, core=None) -> bool:
     """Is the paper under the text dark (light ink on a band)? Judged on the paper just OUTSIDE the value's box `core` =
-    (x0, y0, x1, y1) in the window, where no stroke is (a name in white on a thin navy band lies in a window that is mostly
-    light paper, but the band is all around the box; the box itself would call a heavy dark value that covers more than half
-    of it dark paper and keep its strokes as the paper). Without a ring (the box at the edge of the page) the box decides."""
+    (x0, y0, x1, y1) in the window, where no stroke is: the ring around the box, or the two sides of it (left and right, or
+    above and below) when a band is only as tall (as wide) as the box and the other two sides are the light page. The box
+    itself would call a heavy dark value that covers more than half of it dark paper and keep its strokes as the paper; a
+    heavy value has light paper on every side. Without a ring (the box at the edge of the page) the box decides."""
     lum = _lum(win)
     if core is not None:
         ring = _ring_mask(lum.shape, core, POLARITY_GAP, POLARITY_WIDTH)
         if ring.sum() >= POLARITY_MIN:
-            return float(np.median(lum[ring])) < 90
+            if float(np.median(lum[ring])) < 90:
+                return True
+            for sides in ("h", "v"):
+                pair = _ring_mask(lum.shape, core, POLARITY_GAP, POLARITY_WIDTH, sides)
+                if pair.sum() >= POLARITY_MIN and float(np.median(lum[pair])) < 90:
+                    return True
+            return False
         x0, y0, x1, y1 = (int(v) for v in core)
         part = lum[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)]
         if part.size:
@@ -135,7 +149,8 @@ class Ghost(NamedTuple):
 
     @property
     def clean(self) -> bool:
-        return max(self.smear, self.hole) <= max(GHOST_MAX * self.contrast, GHOST_LEVELS)
+        share = GHOST_MAX * self.contrast
+        return max(self.smear, self.hole) <= max(share, min(GHOST_LEVELS, share + 2.0))   # (a few levels of grain, never 20 % of faint strokes)
 
     @property
     def share(self) -> float:
