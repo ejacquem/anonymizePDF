@@ -198,12 +198,6 @@ class Surface:
         core = (x0 - X0, y0 - Y0, x1 - X0, y1 - Y0)           # the value's box in the window
         level, ink, self.rung = self._clean(win, h, core)
         if level is None:
-            import os as _os
-            if _os.environ.get("ANON_DEBUG_SURFACE_DUMP"):                 # (a debugging aid: the window of a surface given up)
-                from PIL import Image as _I
-                _I.fromarray(win).save(_os.environ["ANON_DEBUG_SURFACE_DUMP"] + "_win.png")
-                _I.fromarray(np.clip(paper_and_ink(win, h, core, 0.55, is_dark_paper(win, core))[0], 0, 255).astype(np.uint8)).save(_os.environ["ANON_DEBUG_SURFACE_DUMP"] + "_level.png")
-                print("core", core, flush=True)
             self.rgb = None
             return
         known = ~ink

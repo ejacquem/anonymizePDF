@@ -773,7 +773,7 @@ def _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             if surf is not None and surf.ok:
                 fill = surf.colour(box, fill)
             if surf is not None and os.environ.get("ANON_DEBUG_SURFACE"):
-                print("SURFACE", m.value[:20], surf.rung, flush=True)
+                print("SURFACE", surf.rung, flush=True)             # (a debugging aid: how the surface of each value was made)
             saved_rules = _rules_in(img, box) if not blackbox else None     # an underline in the box is the page's (B4)
             if q is not None:
                 quality.erase(img, box, fill, q, key, surf)    # the background, with the grain of the scan

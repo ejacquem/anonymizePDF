@@ -1,0 +1,306 @@
+{
+ "meta": {
+  "cpu_count": 8,
+  "ner_load_seconds": 5.5,
+  "repeat": 1,
+  "workers_env": null,
+  "pool": {
+   "configured": 6,
+   "pool_size": 6,
+   "started": 4,
+   "start_seconds": 1.934464400052093,
+   "tasks": 52,
+   "fallbacks": 0,
+   "read_scan": 12,
+   "name_faces_page": 12,
+   "scan_page": 13,
+   "read_page": 15
+  },
+  "commit": "3c83798",
+  "dirty": false,
+  "when": "2026-10-26 18:32"
+ },
+ "docs": {
+  "contrat_assurance_scan.pdf": {
+   "scan": {
+    "wall": 6.28,
+    "cpu": 0.48,
+    "stages": {
+     "wait": 4.64,
+     "other": 1.33,
+     "config": 0.17,
+     "text": 0.15
+    },
+    "busy": 0.45
+   },
+   "anon": {
+    "wall": 20.05,
+    "cpu": 0.28,
+    "stages": {
+     "wait": 19.73,
+     "check": 0.22,
+     "other": 0.05,
+     "save": 0.02
+    },
+    "busy": 0.47,
+    "pages": 3,
+    "mode": "scan"
+   },
+   "total": 26.33,
+   "peak_mb": 570
+  },
+  "paragraphes_scan.pdf": {
+   "scan": {
+    "wall": 8.6,
+    "cpu": 0.44,
+    "stages": {
+     "wait": 7.39,
+     "other": 0.92,
+     "text": 0.19,
+     "config": 0.11
+    },
+    "busy": 0.5
+   },
+   "anon": {
+    "wall": 25.8,
+    "cpu": 0.59,
+    "stages": {
+     "wait": 25.23,
+     "check": 0.46,
+     "other": 0.07,
+     "save": 0.02
+    },
+    "busy": 0.56,
+    "pages": 4,
+    "mode": "scan"
+   },
+   "total": 34.4,
+   "peak_mb": 588
+  },
+  "releve_banque_mosane_scan.pdf": {
+   "scan": {
+    "wall": 7.25,
+    "cpu": 0.45,
+    "stages": {
+     "wait": 6.83,
+     "text": 0.21,
+     "config": 0.16,
+     "other": 0.05
+    },
+    "busy": 0.36
+   },
+   "anon": {
+    "wall": 22.71,
+    "cpu": 0.53,
+    "stages": {
+     "wait": 22.18,
+     "check": 0.44,
+     "other": 0.04,
+     "save": 0.01
+    },
+    "busy": 0.37,
+    "pages": 2,
+    "mode": "scan"
+   },
+   "total": 29.96,
+   "peak_mb": 588
+  },
+  "releve_banque_mosane.pdf": {
+   "scan": {
+    "wall": 0.22,
+    "cpu": 0.2,
+    "stages": {
+     "text": 0.11,
+     "other": 0.09,
+     "config": 0.02
+    },
+    "busy": 0.12
+   },
+   "anon": {
+    "wall": 2.56,
+    "cpu": 3.62,
+    "stages": {
+     "faces": 1.28,
+     "check": 0.45,
+     "digital": 0.31,
+     "save": 0.22,
+     "codes": 0.14,
+     "other": 0.09,
+     "render": 0.02,
+     "signatures": 0.01,
+     "text": 0.01
+    },
+    "busy": 0.24,
+    "pages": 2,
+    "mode": "digital"
+   },
+   "total": 2.78,
+   "peak_mb": 736
+  },
+  "passeport_scan.pdf": {
+   "scan": {
+    "wall": 4.04,
+    "cpu": 3.95,
+    "stages": {
+     "ocr": 1.96,
+     "other": 1.68,
+     "render": 0.19,
+     "fonts": 0.13,
+     "text": 0.04,
+     "config": 0.04
+    },
+    "busy": 0.18
+   },
+   "anon": {
+    "wall": 10.06,
+    "cpu": 11.08,
+    "stages": {
+     "fonts": 3.44,
+     "ocr_check": 2.22,
+     "other": 1.74,
+     "faces": 1.03,
+     "angles": 0.61,
+     "paint": 0.31,
+     "ocr": 0.3,
+     "render": 0.18,
+     "codes": 0.08,
+     "save": 0.05,
+     "signatures": 0.04,
+     "mrz": 0.03,
+     "check": 0.03
+    },
+    "busy": 0.19,
+    "pages": 1,
+    "mode": "scan"
+   },
+   "total": 14.1,
+   "peak_mb": 1559
+  },
+  "releve_scan_cherchable.pdf": {
+   "scan": {
+    "wall": 7.85,
+    "cpu": 0.72,
+    "stages": {
+     "wait": 6.03,
+     "other": 1.23,
+     "text": 0.46,
+     "config": 0.14
+    },
+    "busy": 0.37
+   },
+   "anon": {
+    "wall": 23.13,
+    "cpu": 0.66,
+    "stages": {
+     "wait": 22.47,
+     "check": 0.49,
+     "other": 0.13,
+     "save": 0.01
+    },
+    "busy": 0.41,
+    "pages": 3,
+    "mode": "scan"
+   },
+   "total": 30.98,
+   "peak_mb": 1559
+  },
+  "releve_annexe_scannee.pdf": {
+   "scan": {
+    "wall": 4.06,
+    "cpu": 3.89,
+    "stages": {
+     "ocr": 1.56,
+     "fonts": 1.2,
+     "other": 0.82,
+     "text": 0.2,
+     "render": 0.2,
+     "config": 0.07
+    },
+    "busy": 0.17
+   },
+   "anon": {
+    "wall": 16.17,
+    "cpu": 3.69,
+    "stages": {
+     "wait": 13.83,
+     "faces": 1.17,
+     "check": 0.45,
+     "digital": 0.33,
+     "codes": 0.15,
+     "save": 0.11,
+     "other": 0.08,
+     "render": 0.02,
+     "signatures": 0.01,
+     "text": 0.01
+    },
+    "busy": 0.26,
+    "pages": 3,
+    "mode": "mixed"
+   },
+   "total": 20.23,
+   "peak_mb": 1559
+  },
+  "contrat_image_collee.pdf": {
+   "scan": {
+    "wall": 2.24,
+    "cpu": 2.14,
+    "stages": {
+     "ocr": 1.34,
+     "other": 0.79,
+     "render": 0.06,
+     "text": 0.03,
+     "config": 0.01
+    },
+    "busy": 0.18
+   },
+   "anon": {
+    "wall": 7.57,
+    "cpu": 8.06,
+    "stages": {
+     "ocr_check": 2.07,
+     "fonts": 1.99,
+     "ocr": 1.39,
+     "other": 0.86,
+     "faces": 0.58,
+     "paint": 0.39,
+     "save": 0.12,
+     "render": 0.05,
+     "codes": 0.04,
+     "check": 0.04,
+     "digital": 0.02
+    },
+    "busy": 0.2,
+    "pages": 1,
+    "mode": "mixed"
+   },
+   "total": 9.81,
+   "peak_mb": 1559
+  }
+ },
+ "all_runs": {
+  "contrat_assurance_scan.pdf": [
+   26.33
+  ],
+  "paragraphes_scan.pdf": [
+   34.4
+  ],
+  "releve_banque_mosane_scan.pdf": [
+   29.96
+  ],
+  "releve_banque_mosane.pdf": [
+   2.78
+  ],
+  "passeport_scan.pdf": [
+   14.1
+  ],
+  "releve_scan_cherchable.pdf": [
+   30.98
+  ],
+  "releve_annexe_scannee.pdf": [
+   20.23
+  ],
+  "contrat_image_collee.pdf": [
+   9.81
+  ]
+ }
+}

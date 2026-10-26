@@ -210,3 +210,65 @@ Hypothesis: the OCR reads coarse pages badly (stairs of repeated pixels), broken
   the variants, and matching a garbled reading against the config is `pii.py` (frozen).
 - Safety net: `scanpaint._unread_warning` (ink >= 0.3 % of the page and fewer than max(5, 8 x ink %) words): log line + `extras.warnings` -> the file's
   `warnings` in the report (`engine._finish_page`, `entry["warnings"]`), so the Recap shows it. Tests: `sharp_read_tests`.
+
+## R2-P0b the ghost guard on highlighters (commits 1d14018, 3c83798)
+
+The first guard (flat patch when `ghost_of` > 4 %) was too eager on highlighted values of turned / bent pages: the full run p1_full showed
+`bg_worst` 4.9 -> 21 on `doc_releve_tilt`, 6.2 -> 20.8 `doc_contrat_bend`, 7.6 -> 22.9 `doc_contrat_persp`, `hl_blue` 5 -> 19 (a white box in a
+highlighter: private but ugly, and the acceptance rule says soft families do not move). Looked at the window pictures:
+- the blue band's ghost was real but small (a 10 % darker smear on the digits, a page resampled by the dewarp) and the metric also counted the white
+  page beyond the rim of the highlighter as 'paper' next to the strokes: the ring is now only the pixels of the same colour (within 0.25 of the
+  strokes' contrast of the surface at the strokes);
+- the larger closing (0.9 heights) removes a thin highlighter altogether (white blobs): the check now also sees HOLES (`ghost_parts`: smear, hole);
+- a fallback between the two, `_fill_around_ink`: around the strokes (dark in EVERY channel, grown 5 px) each pixel takes the lightest level of its
+  neighbours within 8 px that is at most 0.2 of the contrast above its own (a bounded rise: a rim of another colour is out of reach), then a
+  little smoothing. First tries (normalised Gaussian average over the paper: the white of the page beyond the band; the same with a max filter of
+  similar colours, 1 s a value) were wrong or slow; the bounded rise is 0.07 s.
+- Ladder: closing 0.55 (<= 4 %), larger closing 0.9 (<= 4 %), the lifted level; none clean: the least bad if its defect is under 12 %, else the
+  flat patch. A synthetic blurred page (blur 3) still gets the larger closing (0.10 -> 0.0), 150 dpi blur 4 as well.
+Result (p3_full vs the fixed baseline): `bg_worst` doc_contrat_bend 6.2 -> 6.3, doc_releve_bend 18.9 -> 6.3 (after the last tolerance change, run alone),
+doc_releve_tilt 4.9 -> 4.9. Left: `doc_contrat_persp` row 4 (yellow, 'Solène Wauters': smear 16 % / 12.5 % / 12.2 %) gets the flat patch, bg 22.
+Privacy first: kept (a 15 % limit would have let it through with a faint shadow of the strokes).
+
+## R2-P2 the fake is as hard as the page
+
+Reading of the problem: the output page is the 300 dpi render of the scan, so unreplaced text keeps its hard edges; the replaced text is drawn with
+a soft model (fitted blur, box average to the native grid and bilinear back) and has softer edges. The fit residual cannot see it (the letter shapes
+differ more than the edges: tone curves never lowered it, grid of 36 curves x blurs on `sharp_bw150`: 0.0204 -> 0.0199).
+Measure: `edge_rel` (new, `challenge_bench.context_edge`): edge of the fake over the edge of the original, divided by the same ratio for the rest of
+the output page (the mean of the 3000 strongest gradients away from the values). The original `edge` has a ceiling: the clean ideal page has
+edge(ideal)/edge(original) 1.00-1.11, but our output page is a 300 dpi JPEG, so a perfect fake would score less than 1: `edge_rel` is the fair one.
+Method: `quality.Quality.steep` / `mid` (a sigmoid on the coverage of the native pixels, `_native_aligned` on the scan's grid and bilinear between
+native centres: a first version boxed the native pixels from the sample's corner, off the grid, and the hard cut had no effect), fit by the strong
+edges of the page's words (`fit_tone`), the weight match moves `mid`.
+- Gate: first any page with the scan's edges 1.2 x the candidates': font_* and tone_* soft five-row pages passed it (ratios 1.06-1.43, their
+  `ink_rel` 0.58 -> 0.64, `dark` 3.9 -> 5.1: the soft families moved, REJECTED). Final gate: ratio >= 1.5, or >= 1.2 with a mid-tone share
+  under 0.35 among the ink pixels (`hardness` at any scale: hard pages 0.10-0.31, soft 0.50-0.70), and linear blur <= 1.9: `family:font`,
+  `bg`, `geom`, `deco` show no change in the full run, tone: tone_binary / halo get a curve (dark 7.9 -> 4.9).
+- Mass: the first selection (edges, then the best residual) gave a heavier fake (mass 1.03 -> 1.12); choosing among the candidates whose edges are
+  within 12 % the one whose ink equals the fit's without a curve: 1.05. `weight_matched` also on coarse pages with a curve.
+Results on the iteration subset (p2_off -> p3_a, 121 values): `edge_rel` 0.63 -> 0.97 (sharp family 0.91 -> 0.99, docs 0.48 -> 0.96), `edge` 0.57 ->
+1.01, `dark` 17.0 -> 12.2, `height` 1.04 -> 1.00; `ink_rel` 0.68 -> 0.69 and `mass` 1.03 -> 1.05 a hair worse (a sharp fake is not better
+aligned than a soft one, the glyph shapes are the catalog's), `found` 71 % = 71 %. The pictures (`sheet_view`): '6700 Arlon', 'Chaussée du Stade 94,'
+hard and black on the fax, as the neighbours.
+Not kept: a curve for a coarse page whose blur is large (`doc_vieux_worse`: blur 3.2 at 100 dpi = 1 native pixel): `edge_rel` 0.66 -> 0.88,
+`ink_rel` 1.30 -> 1.23, but `dark` 20 -> 31 and one value of the page lost its coverage (found 46 -> 38 %: rule 'found never drops').
+
+## R2-P3 family and size
+
+- Pitch from the OCR boxes does not work (width / characters CV 0.19-0.22 on the typed letters, 0.16-0.34 on proportional pages: the boxes are too
+  noisy); the face votes do: `PageFonts.mono_page` (share of the 40 longest words best written in a monospace face: typed 0.35-0.57, proportional
+  0.00-0.30, `MONO_SHARE` 0.33). `face_for` restricts the families to monospace ones on such a page. The faces written on the letters: before,
+  Courier + Verdana, DejaVu Sans, Georgia, Barlow among the values; after, Courier New / Courier Prime / Consolas only (`doc_vieux_bad`: all
+  Courier). Look at the fax: 'Chaussée du Stade 94,' in Courier. Consolas still comes up on `worse` (the OCR box of a blocky word decides).
+- Size: a value of fewer than 9 letters takes the median size of its line's other words when its own differs by more than 6 %
+  (`metrics`, `SIZE_LINE_*`). No measurable change on the bench (the effect is on a town written smaller than its street, rare).
+- Family measure: not built (the pictures and the `written in` log lines do it); `lucida` five-row pages `ink_rel` 0.86 -> 0.37 (monospace prior).
+- Optional glyph copying: not tried (no time, and `edge_rel` is already ~1).
+- Tried and not kept: 'thicker' (MinFilter(5)) extra reading: found unchanged, +10 % time.
+
+## R2-final
+
+Full run `final_sharp_full.json` vs `baseline_sharp_fixed.json`: found 87 -> 88 % (0 values lost, 5 gained), edge 0.80 -> 0.84, edge_rel 1.00, dark 4.8 -> 4.4; soft families
+unchanged except the intended gains. `tools/bench.py` 170.6 -> 168.6 s. `check_all --fast` on 3c83798: 1813 passed, 0 failed. Two debugging hooks (a dump of a surface window, a value
+printed by `ANON_DEBUG_SURFACE`) were removed afterwards; the four new test groups and `backdrop_tests` re-run green (28 checks). Report: `REPORT_SHARP.md`.
