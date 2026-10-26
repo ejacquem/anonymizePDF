@@ -53,7 +53,7 @@ anonymizer/
   pii.py               DETECTORS (regex + validators), spaCy NER (load_ner, detect_ner), detect_all, resolve,
                        term_regex (OCR-tolerant mode), apply_config, words_to_text, match_boxes, plan_page
   ocr.py               OCR engines (Tesseract / Windows winrt), engine(), ocr_words(), fix_digits(), render_page()
-  ocrpage.py           a page read more than once: page_words() = the 300 dpi reading repaired with the page rescaled (section 9)
+  ocrpage.py           a page read more than once: page_words() = the 300 dpi reading repaired with the page rescaled and, on a poor page, with thick / native / smooth variants (section 9)
   ocrdata.py           anon_ocr.json per folder: the full-page OCR words the scan read, with the sha256 of the file, the OCR
                        engine and the language; click-to-find reads them back (section 5, 11b)
   fake.py              Faker: deterministic fake values (HMAC with the secret key), name memory, all value types
@@ -62,7 +62,7 @@ anonymizer/
                        scans: scan_text_layout (face=), BoldMeter, ink_color, background_color, draw_mrz
   fontmatch.py         font of scanned text (analysis by synthesis): CATALOG / faces(), template, compare,
                        PageFonts (face_for, is_bold, page_quality, look, advance), Look
-  quality.py           scan quality: Quality (scale, blur, spread, grain), fit, colours, grain; painting with it:
+  quality.py           scan quality: Quality (scale, blur, spread, grain, tone curve steep / mid), fit, fit_tone, colours, grain; painting with it:
                        erase, paint, text_coverage (supersampled, degraded, seeded noise)
   fonts/               free fonts (static regular + bold TTF, licences in fonts/licenses): DejaVu Sans / Serif,
                        Roboto, Open Sans, Lato, Source Sans 3, Barlow, Courier Prime
@@ -598,6 +598,18 @@ Order must never change a result (`order_tests`): a value written with several s
   OCR straightens a page it finds turned and gives the boxes of the straightened page (30 px off at another scale): each
   reading is brought back with a plane fitted on the words both readings give (`_align`), or left out when it does not
   fit. Cost: 4 OCR runs a page instead of 1 (about +3 s a page). Test: `ocr_merge_tests`, `paragraph_scan_tests`.
+- **Poor pages are read through more variants** (run 2, `ocrpage.agreement`, `extra_readings`): the share of the first reading's words that
+  another reading gives again (same letters, same place) is 96-100 % on a clean page and 81-94 % on a coarse, thin or broken one
+  (the share of implausible tokens does not tell them apart: clean statements have 5-11 %). Below 93 % (and at least 20 words) the page
+  is also read with its strokes thickened by a pixel (`MinFilter(3)`: thin or broken strokes of a hard cut scan), brought back to about 200 dpi,
+  and, when its pixels are runs of equal pixels (`block_factors`: MuPDF draws a scan enlarged by more than ~1.3 without interpolation, so
+  only 1/f of the column / row boundaries next to ink change; image only, so the outputs are read the same way), smoothed (`smooth`:
+  box average to the scan's own pixels, bicubic back, a little blur). Merged like the other readings. Measured: `doc_sharp_assurance_bw200`
+  found 25 -> 38 %, `doc_vieux_worse` 31 -> 38 %; the values still missed are single characters the OCR garbles ('+32' read '4.32').
+  Always adding the smoothed reading on coarse pages was tried: no gain, `doc_vieux_bad` 54 -> 38 %.
+- **No silent pass** (`scanpaint._unread_warning`): a scanned page that has ink (>= 0.3 % of its area darker than 140) where the OCR read
+  fewer than max(5, 8 x ink %) words gets a log line and a `warnings` entry in the report (`extras["warnings"]`, copied by `engine._finish_page`),
+  so the Recap shows it. Test: `sharp_read_tests`.
 
 ## 10. Rendering
 
@@ -780,6 +792,26 @@ Order must never change a result (`order_tests`): a value written with several s
   weight than the text around it: `font:rockwell` dark 44 -> 6, `tone:textlayer` 47 -> 7, `tone:dark` 20 -> 5, `tone:halo` 32 -> 14.
   Test: `weight_tests`. Tried and not kept: a tone curve in `Quality` (coverage of the rendering -> darkness of the scan, fitted by
   binning): once the linear fit of each word has taken the scale, the curve is the identity to within the noise.
+- **Hard pages: a tone curve** (run 2, `quality.Quality.steep` / `mid`, `fit_tone`, `tone`, `_toned_up`; default `steep 0` = nothing changes): a scan
+  that was cut at a level or has a steep contrast curve has sharper edges than blur and spread can make (the fitted candidates are softer than
+  the scan). `PageFonts.page_quality` also reads the share of mid-tones among the ink pixels (`hardness`, now at any scale below 0.95), and
+  `fit_tone` runs when the page's strong edges (95th percentile of the gradient of its words' coverage) are 1.5 times those of the
+  fitted candidates (1.2 when the ink is mostly black or white: mid-tone share < 0.35) and the linear fit's blur is <= 1.9: it searches a
+  sigmoid (slope 8..100, centre 0.35..0.65) on the coverage of the NATIVE pixels (`_native_aligned`: the scan's grid, the pixel k is centred on
+  the page pixel (k + 0.5) / scale; blur in native pixels before the curve; drawn bilinear between native centres) with the blur that goes
+  with it, keeping the candidates whose edges are within 12 % of the scan's, then the weight of the fit without a curve, then the best
+  residual. The weight match (`scanpaint.weight_matched`) moves the CENTRE of the curve instead of the stroke spread when `steep > 0`
+  (and now also on coarse pages with a curve). `ANON_TONE=0` turns it off. Measured (`edge_rel`, section 12d): 0.63 -> 0.97 on the
+  121 values of `sharp_` / `doc_sharp_` / `doc_vieux`, `dark` 17 -> 12; a sharper fake is not better aligned than a soft one, so `ink_rel`
+  0.68 -> 0.69. Not kept: choosing the curve by the residual alone (the shapes differ more than the edges: it never chose one); the
+  soft five-row pages have the same edge ratio (1.1-1.4) as the hard ones, only the mid-tone share and a ratio of 1.5 tell them apart.
+- **Typewritten pages** (`PageFonts.mono_page`): among the 40 longest words (>= 5 letters, >= 8 measured) the share whose best face is a
+  monospace one (`MONO_SHARE` 0.33: typewritten pages 0.35-0.57 because the long words go to Courier New / Courier Prime / Consolas, proportional
+  pages 0.00-0.30) makes `face_for` choose among the monospace families only. A value of few letters (a town, digits) cannot tell Courier from
+  Georgia on a coarse copy; the page can. Run 1's note still holds: giving every value its block's family loses accuracy on proportional
+  pages, so this is a prior for fixed pitch only.
+- **A value of few letters takes the size of its line** (`PageFonts.metrics`): fewer than `SIZE_LINE_LETTERS` (9) letters in its words and its own
+  fitted size more than 6 % from the median of the line's other words (>= 3 fitted) -> the line's size (a town written smaller than its street).
 - Limits: close look-alikes are mixed up on soft copies (Arial / Roboto, Courier New / Courier Prime, DejaVu Sans
   Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; ~0.1-0.3 s per value. A value in a
   font other than its line's (an IBAN in Consolas inside a Garamond sentence) takes the line's family: the value's own
@@ -802,6 +834,15 @@ Order must never change a result (`order_tests`): a value written with several s
   merged like the other readings (`ocrpage.page_words`). Not kept: the fonts measured on that flat grey (one value lost on a bent page,
   JOURNAL P1-3). Tests: `backdrop_tests`.
 
+- **The surface does not keep the strokes** (run 2, review of run 1): the polarity is decided on the pixels of the value's own box
+  (`is_dark_paper`: a name in white on a thin navy band lies in a window that is mostly light paper), and `ghost_parts` measures what is
+  left of the strokes in the level over the strongest ink pixels of the box: the SMEAR (the level is darker there than the paper
+  next to the strokes, taken from the pixels of the same colour only, so the rim of a highlighter or the page behind it is no reference)
+  and the HOLE (lighter than around: a too large closing that took a thin highlighter away). Above 4 % of the strokes' contrast: a closing of
+  0.9 heights, else the level lifted around the strokes by the lightest similar colour a few pixels away (`_fill_around_ink`, a bounded rise),
+  and if none is clean the least bad one is used while its smear is under 12 %, else the flat patch of the old code. `Surface.rung` says
+  which was used (log with ANON_DEBUG_SURFACE=1). Tests: `sharp_review_tests`.
+
 ## 10d. Turned and bent pages (`dewarp.py`)
 
 - `scanpaint._scan_page` first asks `dewarp.straighten(img)`: the skew of the whole page (`regions.text_angle` on the page
@@ -813,6 +854,9 @@ Order must never change a result (`order_tests`): a value written with several s
   brought back to the scan's coordinates (`Flat.box_to_page`), and `Flat.compose` pastes onto the scan only the pixels that changed
   (grown 2 px): what was not replaced keeps the pixels of the scan. The Windows OCR straightens a page it finds turned by 10
   degrees or more and gives the boxes of the straightened page: before this a page turned by 12 degrees was never replaced at its place.
+- `_scan_page` runs `dewarp.straighten` in black-box mode too (the Windows OCR returns the boxes of the straightened page: black boxes of a page
+  turned by 10 degrees or more landed at the wrong place); `straighten` and the flat paint + `compose` are in a try / except: a failure logs and
+  redoes the page the old per-word way (test: `sharp_review_tests`).
 - Maps: page p -> rotated canvas u = c_u + R(a)(p - c_o) -> flat (x, y) with u = (x, y + d(x, y)); the inverse of d is a fixed
   point iteration. Cubic (Catmull-Rom) resampling along the columns for d, PIL bicubic for the turn. The page is resampled twice
   where it changed (a little blur); a page turned by less than 2 degrees is left to the old per-word path (`TILT_MIN`).
@@ -1065,6 +1109,10 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   edge and a blurred copy leave the background of the page and no ghost of the letters; a page turned by 9 degrees and a waved page
   are found, the maps go back and forth, only the painted pixels come back, and the scans of Dossier Test 22's `geom_tilt12` and
   `geom_bend_strong` are replaced at their place with nothing left.
+- Run 2 (`sharp_review_tests`, `sharp_read_tests`, `sharp_tone_tests`): white text on a thin dark band, a blurred 150 dpi copy and a thin blurred
+  highlighter leave no ghost (the surface, `_erase_patch`), black-box mode on a page turned 12 degrees covers every value; the block factors of
+  coarse scans (3 x 3, a fax 1.5 x 3, smooth pages 1 x 1), the smooth page, the unread-page warning; a hard cut page gets a tone curve and a
+  blurred one does not, the weight match moves the centre of the curve, a fixed pitch page is a typewritten page.
 - Underlined and framed values on a scan (`underline_tests`, B4): each underline stays, no replacement is bold where the
   original is regular.
 - Corrupted text layer (`corrupt_layer_tests`: the page is read by OCR, its values replaced), a town with its region code
@@ -1207,6 +1255,15 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   `dy` (ink centre shift), `coll` (pixels far from any value changed by more than 40 levels, per 10 000). `compare a b`
   prints before / after per group (family, deco, geom, bg, font, tone, split); `--sheet` writes the worst values with the
   original, clean, ideal and output crops. The numbers are for comparing two runs of the same bench, not absolute.
+- Run 2 adds `sharp_*` (five-row pages from a poor scan: bw at 100 / 150 / 200 dpi, thick and thin, contrast, harsh JPEG), `doc_sharp_*` (a statement,
+  a letter and a lease from sharp scans) and `doc_vieux_*` (an old typed letter, Courier New with jitter and bold terms, at 150 dpi, 100 dpi blocky
+  with speckle, and as a fax of 200 x 100 dpi: the scan fills the page, `insert_image(keep_proportion=False)`, it was squashed into half the page
+  before). Measures: `edge` = the strong edges of the output over the original's (95th percentile of the grey gradient), `edge_rel` = `edge`
+  over the same ratio for the REST of the output (the mean of the 3000 strongest gradients away from the values, `context_edge`): the
+  replaced text is as sharp as the text beside it in our own output (1 = yes). Whatever the output does to the whole page shows in the context,
+  so `edge_rel` is the one to tune. `bench_cmp` counts `edge` and `edge_rel` toward 1. The fakes of a case depend on the other cases of the folder
+  (detection of a name flips with them: `Claire Dubois` in the tilted pages with the readable fax in the folder), so compare runs of the SAME
+  selection and the same generator.
 - It is a scorecard, not a gate: the gate stays `check_all.py` (no leak, no regression). Not part of check_all. The pages are
   rendered in parallel processes (cores - 1, 4 at most); the full run takes about 5 minutes, 9 cases (`--only bg_`) 50 s. Same
   selection of cases = same numbers (deterministic); the fakes of a case depend on the other cases in the folder, so compare

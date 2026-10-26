@@ -127,7 +127,7 @@ def ghost_parts(win: np.ndarray, level: np.ndarray, ink: np.ndarray, core, dark_
     # (the ring is the paper next to the ink mask, which is grown by GROW: it lies outside the soft edge of a stroke.) Only
     # the part of it that is the surface of the same area: a highlighter's rim or the page behind it is no reference
     here = float(lum_l[strong].mean())
-    near_here = ring & (np.abs(lum_l - here) < 0.5 * contrast)
+    near_here = ring & (np.abs(lum_l - here) < 0.25 * contrast)
     smear = 0.0
     if near_here.sum() >= 8:                                       # the strokes still show as a darkening of the level
         smear = max(sgn * float(lum_l[near_here].mean() - here), 0.0)
