@@ -561,7 +561,7 @@ def write_pdf(spec: dict, path: Path) -> dict:
     r = render_case(spec, noise=True)
     doc = fitz.open()
     page = doc.new_page(width=r["with"].shape[1] * PT, height=r["with"].shape[0] * PT)
-    page.insert_image(page.rect, stream=to_jpeg(r["native"], spec["scan"]["jpeg"]))
+    page.insert_image(page.rect, stream=to_jpeg(r["native"], spec["scan"]["jpeg"]), keep_proportion=False)   # a fax fills the page: 200 x 100 dpi
     if spec.get("text_layer"):                                   # a searchable scan: invisible text in a wrong font
         for text, x, y in r["layout"]:
             page.insert_text((x * PT, y * PT), text, fontname="helv", fontsize=11, render_mode=3)

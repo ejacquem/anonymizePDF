@@ -47,16 +47,33 @@ def _paper_level(win: np.ndarray, size: int, dark_paper: bool) -> np.ndarray:
     return out
 
 
-def paper_and_ink(win: np.ndarray, height: float):
+def _lum(a: np.ndarray) -> np.ndarray:
+    return a @ np.array([0.299, 0.587, 0.114])
+
+
+def is_dark_paper(win: np.ndarray, core=None) -> bool:
+    """Is the paper under the text dark (light ink on a band)? Judged on the pixels of `core` = (x0, y0, x1, y1) in
+    the window, the value's own box, when given: a name in white on a thin navy band lies in a window that is mostly
+    light paper, and the window's median would take the strokes for the paper."""
+    if core is not None:
+        x0, y0, x1, y1 = (int(v) for v in core)
+        part = win[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)]
+        if part.size:
+            win = part
+    return float(np.median(_lum(win))) < 90
+
+
+def paper_and_ink(win: np.ndarray, height: float, core=None, big_factor: float = 0.55, dark_paper: bool | None = None):
     """(paper level, ink mask) of a window (uint8, h x w x 3): the page without its strokes, and the pixels that are
-    strokes (dark ink; light ink on a dark paper)."""
-    lum = win @ np.array([0.299, 0.587, 0.114])
-    dark_paper = float(np.median(lum)) < 90
+    strokes (dark ink; light ink on a dark paper). `core`: the box of the value in the window (decides the polarity);
+    `big_factor`: the larger closing, in text heights (see below)."""
+    if dark_paper is None:
+        dark_paper = is_dark_paper(win, core)
     level = _paper_level(win, _odd(max(7, 0.3 * height)), dark_paper).astype(np.float32)
     if not dark_paper:
         # A blurred or coarse stroke is wider than the small closing: it stays in `level` as a ghost. A larger closing
         # removes it, but rounds the corners of a highlighter. The larger one is used only close to dark ink.
-        big = _paper_level(win, _odd(max(9, 0.55 * height)), dark_paper).astype(np.float32)
+        big = _paper_level(win, _odd(max(9, big_factor * height)), dark_paper).astype(np.float32)
         # ... and only where the small closing keeps something dark in every channel: a highlighter edge is paper in one
         # or two channels (yellow is not darker in red), a stroke is darker in all three
         grey = ((big - level) > GHOST_DROP * np.maximum(big, 1.0)).all(axis=-1)
@@ -73,8 +90,38 @@ def paper_and_ink(win: np.ndarray, height: float):
     return level, ink
 
 
-def ink_mask(win: np.ndarray, height: float) -> np.ndarray:
-    return paper_and_ink(win, height)[1]
+def ink_mask(win: np.ndarray, height: float, core=None) -> np.ndarray:
+    return paper_and_ink(win, height, core)[1]
+
+
+GHOST_RING = 4                           # pixels: the paper next to a stroke, to compare the surface over the stroke with
+GHOST_MAX = 0.04                         # share of the ink's contrast a surface may keep over the strokes (and at least 4 levels)
+
+
+def ghost_of(win: np.ndarray, level: np.ndarray, ink: np.ndarray, core, dark_paper: bool) -> float:
+    """How much of the strokes the surface `level` still shows over them, as a share of the strokes' contrast: the
+    surface over the strongest ink pixels of the box against the surface right next to the strokes. A surface made
+    from the paper alone has the same colour on both; a blurred or thick stroke that the closing did not remove leaves
+    it darker (lighter, on a dark paper) over the stroke: a ghost of the value under its replacement."""
+    x0, y0, x1, y1 = (max(int(v), 0) for v in core)
+    if y1 <= y0 or x1 <= x0:
+        return 0.0
+    lum_w, lum_l = _lum(win.astype(np.float32)), _lum(level)
+    part = lum_w[y0:y1, x0:x1]
+    sgn = -1.0 if dark_paper else 1.0                            # strokes are darker than the paper (lighter on a dark one)
+    paper = float(np.percentile(part, 10 if dark_paper else 90))
+    contrast = abs(paper - float(np.percentile(part, 98 if dark_paper else 2)))
+    if contrast < 2 * MIN_INK:
+        return 0.0
+    box = np.zeros(ink.shape, bool)
+    box[y0:y1, x0:x1] = True
+    strong = box & (sgn * (paper - lum_w) > 0.5 * contrast)
+    near = morph.square_max(ink.astype(np.uint8), 3).astype(bool)
+    ring = box & morph.square_max(ink.astype(np.uint8), 2 * GHOST_RING + 1).astype(bool) & ~near
+    if strong.sum() < 8 or ring.sum() < 8:
+        return 0.0
+    # (the ring is the paper next to the ink mask, which is grown by GROW: it lies outside the soft edge of a stroke)
+    return max(sgn * float(lum_l[ring].mean() - lum_l[strong].mean()), 0.0) / contrast
 
 
 def _bias(win: np.ndarray, level: np.ndarray, known: np.ndarray) -> np.ndarray:
@@ -100,13 +147,30 @@ class Surface:
             self.rgb = None
             return
         win = np.asarray(img.crop((X0, Y0, X1, Y1)).convert("RGB"))
-        level, ink = paper_and_ink(win, h)
+        core = (x0 - X0, y0 - Y0, x1 - X0, y1 - Y0)           # the value's box in the window
+        level, ink = self._clean(win, h, core)
+        if level is None:
+            self.rgb = None
+            return
         known = ~ink
         if known.sum() < 0.05 * known.size:                  # (nearly) all ink: a black area, no paper to learn from
             self.rgb = None
             return
         self.rgb = level + _bias(win.astype(float), level, known)
         self.ink_share = float(ink.mean())
+
+    @staticmethod
+    def _clean(win, h, core):
+        """(level, ink) of the window with no ghost of the strokes in the level, or (None, None): the paper level of
+        the polarity the box shows; if that keeps the strokes (a blurred or thick stroke wider than the closing), a
+        larger closing; if that does too, no surface at all (the caller paints the flat colour of the ring, as the
+        code did before the surface)."""
+        dark = is_dark_paper(win, core)
+        for factor in (0.55, 0.9):
+            level, ink = paper_and_ink(win, h, core, factor, dark)
+            if ghost_of(win, level, ink, core, dark) <= GHOST_MAX:
+                return level, ink
+        return None, None
 
     @property
     def ok(self) -> bool:

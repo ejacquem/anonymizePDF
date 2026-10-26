@@ -4872,6 +4872,95 @@ def weight_tests():
     check("nothing measured (no look): the quality is returned as it is", none is q)
 
 
+def sharp_review_tests():
+    """The three findings of the review of run 1 (docs/overnight/PROMPT_SHARP.md, phase 0): light text on a thin dark band, a
+    blurred 150 dpi copy, a page turned in black-box mode."""
+    print("\n== review findings of run 1 (band, ghost, black boxes on a turned page)")
+    from types import SimpleNamespace
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    from anonymizer import backdrop, quality
+
+    fonts = ROOT / "anonymizer" / "fonts"
+    # 1. a name in white on a navy band only 1.5 text heights tall, in a window that is mostly light paper
+    font = ImageFont.truetype(str(fonts / "Roboto-Regular.ttf"), 34)
+    navy = (22, 34, 84)
+    img = Image.new("RGB", (560, 170), (250, 248, 242))
+    d = ImageDraw.Draw(img)
+    d.rectangle((40, 62, 500, 62 + 52), fill=navy)
+    d.text((60, 100), "Mathis Verhaegen", font=font, fill=(255, 255, 255), anchor="ls")
+    box = (58, 66, 60 + int(font.getlength("Mathis Verhaegen")) + 2, 110)
+    surf = backdrop.Surface(img, box)
+    quality.erase(img, box, surf.colour(box), quality.Quality(grain=0.0), ("band",), surf)
+    lum = np.asarray(img.convert("L")).astype(float)[box[1]:box[3], box[0]:box[2]]
+    check("white text on a thin navy band: the erased box shows the band, no stroke of the value is repainted",
+          float(lum.max()) < 60, f"lightest pixel {lum.max():.0f} (the band is {0.299 * navy[0] + 0.587 * navy[1] + 0.114 * navy[2]:.0f})")
+    # 2. a blurred copy whose strokes are wider than the closing: no ghost (the surface falls back to the flat colour)
+    font2 = ImageFont.truetype(str(fonts / "Roboto-Bold.ttf"), 17)
+    small = Image.new("RGB", (260, 75), (250, 248, 242))
+    ImageDraw.Draw(small).text((30, 50), "Mathis Verhaegen", font=font2, fill=(25, 25, 30), anchor="ls")
+    blurry = small.resize((520, 150), Image.BILINEAR).filter(ImageFilter.GaussianBlur(3.0))
+    box2 = (56, 66, (30 + int(font2.getlength("Mathis Verhaegen")) + 2) * 2, 112)
+    surf2 = backdrop.Surface(blurry, box2)
+    pix = blurry.copy()
+    quality.erase(pix, box2, surf2.colour(box2, (250, 248, 242)), quality.Quality(grain=0.0), ("ghost",), surf2)
+    ghost = 249 - np.asarray(pix.convert("L")).astype(float)[box2[1]:box2[3], box2[0]:box2[2]]
+    check("a blurred 150 dpi copy: the erased box has no ghost of the letters (darkest pixel within 14 levels of the paper)",
+          float(ghost.max()) < 14, f"{ghost.max():.1f}")
+    pix = blurry.copy()
+    scanpaint._erase_patch(pix, box2, (250, 248, 242), SimpleNamespace(quality=quality.Quality(grain=0.0)), ("ghost",), 1.0)
+    ghost = 249 - np.asarray(pix.convert("L")).astype(float)[box2[1] + 2:box2[3] - 2, box2[0] + 2:box2[2] - 2]
+    check("the same on the pictures of digital pages (_erase_patch): no ghost", float(ghost.max()) < 14, f"{ghost.max():.1f}")
+    # the surface of a clean page is not given up for nothing
+    clean = Image.new("RGB", (560, 170), (250, 248, 242))
+    ImageDraw.Draw(clean).text((60, 100), "Mathis Verhaegen", font=font, fill=(25, 25, 30), anchor="ls")
+    check("a sharp page keeps its surface", backdrop.Surface(clean, (58, 66, 60 + int(font.getlength("Mathis Verhaegen")) + 2, 110)).ok)
+
+    if not ocr.available():
+        print("  (no OCR engine on this PC: the black boxes on a turned page are skipped)")
+        return
+    # 3. black-box mode on a page turned by 12 degrees: every value is covered where it is
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("make_test_challenge", ROOT / "tools" / "make_test_challenge.py")
+    gen = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("make_test_challenge", gen)
+    spec.loader.exec_module(gen)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_blackbox_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        specs = gen.select(["geom_tilt12"])
+        folder = tmp / "client"
+        gen.build(folder, specs, jobs=1)
+        res = engine.scan_folder(folder, "client", _names_model(), "fra+eng", lambda m: None)
+        config = res["config"].replace("mode: replace", "mode: blackbox")
+        check("(the test config is in black-box mode)", "mode: blackbox" in config)
+        rep = engine.run_anonymize(folder, "client", config, "fra+eng", False, lambda m: None)
+        sp = specs[0]
+        f = next(x for x in rep["files"] if x["file"].startswith(sp["name"]))
+        truth = gen.render_case(sp)
+        import pymupdf as fitz
+
+        def grey_of(path):
+            doc = fitz.open(path)
+            pm = doc[0].get_pixmap(dpi=gen.DPI, alpha=False)
+            doc.close()
+            return np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width, 3).mean(axis=-1)
+
+        out, orig = grey_of(folder / f["output"]), grey_of(folder / (sp["name"] + ".pdf"))
+        covered, bad = 0, []
+        for row, tr in zip(sp["rows"], truth["rows"]):         # the ink of the value in the original is black in the output
+            x0, y0, x1, y1 = (int(v) for v in tr["bbox"])
+            ink = orig[y0:y1, x0:x1] < 110
+            share = float((out[y0:y1, x0:x1][ink] < 60).mean()) if ink.any() else 0.0
+            covered += share >= 0.9
+            if share < 0.9:
+                bad.append((row["value"], round(share, 2)))
+        check("black-box mode on a page turned by 12 degrees: every value is under a black box",
+              covered == len(sp["rows"]), f"{covered} of {len(sp['rows'])}: {bad}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 GROUPS = [
     "layout_tests", "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
@@ -4885,6 +4974,7 @@ GROUPS = [
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
+    "sharp_review_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

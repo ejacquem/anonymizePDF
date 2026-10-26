@@ -614,23 +614,36 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     back on the scan."""
     with timing.stage("render"):
         img = render_page(page, 300)
+    flat = None
     with timing.stage("angles"):
-        flat = dewarp.straighten(img) if cfg["style"]["mode"] != "blackbox" else None
+        try:
+            flat = dewarp.straighten(img)                    # (black-box mode too: the boxes are drawn on the flat page)
+        except Exception as e:                               # a failure leaves the old per-word path, never a lost page
+            log(f"   page {pno}: could not be turned straight ({type(e).__name__}: {e}), read as it is")
     if flat is None:
         return _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, img)
-    turned = flat.flatten(img)
-    before = turned.copy()
     n_records, n_notes = len(records), len(extras.get("trace", []))
     n_black, n_mrz = len(extras["blackouts"]), len(extras["mrz"])
-    out = _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, turned, flat)
-    for r in records[n_records:]:                         # the boxes were made on the flat page: give those of the page
-        r["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in r["box"]))])
-    for item in extras.get("trace", [])[n_notes:]:
-        item["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in item["box"]))])
-    for item in extras["blackouts"][n_black:]:
-        item["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in item["box"]))])
+    try:
+        turned = flat.flatten(img)
+        before = turned.copy()
+        out = _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, turned, flat)
+        for r in records[n_records:]:                         # the boxes were made on the flat page: give those of the page
+            r["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in r["box"]))])
+        for item in extras.get("trace", [])[n_notes:]:
+            item["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in item["box"]))])
+        for item in extras["blackouts"][n_black:]:
+            item["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in item["box"]))])
+        result = flat.compose(img, before, out)
+    except Exception as e:                                    # the flat path failed: forget its records, redo the page as it is
+        log(f"   page {pno}: the straightened page could not be painted ({type(e).__name__}: {e}), read as it is")
+        del records[n_records:]
+        if "trace" in extras:
+            del extras["trace"][n_notes:]
+        del extras["blackouts"][n_black:], extras["mrz"][n_mrz:]
+        return _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, img)
     log(f"   page {pno}: turned by {flat.angle:+.2f} degrees, read and painted straight")
-    return flat.compose(img, before, out)
+    return result
 
 
 def _page_words(words: list[dict], flat) -> list[dict]:
