@@ -125,3 +125,25 @@ of `check_all` change at each run: a failure of the second check on `carte_ident
 `hits` empty) can still appear for a key in a few tens (0 of 24 / 0 of 24 / 0 of 16 on the fixed key sets of the last state); replay with
 `python tools/check_all.py --key <file> --folder "Dossier Test 09"`.
 
+Last lines of `check_all.py --fast` on the last code commit (`572e057`, log `docs/overnight/runs/check_p3c.log`, not committed):
+
+```
+1790 passed, 0 failed (1010s)
+  longest jobs: colour_tests 506s, Dossier Test 17, key 2 428s, Dossier Test 17, key 1 428s, Dossier Test 05, key 1 252s, Dossier Test 05, key 2 252s
+```
+
+## What is left (plainly)
+
+- **`found` on the `doc_` pages is 86 % (final_full.json), below 90 %: a value not found is not replaced, a possible leak, and the next priority.**
+  The rest is mostly values on bent / tilted pages that the line tracking or the OCR still miss, the two reference kinds (`HAB-...`, `AUT-...`) that detection
+  does not know at all (detection, not rendering), and `strike` / `stamp` (out of scope in the brief).
+- A tilted word on a highlighter keeps the flat patch (`paint_tilted` has no Surface: it made the second check fail on the poor ID copy).
+- Coarse scans (blocks) keep the flat patch and the unweighted fake.
+- Time: the full challenge bench 381 s -> 468 s; `tools/bench.py` documents +7 % at the end (159.6 -> 170.6 s). Mid-run it was +45 % (anonymize 119.5 -> 192.4 s,
+  `wait` stage): one cProfile of `run_anonymize` on `contrat_assurance_scan.pdf` named `dewarp.Field.at` (20 s of 81), `dewarp._warp_rows` / flatten / compose (18 s)
+  and the fonts / OCR work that was already there; the first two were cut by an exactly equal `Field.at` and by using the field only for a real bend (see JOURNAL P3-4).
+  The remaining added cost is the Surface per value, the weight match (about 10 text renderings per value) and the extra OCR reading on coloured pages. Follow-up, not done:
+  cache the rendering used by `weight_matched`, compose only the bands that changed, skip the flat OCR reading when the first one has every word.
+- The intermediate run `p3g` (found 95 -> 93 %, `doc_contrat_persp` 94 -> 56 %, `geom:wave` 100 -> 80 %) was a bug of my own speed-up (a single point lost the Gaussian
+  part in `Field.at`); fixed, and the following full runs (`p3h`, `p3i`, = `final_full.json`) are identical to the state before it: found 95 %, `doc_contrat_persp` 94 %, `wave` 100 %.
+- Not attempted: copying glyphs from the page, more fonts.
