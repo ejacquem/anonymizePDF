@@ -4961,6 +4961,48 @@ def sharp_review_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def sharp_read_tests():
+    """Pages scanned coarsely are read as the scan was (anonymizer/ocrpage.py: block_factors, smooth) and a page the OCR cannot
+    read is said so (scanpaint._unread_warning). No OCR needed."""
+    print("\n== coarse scans: read smoothly, never fail silently")
+    from PIL import Image, ImageDraw, ImageFont
+    from anonymizer import ocrpage
+
+    font = ImageFont.truetype(str(ROOT / "anonymizer" / "fonts" / "CourierPrime-Regular.ttf"), 22)
+    native = Image.new("RGB", (700, 260), (255, 255, 255))
+    d = ImageDraw.Draw(native)
+    for i in range(7):
+        d.text((20, 20 + 32 * i), f"Gaspard Delcourt {i} habite Rue des Arts {i + 3}", font=font, fill=(10, 10, 10), anchor="lt")
+    sharp = native.resize((2100, 780), Image.NEAREST)
+    fx, fy = ocrpage.block_factors(sharp)
+    check("a scan enlarged 3 times without interpolation is found (factors 3 and 3)", abs(fx - 3) < 0.3 and abs(fy - 3) < 0.3, (fx, fy))
+    fax = native.resize((1050, 780), Image.NEAREST)                      # 1.5 x 3: a fax
+    fx, fy = ocrpage.block_factors(fax)
+    check("a fax (1.5 x 3) is found per axis", abs(fx - 1.5) < 0.2 and abs(fy - 3) < 0.3, (fx, fy))
+    fx, fy = ocrpage.block_factors(native.resize((2100, 780), Image.BICUBIC))
+    check("a page enlarged smoothly is not coarse", fx == 1.0 and fy == 1.0, (fx, fy))
+    fx, fy = ocrpage.block_factors(Image.new("RGB", (900, 600), (255, 255, 255)))
+    check("a blank page is not coarse", fx == 1.0 and fy == 1.0, (fx, fy))
+    soft = ocrpage.smooth(sharp, 3.0, 3.0)
+    check("the smooth page has the size of the page", soft.size == sharp.size, soft.size)
+    check("the smooth page has no stairs (no block factor is found in it)", ocrpage.block_factors(soft) == (1.0, 1.0),
+          ocrpage.block_factors(soft))
+    # the warning: ink and no word
+    gray = np.full((1000, 700), 255, np.uint8)
+    gray[100:900:20, 50:650] = 20                                        # ruled lines, about 3 % ink
+    logged, extras = [], {}
+    scanpaint._unread_warning(3, gray, [], extras, logged.append)
+    check("a page with ink and no word is reported, in the log and in the extras",
+          len(extras.get("warnings", [])) == 1 and "page 3" in extras["warnings"][0] and logged and "WARNING" in logged[0], extras)
+    words = [{"text": "mot", "box": (0, 0, 1, 1), "line": 0}] * 300
+    extras = {}
+    scanpaint._unread_warning(1, gray, words, extras, logged.append)
+    check("a page the OCR reads is not reported", not extras.get("warnings"))
+    extras = {}
+    scanpaint._unread_warning(1, np.full((1000, 700), 255, np.uint8), [], extras, logged.append)
+    check("a blank page is not reported", not extras.get("warnings"))
+
+
 GROUPS = [
     "layout_tests", "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
@@ -4974,7 +5016,7 @@ GROUPS = [
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
-    "sharp_review_tests",
+    "sharp_review_tests", "sharp_read_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

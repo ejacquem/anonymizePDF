@@ -282,9 +282,72 @@ def _vertical(a, b) -> float:
     return max(iy, 0) / max(min(a[3] - a[1], b[3] - b[1]), 1e-6)
 
 
+BLOCK_MIN = 1.3                          # a page whose pixels are repeated this much was scanned at under ~230 dpi
+SMOOTH_BLUR = 1.0                        # pixels of the Gaussian blur of the smooth reading
+
+
+def block_factors(img) -> tuple[float, float]:
+    """(fx, fy): how many pixels of the page image one pixel of the scan covers, per axis (1 = none). MuPDF draws a
+    scan enlarged by more than a factor of 1.3 or so without interpolation: every pixel of the scan is a run of equal
+    pixels, so only about 1/f of the boundaries between neighbouring columns (rows) ever change. A page scanned at 300
+    dpi or more changes at every boundary somewhere. Measured on the whole page: a few ms."""
+    g = np.asarray(img.convert("L"))
+    dark = g < 160
+    out = []
+    for a, b, axis in ((g[:, 1:], g[:, :-1], 0), (g[1:], g[:-1], 1)):      # columns, then rows
+        ink = dark.any(axis=axis)                                          # the columns (rows) that hold ink
+        inky = ink[1:] | ink[:-1]                                          # the boundaries next to one
+        if inky.sum() < 50:
+            out.append(1.0)
+            continue
+        density = float((a != b).any(axis=axis)[inky].mean())
+        out.append(1.0 / density if 0.05 < density < 0.8 else 1.0)
+    return out[0], out[1]
+
+
+def smooth(img, fx: float, fy: float, blur: float = SMOOTH_BLUR, resample: str = "BICUBIC"):
+    """The page read as the scan was: back to the scan's own pixels (box average over each run of repeated pixels), then
+    enlarged smoothly to the same size (bicubic / Lanczos) and a little blurred: the stairs of a coarse or hard-cut scan
+    are not strokes for the OCR. Same size as `img`, so the boxes of the reading are the page's."""
+    from PIL import Image, ImageFilter
+
+    w, h = img.size
+    small = img.resize((max(int(round(w / fx)), 1), max(int(round(h / fy)), 1)), Image.BOX)
+    big = small.resize((w, h), getattr(Image, resample))
+    return big.filter(ImageFilter.GaussianBlur(blur)) if blur else big
+
+
+POOR_AGREE = 0.93                        # the share of the first reading's words that another reading gives again, below which the page is poor
+
+
+def agreement(base: list[dict], alts: list[list[dict]]) -> float:
+    """The share of the words of the first reading that at least one other reading gives again (same letters, on the same
+    place). A clean page: 96-100 %; a coarse, thin or broken one: 80-90 %. Read from the readings that were made anyway."""
+    if not base or not alts:
+        return 1.0
+    same = 0
+    for w in base:
+        key = _fold(w["text"])
+        same += any(_fold(a["text"]) == key and _overlap(w["box"], a["box"]) >= 0.4 for alt in alts for a in alt)
+    return same / len(base)
+
+
+def extra_readings(img, fx: float, fy: float):
+    """The images of a poor page that are read once more: strokes thickened by a pixel (thin or broken strokes of a hard-cut
+    or 200 dpi scan), the page brought back to about 200 dpi (the OCR was made for it), and, for a page whose scan pixels
+    are runs of equal pixels, the page smoothed."""
+    from PIL import Image, ImageFilter
+
+    yield "thick", img.filter(ImageFilter.MinFilter(3))
+    yield "native", img.resize((img.width * 2 // 3, img.height * 2 // 3), Image.BOX).resize(img.size, Image.BICUBIC)
+    if max(fx, fy) >= BLOCK_MIN:
+        yield "smooth", smooth(img, fx, fy)
+
+
 def page_words(img, lang: str = "fra+eng") -> list[dict]:
     """Words of a page image (boxes in its pixels): the OCR reading of the image, repaired with the readings of the
-    image rescaled. Same format as `ocr.ocr_words`."""
+    image rescaled. A page whose readings disagree (poor scan) is read through a few more variants. Same format as
+    `ocr.ocr_words`."""
     from PIL import Image
 
     base = ocr.ocr_words(img, lang)
@@ -295,4 +358,8 @@ def page_words(img, lang: str = "fra+eng") -> list[dict]:
         small = img.resize((max(int(img.width * factor), 1), max(int(img.height * factor), 1)),
                            getattr(Image, name))
         alts.append(_scaled(ocr.ocr_words(small, lang), factor, f"alt{k}"))
+    if len(base) >= 20 and agreement(base, alts) < POOR_AGREE:
+        fx, fy = block_factors(img)
+        for tag, variant in extra_readings(img, fx, fy):
+            alts.append(_scaled(ocr.ocr_words(variant, lang), 1.0, tag))
     return merge(base, alts)

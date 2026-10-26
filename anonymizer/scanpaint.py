@@ -653,6 +653,22 @@ def _page_words(words: list[dict], flat) -> list[dict]:
     return [{**w, "box": flat.box_to_page(w["box"])} for w in words]
 
 
+UNREAD_INK = 0.3                         # % of the page that is dark for the page to count as having something on it
+UNREAD_WORDS = 8                         # words the OCR must read per % of ink (a page of text has 30 or more)
+
+
+def _unread_warning(pno, gray, words, extras, log) -> None:
+    """A scanned page with ink where the OCR reads (almost) no word: nothing there can be replaced, so the page may go out
+    with every value readable. Said in the log and in the report (`warnings` of the file: the Recap shows it)."""
+    ink = float((gray < 140).mean()) * 100
+    n = len(words)
+    if ink >= UNREAD_INK and n < max(5, UNREAD_WORDS * ink):
+        msg = (f"page {pno}: the OCR read only {n} word(s) on a page that has ink ({ink:.1f} % of its area): nothing may have "
+               f"been replaced there, check the page by hand")
+        log("   WARNING: " + msg)
+        extras.setdefault("warnings", []).append(msg)
+
+
 def _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, img, flat=None):
     """The body of `_scan_page` on the page image `img` (straight text; `flat`: the maps to the scan when it was
     turned straight)."""
@@ -662,6 +678,7 @@ def _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
         gray = np.asarray(img.convert("L"))              # the page is not painted before the end: one grey copy
         img_key = memo.image_key(img)                    # the pixels before anything is painted
     words = page_words(img, ocr_lang)
+    _unread_warning(pno, gray, words, extras, log)
     skew = {}                                            # measures of the crops, shared by both passes
     with timing.stage("angles"):
         angles = word_angles(img_key, gray, words, skew)  # slant of each word, before painting

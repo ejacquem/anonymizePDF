@@ -1364,7 +1364,7 @@ def _finish_page(task, page, pno: int, n_pages: int, cfg: dict, pc: dict, ocr_la
         with timing.stage("save"):
             return _jpeg(img)
     records.extend(answer["records"])
-    for key in ("blackouts", "mrz", "trace"):
+    for key in ("blackouts", "mrz", "trace", "warnings"):
         extras.setdefault(key, []).extend(answer["extras"].get(key, []))
     for line in answer["log"]:
         log(line)
@@ -1633,6 +1633,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
             entry["items"] = summarize(records, cfg)
             entry["blackouts"] = extras["blackouts"]
             entry["mrz"] = extras["mrz"]
+            entry["warnings"] += extras.get("warnings", [])      # a scanned page the OCR could not read: never a silent pass
             entry["trace"] = extras.get("trace", [])          # shared list: a second scan pass adds to it
             if extras["blackouts"] and mode != "scan":
                 log(f"   blacked out: " + ", ".join(f"{b['kind']} p.{b['page']}" for b in extras["blackouts"]))
