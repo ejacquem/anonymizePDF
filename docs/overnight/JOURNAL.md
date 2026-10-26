@@ -48,7 +48,7 @@ are in the third decimal or tiny absolute values and are listed above).
 
 Hypothesis: under a highlighter (magenta, blue, some yellow) the OCR does not read the value at its place; dividing the page
 per channel by its local paper level (closing 15 px) turns it into dark ink on white; one more reading on that image, merged
-like the others (`ocrpage.merge`), only on pages that have coloured areas (chroma > 50 on > 0.03 % of the page, ~1.5 s a page).
+like the others (`ocrpage.merge`), only on pages that have coloured areas (chroma > 70 on > 0.15 % of the page, ~1.5 s a page).
 Scratch check on three doc pages: the plain reading garbles or misses the magenta e-mail, the magenta phone, the blue IBANs; the
 flat reading gives every one right.
 Full run `p1h_full.json` vs `p1g_full.json`: deco:hl_magenta found 0 % -> 100 % (n=4), doc_* found 69 % -> 73 % (doc_releve_bend
@@ -66,3 +66,33 @@ box of the second place lands on the street line, `pii.match_boxes` cut by the m
 fake town written over the street) although nothing in the reading changed. Rule 3 (found never drops) rejects it. The cause
 is in how the boxes of a value that spans two OCR lines of a bent page are cut, which phase 2 (flattening bent pages) is
 meant to remove: retry after phase 2. Reverted.
+
+## P2-1 pages turned and bent: `anonymizer/dewarp.py`
+
+Hypothesis (from the baseline: `geom:tilt12` found 0 of 5, tilt18 60 %): the Windows OCR straightens a page it finds turned by ~10
+degrees or more and gives the boxes of the STRAIGHTENED page, so the fake is painted at the wrong place; the fonts, quality and
+paint also assume horizontal lines. Turn the page straight ourselves, read and paint it flat, and bring back only what changed.
+Mechanism: the skew of the whole page (`regions.text_angle` on the page reduced 4 times, from 2 degrees), then the bend: the lines
+are followed from strip to strip on the reduced page, a vertical displacement field (Gaussians on a 170 px grid + a plane) is
+fitted to their centres, used when it makes the rows of ink 20 % more contrasted. Flat page on a larger canvas, `_scan_flat` =
+the old `_scan_page` body, records / trace / black boxes mapped back, `Flat.compose` pastes the changed pixels (grown 2 px).
+Full runs (p2e vs the phase-1 state p1h): found 88 % -> 95 % (geom 78 -> 100 %: tilt12 0 -> 100, tilt18 60 -> 100, tilt6 80 -> 100,
+bend_strong 60 -> 100, bend_tilt 80 -> 100; doc 73 -> 86 %: releve_tilt 73 -> 100, contrat_bend 69 -> 94, releve_bend 73 -> 87,
+persp 88 -> 94), `dark` 5.3 -> 4.1, ink_rel 0.65 -> 0.56, dx 3.2 -> 2.4, geom:tilt18 dy 12.3 -> 1.2, dark 33.5 -> 4.9, doc_contrat_bend
+coll 26.9 -> 2.5. The pictures of the doc pages (view with tools/sheet_view.py / the page montage) read right: a bent and
+tilted contract is replaced line by line where the baseline pasted fakes over the wrong lines.
+Not better: bg95 of the doc and the tilted five-row cases +0.2..0.5 (resampled twice where the paint is), mass of tilted / bent
+values 0.9 -> 1.1, doc_assurance_bendtilt found 69 % -> 62 % against the rotation-only run (one value, '4000 Liège', measured
+0.43 of its box by the bench but found and replaced when the page is run alone), doc_contrat_persp coll 16 -> 160 (a signature
+black box now found, wider than the signature: over-redaction).
+Things tried on the way (not kept): a field gated by the curvature of the chains (a card of straight lines still got one: tracking
+mistakes); the blur of one resampling taken off the fake's blur (`quality.unresample`: `dark` +1.1, no gain); the field applied from
+1 degree (`contract_tests` failed: the second check read a fake e-mail back as a leak with a little more blur; page 2 of the contract
+is turned by 1.0 degree and the old per-word path is good enough below 2 degrees).
+Linear interpolation of the field warp was replaced by a cubic (Catmull-Rom): less blur.
+Known: `check_all` (random keys) now fails about 1 key in 5 on `carte_identite_faible_qualite.pdf` ('second check finds nothing
+readable', 'Eltoe' = the OCR's reading of the fake first name 'Eline' written in a serif font over the pink SPECIMEN
+watermark of a 150 dpi poor copy). 0 of 12 keys on the base commit. The background of the erased name now continues the watermark
+(faithful to the card), which makes the OCR of the thin serif fake worse; the pixels differ by 1.5 levels on average. A
+chaotic flip of the OCR on a font mismatch (the first name should be written in the bold sans of the card, the font match picks a serif
+for it), not a leak; see REPORT.md.

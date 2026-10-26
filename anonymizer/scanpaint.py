@@ -22,7 +22,7 @@ from dataclasses import replace
 import numpy as np
 from PIL import Image, ImageDraw
 
-from . import backdrop, faces, fields, fontmatch, memo, quality, regions, render, timing
+from . import backdrop, dewarp, faces, fields, fontmatch, memo, quality, regions, render, timing
 from .fake import match_case
 from .ocr import ocr_words, render_page
 from .ocrpage import page_words
@@ -554,11 +554,43 @@ def _pt_box(boxes) -> list:
 
 
 def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log):
-    """One scanned page -> its anonymized image (values repainted, MRZ rebuilt, black boxes)."""
+    """One scanned page -> its anonymized image (values repainted, MRZ rebuilt, black boxes). A page turned by more than
+    a degree is turned straight first (`dewarp`): it is read and painted flat, and only the pixels that changed go
+    back on the scan."""
+    with timing.stage("render"):
+        img = render_page(page, 300)
+    with timing.stage("angles"):
+        flat = dewarp.straighten(img) if cfg["style"]["mode"] != "blackbox" else None
+    if flat is None:
+        return _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, img)
+    turned = flat.flatten(img)
+    before = turned.copy()
+    n_records, n_notes = len(records), len(extras.get("trace", []))
+    n_black, n_mrz = len(extras["blackouts"]), len(extras["mrz"])
+    out = _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, turned, flat)
+    for r in records[n_records:]:                         # the boxes were made on the flat page: give those of the page
+        r["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in r["box"]))])
+    for item in extras.get("trace", [])[n_notes:]:
+        item["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in item["box"]))])
+    for item in extras["blackouts"][n_black:]:
+        item["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in item["box"]))])
+    log(f"   page {pno}: turned by {flat.angle:+.2f} degrees, read and painted straight")
+    return flat.compose(img, before, out)
+
+
+def _page_words(words: list[dict], flat) -> list[dict]:
+    """The words with their boxes on the scan (where the images of the PDF page are), for a page read turned straight."""
+    if flat is None:
+        return words
+    return [{**w, "box": flat.box_to_page(w["box"])} for w in words]
+
+
+def _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, img, flat=None):
+    """The body of `_scan_page` on the page image `img` (straight text; `flat`: the maps to the scan when it was
+    turned straight)."""
     blackbox = cfg["style"]["mode"] == "blackbox"
     t0 = time.time()
     with timing.stage("render"):
-        img = render_page(page, 300)
         gray = np.asarray(img.convert("L"))              # the page is not painted before the end: one grey copy
         img_key = memo.image_key(img)                    # the pixels before anything is painted
     words = page_words(img, ocr_lang)
@@ -567,7 +599,7 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
         angles = word_angles(img_key, gray, words, skew)  # slant of each word, before painting
         words = _refine_slanted(img, words, angles, ocr_lang)              # exact boxes of the slanted lines
         angles = word_angles(img_key, gray, words, skew)
-    pf = page_fonts(gray, words, cfg, native_scale(page, 300, words=words), angles)
+    pf = page_fonts(gray, words, cfg, native_scale(page, 300, words=_page_words(words, flat)), angles)
     with timing.stage("text"):
         plan = plan_page(words, {**pc, "ocr_tolerant": True}, [], numberer, font_advance(pf, cfg))
     draw = ImageDraw.Draw(img)

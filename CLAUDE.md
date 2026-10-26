@@ -44,6 +44,10 @@ anonymizer/
                        of behaviour): _scan_page, _pixel_pass, page_fonts / page_looks / page_quality, layout_value,
                        _cut_lines, _refine_slanted, MRZ rebuild (_new_mrz), native_scale, pii_cfg. Imports nothing
                        from engine.py (engine imports it)
+  backdrop.py          the background an erased box shows (Surface: closing per channel, ink grown, smooth bias; section
+                       10c), the page without its tints for the OCR (tinted, flatten)
+  dewarp.py            a page turned or bent, read and painted flat (Flat, straighten, Field; section 10d); only the pixels
+                       that changed go back on the scan
   verify.py            checks of an anonymized file, read once: read_output (text layer, OCR), verify_output
                        (original values still in the file), leak_suspects (the second check)
   pii.py               DETECTORS (regex + validators), spaCy NER (load_ner, detect_ner), detect_all, resolve,
@@ -127,6 +131,8 @@ tools/                 make_test_statement.py, make_test_passport.py, make_test_
                        scan_props.py (properties of the scanned pages of a folder, no client data; section 12c);
                        make_test_statement150.py (Dossier Test 20: the 150 dpi statements, truth; docs 11);
                        bench.py (time by document and by stage, before / after, section 11b);
+                       sheet_view.py (the worst-values sheet of challenge_bench as PNG montages) and bench_cmp.py (before / after
+                       of two bench runs with the acceptance rule's verdicts, section 12d);
                        check_public_docs.py + fetch_public_samples.py + public_samples.json (real public documents,
                        section 12b: the PDFs are downloaded, never committed)
 ```
@@ -772,6 +778,37 @@ Order must never change a result (`order_tests`): a value written with several s
   words are too weak a clue (digits; wrong in 16 of 36 single-word cases on the paragraph file). A fake cut short by its
   box can leave a fragment of the last letter of the original ('Rossignol' -> a pale bar after 'Chevalier').
 
+## 10c. Background under an erased value (`backdrop.py`, overnight run, docs/overnight/JOURNAL.md)
+
+- The box of a replaced value on a scan (and of a picture of a digital page, and of a turned word) is no longer painted with
+  ONE colour: `backdrop.Surface(img, box)` rebuilds what the page shows without the strokes. Per channel, the grey CLOSING of a
+  window around the box (0.3 text heights, removes what is thinner than the strokes, keeps a highlighter, a stripe, a gradient and
+  their edges), where the small closing still keeps something dark in every channel (a coarse or blurred stroke, `GHOST_DROP`)
+  the closing of 0.55 heights; plus a smooth bias taken from the paper pixels (the closing keeps the brightest noise). The ink
+  (darker than the closing by max(14, 3.5 x grain) in any channel, grown 3 px) is never used: nothing of the strokes is in the
+  surface, and the whole box is repainted from it (`quality.erase(..., surface)` adds the grain). Per channel, so a yellow or magenta
+  highlighter is paper, not ink. Rules (underlines, frames) are thin dark lines, so they are ink here and are put back by
+  `scanpaint._rules_in` / `_restore_rules`, whose mask is grown 2 px up and down (the soft edge of a line).
+- Under a highlighter the OCR misses or garbles the value: pages with coloured areas (`backdrop.tinted`: chroma > 70 on > 0.15 %
+  of the page) are read once more on the page divided per channel by its paper level (`backdrop.flatten`, a closing of 15 px),
+  merged like the other readings (`ocrpage.page_words`). Not kept: the fonts measured on that flat grey (one value lost on a bent page,
+  JOURNAL P1-3). Tests: `backdrop_tests`.
+
+## 10d. Turned and bent pages (`dewarp.py`)
+
+- `scanpaint._scan_page` first asks `dewarp.straighten(img)`: the skew of the whole page (`regions.text_angle` on the page
+  reduced 4 times, from 2 degrees) and its bend (the lines are followed from strip to strip on the reduced page; a vertical
+  displacement field of Gaussians is fitted to their centres, `Field`; used only when it makes the rows of text at least 20 %
+  more contrasted, `_rows_gain`: a card or a form of straight lines gets none). The page is turned straight on a larger canvas (nothing
+  cut), `_scan_flat` (the old body of `_scan_page`) reads and paints THAT page, the records, the trace and the black boxes are
+  brought back to the scan's coordinates (`Flat.box_to_page`), and `Flat.compose` pastes onto the scan only the pixels that changed
+  (grown 2 px): what was not replaced keeps the pixels of the scan. The Windows OCR straightens a page it finds turned by 10
+  degrees or more and gives the boxes of the straightened page: before this a page turned by 12 degrees was never replaced at its place.
+- Maps: page p -> rotated canvas u = c_u + R(a)(p - c_o) -> flat (x, y) with u = (x, y + d(x, y)); the inverse of d is a fixed
+  point iteration. Cubic (Catmull-Rom) resampling along the columns for d, PIL bicubic for the turn. The page is resampled twice
+  where it changed (a little blur); a page turned by less than 2 degrees is left to the old per-word path (`TILT_MIN`).
+  Tests: `dewarp_tests`.
+
 ## 11. Identity documents: MRZ, photos, QR codes, signatures
 
 - **MRZ** is never read back and never blacked out: always rebuilt in the same format (`mrz: keep` to leave it).
@@ -1015,6 +1052,10 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Export (`export_tests`): the ZIP of a folder tree holds exactly the outputs at their paths (hidden and `__pycache__`
   folders, configs, reports, review flags and `anon_ocr.json` left out), the info names the originals without output, no
   output gives a message, a path outside --root is 403.
+- Background of an erased box and turned / bent pages (`backdrop_tests`, `dewarp_tests`): a yellow highlighter, a gradient, a stripe
+  edge and a blurred copy leave the background of the page and no ghost of the letters; a page turned by 9 degrees and a waved page
+  are found, the maps go back and forth, only the painted pixels come back, and the scans of Dossier Test 22's `geom_tilt12` and
+  `geom_bend_strong` are replaced at their place with nothing left.
 - Underlined and framed values on a scan (`underline_tests`, B4): each underline stays, no replacement is bold where the
   original is regular.
 - Corrupted text layer (`corrupt_layer_tests`: the page is read by OCR, its values replaced), a town with its region code

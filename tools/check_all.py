@@ -4668,6 +4668,166 @@ def _norm(s):
     return "".join(c for c in s.casefold() if c.isalnum())
 
 
+def backdrop_tests():
+    """What an erased box shows (anonymizer/backdrop.py): the background the page would show without the strokes, not one
+    flat colour; nothing of the strokes is left; a highlighter keeps its colour and its edge; a gradient goes on."""
+    print("\n== background under an erased value")
+    from PIL import Image, ImageDraw, ImageFont
+    from anonymizer import backdrop, quality
+
+    def text_page(bg_fn, text="Mathis Verhaegen", size=34):
+        img = Image.new("RGB", (520, 150), (250, 248, 242))
+        arr = np.asarray(img).astype(float)
+        bg_fn(arr)
+        img = Image.fromarray(arr.astype(np.uint8))
+        font = ImageFont.truetype(str(ROOT / "anonymizer" / "fonts" / "Roboto-Regular.ttf"), size)
+        ImageDraw.Draw(img).text((60, 100), text, font=font, fill=(25, 25, 30), anchor="ls")
+        return img, (58, 100 - size, 60 + int(font.getlength(text)) + 2, 100 + size // 3)
+
+    def clean_of(bg_fn):
+        arr = np.full((150, 520, 3), (250, 248, 242), float)
+        bg_fn(arr)
+        return arr
+
+    def erased(bg_fn):
+        img, box = text_page(bg_fn)
+        surf = backdrop.Surface(img, box)
+        quality.erase(img, box, surf.colour(box), quality.Quality(grain=0.0), ("t",), surf)
+        return np.asarray(img).astype(float), box
+
+    def flat(a):
+        pass
+
+    def marker(a):                                         # a yellow highlighter, tight around the text
+        a[52:112, 50:330] = (255, 235, 60)
+
+    def gradient(a):
+        a[:] = np.linspace(205, 252, a.shape[1])[None, :, None] * np.array([1.0, 0.99, 0.95])
+
+    def stripe(a):                                         # the edge of a stripe crosses the value
+        a[:80] = (232, 236, 244)
+
+    for name, fn in (("a flat page", flat), ("a yellow highlighter", marker), ("a gradient", gradient),
+                     ("the edge of a stripe", stripe)):
+        out, box = erased(fn)
+        clean = clean_of(fn)
+        x0, y0, x1, y1 = (int(v) for v in box)
+        diff = np.abs(out[y0:y1, x0:x1] - clean[y0:y1, x0:x1]).max(axis=-1)
+        check(f"{name}: the erased box has the background of the page (no stroke left, mean error < 4 levels)",
+              diff.max() < 25 and diff.mean() < 4, f"max {diff.max():.1f}, mean {diff.mean():.2f}")
+
+    # a thick copy: wide strokes (a blurred, coarse scan) leave no ghost either
+    img, box = text_page(flat, size=40)
+    img = img.filter(__import__("PIL.ImageFilter", fromlist=["GaussianBlur"]).GaussianBlur(1.7))
+    surf = backdrop.Surface(img, box)
+    quality.erase(img, box, surf.colour(box), quality.Quality(grain=0.0), ("t",), surf)
+    ghost = 250 - np.asarray(img.convert("L")).astype(float)[int(box[1]):int(box[3]), int(box[0]):int(box[2])]
+    check("a blurred copy: no ghost of the letters (the darkest pixel of the box is within 12 levels of the paper)",
+          float(ghost.max()) < 14, f"{ghost.max():.1f}")
+
+
+def dewarp_tests():
+    """A page turned or bent is turned straight to be read and painted (anonymizer/dewarp.py); only the pixels that
+    changed go back on the scan. Maps, estimate, and the whole pipeline on a page turned by 12 degrees."""
+    print("\n== turned and bent pages")
+    from PIL import Image, ImageDraw, ImageFont
+    from anonymizer import dewarp
+
+    font = ImageFont.truetype(str(ROOT / "anonymizer" / "fonts" / "Roboto-Regular.ttf"), 30)
+
+    def page(angle=0.0, wave=0.0):
+        img = Image.new("RGB", (1240, 1000), (250, 248, 242))
+        d = ImageDraw.Draw(img)
+        for i in range(12):
+            d.text((120, 120 + 62 * i), f"Ligne {i} : Mathis Verhaegen habite Rue des Tanneurs {i + 3}, 1050 Bruxelles", font=font,
+                   fill=(25, 25, 30), anchor="ls")
+        if wave:
+            a = np.asarray(img)
+            src = np.arange(a.shape[0])[:, None] + wave * np.sin(2 * np.pi * np.arange(a.shape[1]) / 700.0)[None, :]
+            a = dewarp._warp_rows(a, src.astype(np.float32), (250, 248, 242))
+            img = Image.fromarray(a)
+        return img.rotate(-angle, resample=Image.BICUBIC, fillcolor=(250, 248, 242)) if angle else img
+
+    check("a straight page is left as it is", dewarp.straighten(page()) is None)
+    turned = page(angle=9.0)
+    flat = dewarp.straighten(turned)
+    check("a page turned by 9 degrees is found (within 0.75 degree)", flat is not None and abs(abs(flat.angle) - 9.0) < 0.75,
+          None if flat is None else flat.angle)
+    if flat is not None:
+        for p in ((300.0, 400.0), (900.0, 700.0)):
+            q = flat.to_flat(*flat.to_page(*p))
+            check(f"a point goes to the page and back ({p})", abs(q[0] - p[0]) < 0.01 and abs(q[1] - p[1]) < 0.01, q)
+        same = flat.compose(turned, flat.flatten(turned), flat.flatten(turned))
+        check("nothing painted: the page is returned as it is", np.array_equal(np.asarray(same), np.asarray(turned)))
+        before = flat.flatten(turned)
+        after = before.copy()
+        ImageDraw.Draw(after).rectangle((500, 450, 600, 480), fill=(255, 255, 255))
+        out = np.asarray(flat.compose(turned, before, after)).astype(int)
+        changed = np.abs(out - np.asarray(turned).astype(int)).max(axis=-1) > 0
+        cx0, cy0, cx1, cy1 = flat.box_to_page((500, 450, 600, 480))
+        ys, xs = np.nonzero(changed)
+        check("only the painted pixels come back on the page, at their place",
+              len(xs) > 0 and xs.min() >= cx0 - 6 and xs.max() <= cx1 + 6 and ys.min() >= cy0 - 6 and ys.max() <= cy1 + 6,
+              (xs.min(), xs.max(), ys.min(), ys.max(), (cx0, cy0, cx1, cy1)) if len(xs) else "nothing changed")
+        rows = np.asarray(flat.flatten(turned).convert("L")).astype(float)
+        sharp_flat = float((rows < 128).sum(axis=1).var())
+        sharp_turned = float((np.asarray(turned.convert("L")) < 128).sum(axis=1).var())
+        check("the turned page has sharper rows of text once straight", sharp_flat > 1.5 * sharp_turned,
+              (sharp_flat, sharp_turned))
+    waved = page(wave=14.0)
+    wf = dewarp.straighten(waved)
+    check("a waved page gets a field", wf is not None and wf.field is not None)
+    if wf is not None and wf.field is not None:
+        a = np.asarray(wf.flatten(waved).convert("L")).astype(float) < 128
+        b = np.asarray(waved.convert("L")).astype(float) < 128
+        check("the lines of the waved page are straight once flattened (the rows are sharper)",
+              float(a.sum(axis=1).var()) > 1.4 * float(b.sum(axis=1).var()), (a.sum(axis=1).var(), b.sum(axis=1).var()))
+        p = (610.0, 520.0)
+        q = wf.to_flat(*wf.to_page(*p))
+        check("the field's maps go back and forth", abs(q[0] - p[0]) < 0.5 and abs(q[1] - p[1]) < 0.5, q)
+
+    if not ocr.available():
+        print("  (no OCR engine on this PC: the whole pipeline is skipped)")
+        return
+    # the whole pipeline on a scan turned by 12 degrees: every value is found at its place and none stays readable
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("make_test_challenge", ROOT / "tools" / "make_test_challenge.py")
+    gen = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("make_test_challenge", gen)
+    spec.loader.exec_module(gen)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_dewarp_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        specs = gen.select(["geom_tilt12", "geom_bend_strong"])
+        folder = tmp / "client"
+        gen.build(folder, specs, jobs=1)
+        res = engine.scan_folder(folder, "client", _names_model(), "fra+eng", lambda m: None)
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        rep = engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda m: None)
+        for sp in specs:
+            f = next(x for x in rep["files"] if x["file"].startswith(sp["name"]))
+            truth = gen.render_case(sp)
+            n_ok, missed = 0, []
+            for row, tr in zip(sp["rows"], truth["rows"]):
+                bx = tr["bbox"]
+                area = max((bx[2] - bx[0]) * (bx[3] - bx[1]), 1)
+                got = 0.0
+                for item in f.get("items", []):
+                    for b in item.get("boxes", []):
+                        x0, y0, x1, y1 = [v / gen.PT for v in b["box"]]
+                        got += max(min(bx[2], x1) - max(bx[0], x0), 0) * max(min(bx[3], y1) - max(bx[1], y0), 0)
+                n_ok += min(got / area, 1.0) >= 0.6
+                if min(got / area, 1.0) < 0.6:
+                    missed.append((row["value"], round(got / area, 2)))
+            check(f"{sp['name']}: every value is replaced at its place (boxes of the report cover it)",
+                  n_ok == len(sp["rows"]), f"{n_ok} of {len(sp['rows'])}: {missed}")
+            check(f"{sp['name']}: nothing left readable (leftovers and suspects empty)",
+                  not f.get("leftovers") and not f.get("suspects"), (f.get("leftovers"), f.get("suspects")))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 GROUPS = [
     "layout_tests", "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
@@ -4680,7 +4840,7 @@ GROUPS = [
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
-    "underline_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
+    "underline_tests", "backdrop_tests", "dewarp_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

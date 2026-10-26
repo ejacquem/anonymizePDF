@@ -144,8 +144,8 @@ class Surface:
 # ---------------------------------------------------------------------------
 
 FLAT_SIZE = 15                           # pixels (300 dpi): wider than a stroke, narrower than a highlighter
-TINT_CHROMA = 50                         # levels between the channels of a pixel that is coloured (highlighter, tint)
-TINT_SHARE = 0.0003                      # share of the page that is coloured for it to be worth flattening
+TINT_CHROMA = 70                         # levels between the channels of a pixel that is coloured (highlighter, tint)
+TINT_SHARE = 0.0015                      # share of the page that is coloured for it to be worth flattening
 
 
 def tinted(img) -> bool:
