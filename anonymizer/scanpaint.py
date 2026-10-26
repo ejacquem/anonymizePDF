@@ -173,6 +173,7 @@ def layout_value(pf, original: str, part: str, b, face, is_bold: bool) -> list:
             for t, k, font, xy, sx in render.scan_runs_layout(original, runs, b, size, baseline, fill)]
 
 
+WEIGHT_MIDS = (-0.3, -0.2, -0.1, 0.1, 0.2, 0.3)     # centres of the tone curve tried instead of the spreads
 WEIGHT_TOLERANCE = 0.15          # ln of the ink ratio (observed / written) under which the weight of the fake is left alone
 WEIGHT_STEPS = (-0.5, -0.3, -0.15, 0.15, 0.3, 0.5, 0.75, 1.0, 1.5)     # strokes thinned / thickened by this (pixels)
 
@@ -216,8 +217,9 @@ def weight_matched(q, gray, box, rules, look, original_runs, fake_runs, surface=
     if base <= 0:
         return q
     best, best_err = q, abs(math.log(ratio))          # the target: the fake's ink at the page's spread, times the ratio
-    for d in WEIGHT_STEPS:
-        cand = replace(q, spread=q.spread + d)
+    # (a page with a tone curve: the weight is the centre of the curve, a low one thickens; else the stroke spread)
+    cands = [replace(q, mid=min(max(q.mid + d, 0.15), 0.85)) for d in WEIGHT_MIDS] if q.steep > 0         else [replace(q, spread=q.spread + d) for d in WEIGHT_STEPS]
+    for cand in cands:
         mass = _ink_mass(fake_runs, cand)
         err = abs(math.log(max(mass, 1e-6) / (base * ratio)))
         if err < best_err:
@@ -788,7 +790,7 @@ def _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                 color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
                 fake_runs = layout_value(pf if look is not None else None, m.value, part, b, face, is_bold)
                 q_value = q
-                if q is not None and look is not None and len(boxes) == 1 and not coarse:   # (a value on two lines: not matched)
+                if q is not None and look is not None and len(boxes) == 1 and (not coarse or q.steep > 0):   # (a value on two lines: not matched)
                     q_value = weight_matched(q, gray, box, saved_rules, look, layout_value(pf, m.value, m.value, b, face,
                                                                                           is_bold), fake_runs, surf)
                 for r, (text, f, bd, font, xy, sx) in enumerate(fake_runs):

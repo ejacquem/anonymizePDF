@@ -19,6 +19,7 @@ file.
 from __future__ import annotations
 
 import math
+import os
 import zlib
 from dataclasses import dataclass, field, replace
 
@@ -45,10 +46,12 @@ class Quality:
     grain: float = 0.0                   # std of the paper noise (0..255)
     fit: float = 0.0                     # mean square residual of the fit (0..1 coverage units), for the trace
     hard: bool = False                   # the native pixels are black or white (a thresholded scan): no grey in them
+    steep: float = 0.0                   # a steep tone curve of the scan (a hard cut, a high contrast copy): the sigmoid's slope
+    mid: float = 0.5                     # ... and the coverage it is centred on (a low one thickens the strokes, a high one thins them)
 
     def describe(self) -> str:
         dpi = f"{int(round(300 * self.scale))} dpi, " if self.scale < 0.95 else ""
-        return f"{dpi}blur {self.blur:.1f}px, spread {self.spread:+.2f}px, grain {self.grain:.0f}" +             (", black and white" if self.hard else "")
+        return f"{dpi}blur {self.blur:.1f}px, spread {self.spread:+.2f}px, grain {self.grain:.0f}" +             (", black and white" if self.hard else "") + (f", tone {self.steep:.0f}/{self.mid:.2f}" if self.steep > 0 else "")
 
 
 SHARP = Quality()
@@ -207,11 +210,54 @@ def _native(a: np.ndarray, scale: float, origin, hard: bool = False):
     return native, np.ix_(iy, ix)
 
 
-def _blocks(native_and_index, sigma: float) -> np.ndarray:
-    """The native pixels (blurred by `sigma` native pixels: a soft focus belongs to the scan, its pixels stay blocks)
-    drawn as blocks on the page."""
+def _blocks(native_and_index, sigma: float, q: "Quality | None" = None) -> np.ndarray:
+    """The native pixels (blurred by `sigma` native pixels: a soft focus belongs to the scan, its pixels stay blocks, then the
+    tone curve of the scan) drawn as blocks on the page."""
     native, index = native_and_index
-    return blur(native, sigma)[index]
+    x = blur(native, sigma)
+    if q is not None and q.steep > 0:
+        x = tone(x, q.steep, q.mid)
+    return x[index]
+
+
+def tone(c: np.ndarray, steep: float, mid: float) -> np.ndarray:
+    """The tone curve of a scan on a coverage (0 paper .. 1 ink): a sigmoid of slope `steep` centred on `mid`, normalised to
+    keep 0 and 1. A hard cut is a very steep one; a low `mid` turns half-covered pixels to ink (thicker strokes)."""
+    s = lambda v: 1.0 / (1.0 + np.exp(-steep * (v - mid)))                   # noqa: E731
+    lo, hi = s(0.0), s(1.0)
+    return (s(np.clip(c, 0.0, 1.0)) - lo) / (hi - lo)
+
+
+def _native_aligned(a: np.ndarray, scale: float, origin):
+    """The coverage `a` (page pixels, its corner the page pixel `origin`) averaged to the native pixels of the scan, on the
+    scan's own grid (the pixel k of the scan is centred on the page pixel (k + 0.5) / scale). Returns (native pixels, the
+    native index of the first one in x and in y)."""
+    h, w = a.shape
+    ox, oy = origin
+    kx0, kx1 = int(math.floor(ox * scale)) - 1, int(math.ceil((ox + w) * scale)) + 1
+    ky0, ky1 = int(math.floor(oy * scale)) - 1, int(math.ceil((oy + h) * scale)) + 1
+    pad = int(math.ceil(1 / scale)) + 2
+    big = np.pad(a.astype(np.float32), pad)                      # nothing is written outside the patch
+    box = (kx0 / scale - ox + pad, ky0 / scale - oy + pad, kx1 / scale - ox + pad, ky1 / scale - oy + pad)
+    native = np.asarray(Image.fromarray(big, "F").resize((kx1 - kx0, ky1 - ky0), Image.BOX, box=box)).astype(float)
+    return native, kx0, ky0
+
+
+def _toned_up(native: np.ndarray, kx0: int, ky0: int, q: "Quality", origin, shape) -> np.ndarray:
+    """A coverage at the native resolution -> the page: soft focus (in native pixels), the scan's tone curve, then drawn as the
+    viewer draws a scan enlarged up to twice (bilinear between the centres of the native pixels)."""
+    x = tone(blur(native, q.blur * q.scale), q.steep, q.mid)
+    h, w = shape
+    ox, oy = origin
+    out = []
+    for axis, n, o, k0, size in ((1, x.shape[1], ox, kx0, w), (0, x.shape[0], oy, ky0, h)):
+        u = np.clip((np.arange(size) + o + 0.5) * q.scale - 0.5 - k0, 0, n - 1)
+        i0 = np.minimum(np.floor(u).astype(int), n - 1)
+        i1 = np.minimum(i0 + 1, n - 1)
+        out.append((i0, i1, u - i0))
+    (xi0, xi1, xf), (yi0, yi1, yf) = out
+    rows = x[:, xi0] * (1 - xf)[None, :] + x[:, xi1] * xf[None, :]
+    return rows[yi0] * (1 - yf)[:, None] + rows[yi1] * yf[:, None]
 
 
 def degrade(hi: np.ndarray, q: Quality, origin=None) -> np.ndarray:
@@ -219,7 +265,11 @@ def degrade(hi: np.ndarray, q: Quality, origin=None) -> np.ndarray:
     the page pixel of its corner (the native pixel grid of a low resolution scan is aligned on it)."""
     a = _down(_spread(hi, q.spread))
     if q.scale < NEAREST_BELOW and origin is not None:
-        return np.clip(_blocks(_native(a, q.scale, origin, q.hard), q.blur * q.scale), 0, 1)
+        return np.clip(_blocks(_native(a, q.scale, origin, q.hard), q.blur * q.scale, q), 0, 1)
+    if q.steep > 0:                                                         # a tone curve: applied on the scan's own pixels
+        if q.scale < 0.95 and origin is not None:
+            return np.clip(_toned_up(*_native_aligned(a, q.scale, origin), q, origin, a.shape), 0, 1)
+        return np.clip(tone(blur(_resample(a, q.scale), q.blur), q.steep, q.mid), 0, 1)
     return np.clip(blur(_resample(a, q.scale), q.blur), 0, 1)
 
 
@@ -236,12 +286,21 @@ class Sample:
     bases: dict = field(default_factory=dict)   # (spread, scale, hard) -> the rendering spread and resampled (no blur yet)
 
     def degraded(self, q: "Quality") -> np.ndarray:
+        if q.steep > 0 and q.scale >= NEAREST_BELOW:                       # the tone curve works on the scan's own pixels
+            key = ("tone", q.spread, q.scale)
+            if key not in self.bases:
+                a = _down(_spread(self.hi, q.spread))
+                self.bases[key] = _native_aligned(a, q.scale, self.region[:2]) if q.scale < 0.95 else a
+            base = self.bases[key]
+            if q.scale < 0.95:
+                return np.clip(_toned_up(*base, q, self.region[:2], self.a.shape), 0, 1)
+            return np.clip(tone(blur(base, q.blur), q.steep, q.mid), 0, 1)
         key = (q.spread, q.scale, q.hard)
         if key not in self.bases:
             a = _down(_spread(self.hi, q.spread))
             self.bases[key] = _native(a, q.scale, self.region[:2], q.hard) if q.scale < NEAREST_BELOW                 else _resample(a, q.scale)
         if q.scale < NEAREST_BELOW:
-            return np.clip(_blocks(self.bases[key], q.blur * q.scale), 0, 1)
+            return np.clip(_blocks(self.bases[key], q.blur * q.scale, q), 0, 1)
         return np.clip(blur(self.bases[key], q.blur), 0, 1)
 
 
@@ -313,7 +372,55 @@ def stroke_widths(cov: np.ndarray) -> np.ndarray:
     return np.asarray(out, dtype=float)
 
 
-def fit(samples: list[Sample], scale: float = 1.0, hard: bool = False) -> Quality:
+TONE_ON = os.environ.get("ANON_TONE", "1") != "0"      # fit a tone curve on the pages that have one (ANON_TONE=0: the blur and spread only)
+TONE_STEEP = (8.0, 16.0, 40.0, 100.0)    # slopes of the tone curves tried (a hard cut is the steepest)
+TONE_MID = (0.35, 0.5, 0.65)             # coverages they are centred on
+TONE_BLUR = (0.0, 0.5, 1.0)              # blurs tried with them (page pixels: the focus blurs before the cut)
+TONE_EDGE = 1.2                          # the scan's strong edges over those of the fitted candidates, from which a page is hard
+TONE_MAX_BLUR = 1.9                      # a page whose linear fit needs more blur than this is a soft page: no tone curve
+TONE_SAMPLES = 10                        # words the curves are searched on
+
+
+def edge_p95(arrays: list[np.ndarray]) -> float:
+    """The strong edges of some crops: the 95th percentile of the gradient of their coverage (0..1 per pixel)."""
+    g = [np.hypot(np.diff(a, axis=1)[:-1], np.diff(a, axis=0)[:, :-1]).ravel() for a in arrays if min(a.shape) > 3]
+    return float(np.percentile(np.concatenate(g), 95)) if g else 0.0
+
+
+def fit_tone(samples: list[Sample], q: Quality) -> Quality:
+    """A steep tone curve for a page whose edges are harder than blur and spread can make them (a hard cut, a high contrast
+    copy: the fitted candidates are softer than the scan, the residual cannot tell because the shapes of the letters differ
+    more than the edges do). The strong edges of the scan (95th percentile of the gradient of its coverage) are the
+    reference: the slope and the centre of a sigmoid on the coverage of the native pixels, with the blur that goes with it,
+    that bring the candidates to the scan's edges and fit best. A soft page (the candidates already as sharp as the scan)
+    keeps the quality it had (steep 0)."""
+    if q.hard or q.blur > TONE_MAX_BLUR or len(samples) < MIN_SAMPLES:
+        return q
+    if os.environ.get("ANON_TONE_FORCE"):                                    # (experiments)
+        k_, m_, b_ = (float(v) for v in os.environ["ANON_TONE_FORCE"].split(","))
+        return replace(q, steep=k_, mid=m_, blur=b_)
+    few = samples[::max(len(samples) // TONE_SAMPLES, 1)][:TONE_SAMPLES]
+    want = edge_p95([s.a for s in few])
+    have = edge_p95([s.degraded(q) for s in few])
+    if want <= 0 or have <= 0 or want < TONE_EDGE * have:
+        return q
+    mass = sum(float(s.degraded(q).sum()) for s in few)              # the ink the fit without a curve puts on these words
+    best, best_key = None, None
+    for bl in TONE_BLUR:
+        for k in TONE_STEEP:
+            for m in TONE_MID:
+                cand = replace(q, blur=bl, steep=k, mid=m)
+                got = [s.degraded(cand) for s in few]
+                off = abs(math.log(max(edge_p95(got), 1e-6) / want))
+                heavy = abs(math.log(max(sum(float(g.sum()) for g in got), 1e-6) / max(mass, 1e-6)))
+                # the edges of the scan first, then the same weight as without the curve, then the best fit
+                key = (off > 0.12, round(off, 2) if off > 0.12 else round(heavy, 2), _total(few, cand))
+                if best_key is None or key < best_key:
+                    best, best_key = cand, key
+    return replace(best, fit=_total(samples, best))
+
+
+def fit(samples: list[Sample], scale: float = 1.0, hard: bool = False, tone: bool = False) -> Quality:
     """Blur and spread that make the sharp candidates look like the scan (every blur at every spread, the spread
     refined by a quarter pixel: a thick copy and a soft one are told apart only together).
     A black and white scan (`hard`) has no blur: its pixels are ink or paper, only the thickness is fitted.
@@ -331,7 +438,8 @@ def fit(samples: list[Sample], scale: float = 1.0, hard: bool = False) -> Qualit
     if grid[(bl, d)] > (1 - SPREAD_GAIN) * zero[0]:
         bl, d = zero[1], 0.0             # no clear gain: strokes kept as printed (a faded or JPEG copy can fake it)
     q = replace(q, blur=bl, spread=d)
-    return replace(q, fit=_total(samples, q))
+    q = replace(q, fit=_total(samples, q))
+    return fit_tone(samples, q) if tone else q
 
 
 # ---------------------------------------------------------------------------

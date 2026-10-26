@@ -64,7 +64,7 @@ BLUR = 1.2                  # both images are blurred by this before they are co
 INK = 20.0                  # grey levels under the clean page that count as ink
 FOUND = 0.6                 # share of the value's box the report's boxes must cover
 FAR = 18                    # pixels from a value's box beyond which a change is collateral
-MEASURES = ("bg", "bg95", "floor", "ink_rel", "mass", "dark", "height", "edge", "dy", "dx", "coll")
+MEASURES = ("bg", "bg95", "floor", "ink_rel", "mass", "dark", "height", "edge", "edge_rel", "dy", "dx", "coll")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -185,6 +185,23 @@ def measure_row(orig, out, clean, ideal, bbox) -> dict:
     return res
 
 
+def context_edge(orig, out, bboxes, top: int = 3000) -> float | None:
+    """How sharp the rest of the OUTPUT is against the original: the mean of the `top` strongest gradients of the pixels far from
+    every value (labels, specks, the other text), output over original. Whatever the output does to the whole page (a 300 dpi
+    JPEG of a 200 dpi scan) shows here, so `edge_rel` = edge / this says if the replaced text is as sharp as the text beside it."""
+    keep = np.ones(orig.shape[:2], bool)
+    for x0, y0, x1, y1 in bboxes:
+        keep[max(y0 - FAR, 0):y1 + FAR, max(x0 - FAR, 0):x1 + FAR] = False
+    keep = keep[:-1, :-1]
+
+    def strong(a):
+        g = grey(a)
+        mag = np.hypot(np.diff(g, axis=1)[:-1], np.diff(g, axis=0)[:, :-1])[keep]
+        return float(np.sort(mag)[-top:].mean()) if mag.size >= top else None
+    o, x = strong(orig), strong(out)
+    return x / o if o and x and o > 1.0 else None
+
+
 def collateral(orig, out, bboxes) -> float:
     """Pixels far from every value that the run changed by more than 40 levels, per 10 000."""
     keep = np.ones(orig.shape[:2], bool)
@@ -249,6 +266,7 @@ def run_cases(specs: list[dict], log=lambda *a: None, with_crops: bool = False) 
             orig = render(folder / f"{name}.pdf", r_clean["clean"].shape)
             out = render(folder / f["output"], r_clean["clean"].shape) if f.get("output") and not err else None
             coll = collateral(orig, out, bboxes) if out is not None else None
+            ctx = context_edge(orig, out, bboxes) if out is not None else None
             for i, row in enumerate(spec["rows"]):
                 tv = truth[name]["values"][i]
                 cov = coverage(bboxes[i], f.get("items", [])) if out is not None else 0.0
@@ -259,6 +277,8 @@ def run_cases(specs: list[dict], log=lambda *a: None, with_crops: bool = False) 
                 if out is not None and rec["found"]:
                     rec.update(measure_row(orig, out, r_clean["clean"], r_ideal["with"], bboxes[i]))
                     rec["coll"] = coll
+                    rec["edge_ctx"] = ctx
+                    rec["edge_rel"] = rec["edge"] / ctx if rec.get("edge") and ctx else None
                     if with_crops:
                         crops[(name, i)] = sheet_crop(orig, r_clean["clean"], r_ideal["with"], out, bboxes[i])
                 records.append(rec)
@@ -317,7 +337,7 @@ def cell(v, fmt="{:.2f}"):
 
 def print_summary(summary: dict) -> None:
     cols = (("found", "{:.0%}"), ("det", "{:.0%}"), ("bg_excess", "{:.2f}"), ("bg95", "{:.1f}"), ("bg_worst", "{:.1f}"), ("ink_rel", "{:.2f}"),
-            ("mass", "{:.2f}"), ("dark", "{:.1f}"), ("height", "{:.2f}"), ("edge", "{:.2f}"), ("dy", "{:.1f}"), ("dx", "{:.1f}"),
+            ("mass", "{:.2f}"), ("dark", "{:.1f}"), ("height", "{:.2f}"), ("edge", "{:.2f}"), ("edge_rel", "{:.2f}"), ("dy", "{:.1f}"), ("dx", "{:.1f}"),
             ("coll", "{:.1f}"))
     print(f"{'group':<26}{'n':>4}" + "".join(f"{c:>10}" for c, _ in cols))
     order = sorted(summary, key=lambda s: (s != "ALL", s.split(":")[0] not in ("family", "split"), s))

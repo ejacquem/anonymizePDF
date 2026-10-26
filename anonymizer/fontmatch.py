@@ -596,7 +596,7 @@ class PageFonts:
             if self.scale < quality.NEAREST_BELOW:           # a black and white scan: its pixels are read on its own grid
                 mid = quality.hardness(self.gray, [self.words[i]["box"] for i in idx[::step][:SAMPLE_WORDS]], self.scale)
                 hard = mid is not None and mid < quality.HARD_MID
-            self._quality = quality.fit(samples, self.scale, hard)
+            self._quality = quality.fit(samples, self.scale, hard, tone=quality.TONE_ON)
         return self._quality
 
     def _mass(self, i: int, f: Face) -> float | None:

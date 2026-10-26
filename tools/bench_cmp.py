@@ -13,8 +13,8 @@ import json
 import sys
 from pathlib import Path
 
-MEASURES = ("found", "bg_excess", "bg95", "bg_worst", "ink_rel", "mass", "dark", "height", "dy", "dx", "coll")
-ONE = ("mass", "height")
+MEASURES = ("found", "bg_excess", "bg95", "bg_worst", "ink_rel", "mass", "dark", "height", "edge", "edge_rel", "dy", "dx", "coll")
+ONE = ("mass", "height", "edge", "edge_rel")
 
 
 def badness(k: str, v):
