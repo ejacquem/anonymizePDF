@@ -806,8 +806,9 @@ Order must never change a result (`order_tests`): a value written with several s
 
 - `scanpaint._scan_page` first asks `dewarp.straighten(img)`: the skew of the whole page (`regions.text_angle` on the page
   reduced 4 times, from 2 degrees) and its bend (the lines are followed from strip to strip on the reduced page; a vertical
-  displacement field of Gaussians is fitted to their centres, `Field`; used only when it makes the rows of text at least 20 %
-  more contrasted, `_rows_gain`: a card or a form of straight lines gets none). The page is turned straight on a larger canvas (nothing
+  displacement field of Gaussians (separable on a grid, `Field.at`) is fitted to their centres, `Field`; used only when it bends the
+  page by 16 px or more once its plane is taken out (`Field.bend`), makes the rows of text at least 20 % more contrasted (`_rows_gain`)
+  and the neighbouring lines lean alike (`_slope_scatter`, < 0.06: a card, a form or a page with text slanted line by line gets none). The page is turned straight on a larger canvas (nothing
   cut), `_scan_flat` (the old body of `_scan_page`) reads and paints THAT page, the records, the trace and the black boxes are
   brought back to the scan's coordinates (`Flat.box_to_page`), and `Flat.compose` pastes onto the scan only the pixels that changed
   (grown 2 px): what was not replaced keeps the pixels of the scan. The Windows OCR straightens a page it finds turned by 10
