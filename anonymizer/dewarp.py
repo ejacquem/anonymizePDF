@@ -26,6 +26,7 @@ FIND_SCALE = 4                   # the skew and the lines are measured on the pa
 STRIP = 16                       # width of a strip of the reduced page where the lines are found
 MIN_CHAIN = 5                    # strips a line is followed through to count
 MIN_BEND = 16.0                  # pixels (300 dpi): a field that bends the page by less than this (a slightly turned page) is not used
+MAX_SCATTER = 0.06               # slope (rise over run) between neighbouring lines above which the page is not bent as a whole
 MIN_GAIN = 1.2                   # the field is used when the rows of text come out this much more contrasted (see _rows_gain)
 SPACING = 170.0                  # pixels between the centres of the radial functions of the field
 MAX_RESIDUAL = 4.0               # pixels: a field that fits the lines worse than this is not trusted
@@ -117,6 +118,20 @@ class Field:
         design = np.column_stack([np.ones(d.size), xs.ravel(), ys.ravel()])
         r = d - design @ np.linalg.lstsq(design, d, rcond=None)[0]
         return float(np.percentile(r, 98) - np.percentile(r, 2))
+
+
+def _slope_scatter(chains: list) -> float:
+    """Median difference of slope between neighbouring lines (the same stretch of the page). A bent page leans its lines
+    alike, a form or a card with text slanted line by line does not (a page of Dossier Test 07: 0.07, bent pages: 0.04 at most)."""
+    info = []
+    for ch in chains:
+        p = np.array(ch, float)
+        if len(p) >= 4:
+            info.append((float(p[:, 1].mean()), p[0, 0], p[-1, 0], float(np.polyfit(p[:, 0], p[:, 1], 1)[0])))
+    info.sort()
+    diffs = [abs(a[3] - b[3]) for a, b in zip(info[:-1], info[1:])
+             if min(a[2], b[2]) - max(a[1], b[1]) > 0.5 * min(a[2] - a[1], b[2] - b[1])]
+    return float(np.median(diffs)) if diffs else 0.0
 
 
 def _fit_field(chains: list, spacing_px: float, size: tuple, scale: int):
@@ -320,6 +335,8 @@ def _field_of(turned_small: Image.Image, canvas: tuple) -> "Field | None":
     ink = g < paper - 60
     chains, spacing = _lines(ink)
     if len(chains) < 3 or spacing <= 0:
+        return None
+    if _slope_scatter(chains) > MAX_SCATTER:                # lines that each lean their own way: not a page bent as a whole
         return None
     field = _fit_field(chains, spacing * FIND_SCALE, canvas, FIND_SCALE)
     if field is None or field.bend(canvas) < MIN_BEND or _rows_gain(ink, field, FIND_SCALE) < MIN_GAIN:

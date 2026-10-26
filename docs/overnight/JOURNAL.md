@@ -144,3 +144,10 @@ once its plane is taken out (`Field.bend`, a tilt is not a bend: the contract pa
 Result: 159.6 -> 170.6 s (+7 %: weight match and Surface). Bench: found / measures unchanged (p3h vs p3f: nothing worse), full run 468 s
 against 381 s at the baseline: the five-row cases are all turned or bent or coloured pages by design.
 A scalar point in `Field.at` lost the Gaussian part for a while (found 94 -> 56 % on doc_contrat_persp in the intermediate run p3g): fixed.
+
+## P3-5 a page with text slanted line by line is not a bent page
+
+`check_all` (random keys) failed once on `textes_inclines_scan.pdf` (Dossier Test 07, lines slanted 5-15 degrees each): the field (gain 1.33, bend 100 px)
+flattened it as if it were bent and the second check read fakes back wrongly. Gate added: the median difference of slope between neighbouring lines
+must stay under 0.06 (`dewarp._slope_scatter`: bench pages 0.001-0.041, that page 0.073); the old per-word path keeps such pages
+(0 of 16 keys, the baseline 0 of 16). `dewarp_tests` has the synthetic case.

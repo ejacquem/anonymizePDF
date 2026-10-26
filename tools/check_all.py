@@ -4774,6 +4774,15 @@ def dewarp_tests():
         sharp_turned = float((np.asarray(turned.convert("L")) < 128).sum(axis=1).var())
         check("the turned page has sharper rows of text once straight", sharp_flat > 1.5 * sharp_turned,
               (sharp_flat, sharp_turned))
+    mixed = Image.new("RGB", (1240, 1000), (250, 248, 242))        # every line leans its own way: no bend to correct
+    for i, a in enumerate((9, -7, 12, -10, 6, -12, 8, -6, 11, -9)):
+        line = Image.new("RGB", (900, 70), (250, 248, 242))
+        ImageDraw.Draw(line).text((10, 50), f"Ligne {i} : Mathis Verhaegen habite Rue des Tanneurs {i + 3}", font=font, fill=(25, 25, 30),
+                                  anchor="ls")
+        mixed.paste(line.rotate(a, resample=Image.BICUBIC, fillcolor=(250, 248, 242), expand=True), (100, 20 + 90 * i))
+    got = dewarp.straighten(mixed)
+    check("a page whose lines lean each their own way has no field", got is None or got.field is None,
+          None if got is None else got.field)
     waved = page(wave=14.0)
     wf = dewarp.straighten(waved)
     check("a waved page gets a field", wf is not None and wf.field is not None)
