@@ -24,7 +24,7 @@ import math
 
 import numpy as np
 
-from . import morph, quality
+from . import memo, morph, quality
 
 MIN_INK = 14.0                           # levels under the paper level that count as ink (per channel, the largest)
 GRAIN_INK = 3.5                          # ... or this many times the grain of the paper
@@ -155,7 +155,17 @@ def tinted(img) -> bool:
     return float((chroma > TINT_CHROMA).mean()) > TINT_SHARE
 
 
+_FLAT = memo.lru("flatten", 3)
+
+
 def flatten(img):
+    """The flattened page (see `_flatten`), remembered by its pixels: the OCR and the measures of a page use the same."""
+    key = memo.image_key(img)
+    got = _FLAT.get(key)
+    return got if got is not None else _FLAT.put(key, _flatten(img))
+
+
+def _flatten(img):
     """The page divided, per channel, by its local paper level (the closing, see paper_and_ink): a highlighted value
     reads as dark ink on white paper. For the OCR and for the measures of the ink; never painted."""
     from PIL import Image

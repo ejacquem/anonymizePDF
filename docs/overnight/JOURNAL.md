@@ -43,3 +43,26 @@ Things found on the way:
 - `check_all.py --fast`: 1766 passed, 0 failed (906 s).
 Decision: ACCEPTED (the target groups improve on dev and held, found never drops, coll falls, check_all green; the remaining losses
 are in the third decimal or tiny absolute values and are listed above).
+
+## P1-2 OCR on the page without its tints (`backdrop.tinted` / `flatten`, `ocrpage.page_words`)
+
+Hypothesis: under a highlighter (magenta, blue, some yellow) the OCR does not read the value at its place; dividing the page
+per channel by its local paper level (closing 15 px) turns it into dark ink on white; one more reading on that image, merged
+like the others (`ocrpage.merge`), only on pages that have coloured areas (chroma > 50 on > 0.03 % of the page, ~1.5 s a page).
+Scratch check on three doc pages: the plain reading garbles or misses the magenta e-mail, the magenta phone, the blue IBANs; the
+flat reading gives every one right.
+Full run `p1h_full.json` vs `p1g_full.json`: deco:hl_magenta found 0 % -> 100 % (n=4), doc_* found 69 % -> 73 % (doc_releve_bend
+60 -> 73 %, doc_assurance_wave 75 -> 81 %, doc_assurance_bendtilt 50 -> 56 %), nothing else moves ('same' on every five-row
+group). The medians of ink_rel / dark of the doc groups rise because values that were missed before are now in them (the
+magenta ones are the hardest). ACCEPTED (this is a commit of its own, `git log`).
+
+## P1-3 fonts measured on the flattened grey (tried, NOT kept)
+
+Hypothesis: the weight and blur of a value under a highlighter are measured against the highlighter colour, so the ink looks
+lighter / heavier; `PageFonts` on the flattened grey would decide them against white paper. Full run `p1i_full.json` vs
+`p1h_full.json`: deco:hl_blue dark 30.8 -> 15.3, mass 1.51 -> 1.27, ink_rel 1.36 -> 1.21; doc dark 8.4 -> 5.9 - but
+doc_releve_bend found 73 % -> 67 %: one value ('1050 Bruxelles', second place) is not found at its place any more (the match
+box of the second place lands on the street line, `pii.match_boxes` cut by the measured advance; a town is left readable and a
+fake town written over the street) although nothing in the reading changed. Rule 3 (found never drops) rejects it. The cause
+is in how the boxes of a value that spans two OCR lines of a bent page are cut, which phase 2 (flattening bent pages) is
+meant to remove: retry after phase 2. Reverted.
