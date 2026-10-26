@@ -151,3 +151,62 @@ A scalar point in `Field.at` lost the Gaussian part for a while (found 94 -> 56 
 flattened it as if it were bent and the second check read fakes back wrongly. Gate added: the median difference of slope between neighbouring lines
 must stay under 0.06 (`dewarp._slope_scatter`: bench pages 0.001-0.041, that page 0.073); the old per-word path keeps such pages
 (0 of 16 keys, the baseline 0 of 16). `dewarp_tests` has the synthetic case.
+
+
+# Run 2 (branch `claude/sharp-quality-32d24f`, brief `PROMPT_SHARP.md`)
+
+Method: as run 1. Full bench = 64 cases (`baseline_sharp_full.json`, 661 s: scan 53 s, anonymize 352 s). Iteration subset = `--only sharp_
+--only doc_sharp_ --only doc_vieux` (121 values, ~3.5 min; its own baseline `runs/sub_base.json` made with the Phase 0 code: the fakes
+of a case depend on the other cases of the folder, so only runs of the SAME selection are compared). Pictures: `tools/sheet_view.py`.
+`check_all.py` budget: 2 runs. The first one (Phase 0) was started in the background and I kept editing `ocrpage.py` while it ran, so jobs
+that started later imported the half-done Phase 1 code (1796 passed, 0 failed anyway); the Phase 0 tag is therefore verified only by that
+run and by the end-of-run one.
+
+## R2-B0 baseline (code of main + generator fix)
+
+- Generator fix (not a case definition): `make_test_challenge.write_pdf` placed the scan with `insert_image(page.rect)` whose default
+  `keep_proportion=True` squashed the 200 x 100 dpi fax into the middle band of the page (half height, text flat): `doc_vieux_fax` was an
+  artefact, 0 found because the page was not what the generator meant. Now `keep_proportion=False` (the fax fills the page: non-square pixels).
+  With it the fax is read (206 words) and found 69 %.
+- Full baseline (440 values): found 86 %, edge 0.81 overall (ALL), `family:sharp` 35 values found 100 % edge 0.69, `doc_sharp_*` found 25-87 %
+  (`assurance_bw200` 25 %), `doc_vieux_*` bad 62 / worse 46 / fax 0 (squashed, see above).
+- What the worst pictures show: the fake is a grey, soft sans text where the page is hard, black and typed (Courier): `Rue de la Vallée 25`
+  in a sans face, blurred; thin serif page (bw200) whose strokes are broken: the OCR reads 'Ihauss'e de N',unur'. Highlighted lines of
+  `doc_sharp_contrat_contrast120` OK in colour but the fake is a regular sans over a bold serif.
+- `det` (the config has a replacement for the value) caps `found`: `doc_vieux_bad` / `fax` det 77 %, `doc_sharp_assurance_bw200` 75 %: 'Claire
+  Dubois' (a signer), dates and the company's street are not detected by `pii.py` (frozen in this run), so the 90 % target of the brief for
+  `doc_vieux_*` cannot be reached by the pipeline alone.
+
+## R2-P0 three review findings (commit 36eeb97, tag sharp-p0)
+
+1. `backdrop.is_dark_paper`: the polarity is the median of the value's own box, not of the window: white text on a navy band 1.5 text heights
+   tall (mostly light window) is now opened, not closed. Test: lightest pixel of the erased box 255 -> < 60.
+2. `scanpaint._scan_page`: `dewarp.straighten` also runs in black-box mode (the boxes are drawn on the flat page and brought back); try/except around
+   `straighten` and the flat paint + `compose` (the fallback redoes the page the old way and forgets the records of the failed attempt, log line).
+   Test (OCR): geom_tilt12 in black-box mode, the ink of every value is under black: 1 of 5 -> 5 of 5.
+3. `backdrop.ghost_of`: the surface over the strongest ink pixels of the box against the surface right next to the strokes; above 4 % of the
+   contrast a larger closing (0.9 heights), else no surface (the flat patch of the old code). A blurred 150 dpi copy (x2 bilinear + Gaussian 3 px):
+   the darkest pixel left in the erased box 23 -> < 14; the same through `_erase_patch` (pictures of digital pages). A sharp page keeps its surface.
+All in `sharp_review_tests` (fails on the previous code: 4 of 6 checks). `backdrop_tests`, `dewarp_tests`, `underline_tests`, `background_quality_tests` green.
+
+## R2-P1 reading (commit after P0)
+
+Hypothesis: the OCR reads coarse pages badly (stairs of repeated pixels), broken thin strokes badly; extra readings on cleaned variants repair it.
+- Block factor from the pixels (`ocrpage.block_factors`: MuPDF draws a scan enlarged more than ~1.3 times without interpolation, so only 1/f of the
+  column / row boundaries next to ink ever change; fax 1.5 x 3, 100 dpi 3 x 3, 150 dpi 2 x 2; 200 dpi pages drawn bilinear: 1). Image only, so the
+  output pages are read the same way by the checks.
+- First try (always add `smooth` readings on a coarse page): found 69 -> 66 % on the subset (`doc_vieux_bad` 54 -> 38 %), no gain: the OCR's
+  mistakes on these pages are not the stairs. Reverted.
+- Single-reading token test on 6 pages (tokens of the truth values read exactly): base 26 / 27 / 21 / 29 / 31 / 40 of 41 / 33 / 35 / 35 / 39 / 40;
+  `min3` (grey erosion 3 x 3 = thicker strokes) 30 / 31 / 23 / 26 / 32 / 39, 'native' (back to 200 dpi) 28 / 30 / 23 / 26 / 30 / 39; merged
+  min3 + min5 + native 32 / 31 / 22 / 32 / 31 / 40 (not monotone: min5 hurts the fax). Kept: thick + native (+ smooth when blocky).
+- Gate: the share of base words another existing reading gives back (`ocrpage.agreement`): clean pages 96-100 %, the six poor pages 81-94 %; below 93 %
+  (and >= 20 words) the extra readings are made. The share of implausible tokens is NOT a gate (clean statements have 5-11 %).
+- Result on the subset (p1b vs sub_base): found 69 -> 71 % (`assurance_bw200` 25 -> 38 %, `worse` 38 -> 46 %, `bad` 54 = 54, `fax` 69 = 69), det
+  unchanged. `coll` 2.0 -> 2.8 (doc_vieux 2 -> 6): looked at: not painted collateral, values of OTHER documents of the folder found on this page
+  (an N/Réf `98/0417` replaced), and the signature black box of `bw200` that was there before. Time: anonymize 126 -> 154 s on the subset (poor pages
+  read 2-3 times more).
+- The misses left are reading errors of single characters ('+32' read '4.32', 'Namur' read 'N',unur'); a value the OCR garbles is not found whatever
+  the variants, and matching a garbled reading against the config is `pii.py` (frozen).
+- Safety net: `scanpaint._unread_warning` (ink >= 0.3 % of the page and fewer than max(5, 8 x ink %) words): log line + `extras.warnings` -> the file's
+  `warnings` in the report (`engine._finish_page`, `entry["warnings"]`), so the Recap shows it. Tests: `sharp_read_tests`.

@@ -4910,6 +4910,20 @@ def sharp_review_tests():
     scanpaint._erase_patch(pix, box2, (250, 248, 242), SimpleNamespace(quality=quality.Quality(grain=0.0)), ("ghost",), 1.0)
     ghost = 249 - np.asarray(pix.convert("L")).astype(float)[box2[1] + 2:box2[3] - 2, box2[0] + 2:box2[2] - 2]
     check("the same on the pictures of digital pages (_erase_patch): no ghost", float(ghost.max()) < 14, f"{ghost.max():.1f}")
+    # a thin blue highlighter whose digits are blurred (a resampled page): the smear is lifted, the highlighter is not
+    def marked(text):
+        pg = Image.new("RGB", (520, 150), (250, 248, 242))
+        ImageDraw.Draw(pg).rounded_rectangle((50, 50, 360, 100), radius=4, fill=(110, 180, 250))
+        if text:
+            ImageDraw.Draw(pg).text((62, 88), text, font=ImageFont.truetype(str(fonts / "Roboto-Regular.ttf"), 30), fill=(25, 25, 30), anchor="ls")
+        return pg.filter(ImageFilter.GaussianBlur(2.2))
+    pg, ref = marked("BE48 0016 4820 7327"), np.asarray(marked("")).astype(float)
+    box3 = (60, 54, 340, 96)
+    surf3 = backdrop.Surface(pg, box3)
+    quality.erase(pg, box3, surf3.colour(box3), quality.Quality(grain=0.0), ("hl",), surf3)
+    part = np.abs(np.asarray(pg).astype(float) - ref)[54:96, 60:340].max(axis=-1)
+    check("a blurred digits on a thin blue highlighter: the box has the highlighter back (no smear, no hole)",
+          part.max() < 40 and part.mean() < 10, f"max {part.max():.0f}, mean {part.mean():.1f}")
     # the surface of a clean page is not given up for nothing
     clean = Image.new("RGB", (560, 170), (250, 248, 242))
     ImageDraw.Draw(clean).text((60, 100), "Mathis Verhaegen", font=font, fill=(25, 25, 30), anchor="ls")
