@@ -396,16 +396,16 @@ HL_FILL = {   # which values carry a highlighter in each document: {value key: c
 BUILD = {"releve": build_releve, "assurance": build_assurance, "contrat": build_contrat}
 
 
-def doc_spec(name: str, doc: str, person: int, split: str, geom, scan, seed: int, ink=INK) -> dict:
+def doc_spec(name: str, doc: str, person: int, split: str, geom, scan, seed: int, ink=INK, bg: str = "paper") -> dict:
     page = BUILD[doc](PEOPLE[person], HL_FILL[doc])
     rows = [{"label": f"{doc}/{v['kind']}", "value": v["text"], "deco": f"hl_{v['hl']}" if v["hl"] else None,
              "font": v["fam"], "size": v["size"], "bold": v["b"]} for v in page.values]
     layout = {"ops": page.ops, "hl": page.merged_highlights(), "boxes": [v["box"] for v in page.values],
               "values": [{"id": v["id"], "x": v["x"], "y": v["y"], "font": (v["fam"], v["size"], v["b"], v["i"]),
                           "color": v["color"]} for v in page.values]}
-    return {"kind": "doc", "name": name, "family": "doc", "split": split, "seed": seed, "bg": "paper", "rows": rows,
+    return {"kind": "doc", "name": name, "family": "doc", "split": split, "seed": seed, "bg": bg, "rows": rows,
             "layout": layout, "geom": [list(o) for o in geom], "scan": scan, "ink": list(ink), "text_layer": False,
-            "tags": {"bg": "paper", "geom": "+".join(o[0] for o in geom) or "none", "font": doc, "tone": "none"}}
+            "tags": {"bg": bg, "geom": "+".join(o[0] for o in geom) or "none", "font": doc, "tone": "none"}}
 
 
 def doc_cases() -> list[dict]:
@@ -422,6 +422,13 @@ def doc_cases() -> list[dict]:
                  {"blur": 1.0, "noise": 4.0, "jpeg": 68}, 2005, ink=(26, 30, 44)),
         doc_spec("doc_contrat_persp", "contrat", 0, "held", [("persp", 0.10), ("wave", 6, 900.0)],
                  {"blur": 0.8, "noise": 3.0, "jpeg": 78}, 2006),
+        # sharp, high contrast, poor quality (see make_test_challenge.py, family sharp_)
+        doc_spec("doc_sharp_releve_bw150", "releve", 1, "dev", [("rotate", 0.7)],
+                 {"dpi": 150, "blur": 0.6, "bw": (145, 6), "noise": 0, "speckle": 0.0002, "jpeg": 60}, 2007, bg="flat"),
+        doc_spec("doc_sharp_assurance_bw200", "assurance", 0, "held", [("rotate", -0.5)],
+                 {"dpi": 200, "blur": 0.6, "bw": (120, 6), "noise": 0, "speckle": 0.0004, "jpeg": 70}, 2008, bg="flat"),
+        doc_spec("doc_sharp_contrat_contrast120", "contrat", 1, "dev", [("rotate", 1.2)],
+                 {"dpi": 120, "blur": 0.6, "sigmoid": (35.0, 0.5), "noise": 2.0, "jpeg": 40}, 2009),
     ]
 
 
@@ -475,6 +482,8 @@ def render_doc(spec: dict, texts: dict | None = None, noise: bool = False) -> di
         ys, xs = np.nonzero(mk)
         rows.append({"box": box, "mask": mk, "bbox": (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)})
     sc_rng = np.random.default_rng(spec["seed"] + 7)
-    clean = gen.scan_effects(gen.warp(clean, maps), spec["scan"], sc_rng, False)
-    withv = gen.scan_effects(gen.warp(withv, maps), spec["scan"], sc_rng, noise)
-    return {"with": withv, "clean": clean, "rows": rows, "layout": []}
+    shape = clean.shape
+    clean_n = gen.scan_effects(gen.warp(clean, maps), spec["scan"], sc_rng, False)
+    with_n = gen.scan_effects(gen.warp(withv, maps), spec["scan"], sc_rng, noise)
+    return {"with": gen.to_page(with_n, shape), "clean": gen.to_page(clean_n, shape), "native": with_n, "rows": rows,
+            "layout": []}

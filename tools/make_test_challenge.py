@@ -365,6 +365,15 @@ def warp(img: np.ndarray, maps) -> np.ndarray:
 # scan effects
 
 def scan_effects(a: np.ndarray, sc: dict, rng, noise: bool) -> np.ndarray:
+    """The scan of a page (float RGB at DPI). Returns it at the NATIVE resolution of the scan (`dpi` of `sc`, at most
+    DPI): `blur` and `noise` are in native pixels. `bw` = (level, softness): the grey page cut at that level (a copier
+    or a binarising scanner: sharp edges, no antialiasing, strokes that thicken or break with the level); `speckle`:
+    share of pixels flipped to dark."""
+    f = min(sc.get("dpi", DPI) / DPI, 1.0)
+    if f < 0.999:
+        h0, w0 = a.shape[:2]
+        a = np.asarray(Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8)).resize(
+            (max(round(w0 * f), 1), max(round(h0 * f), 1)), Image.BOX)).astype(np.float32)
     a = gblur(a, sc.get("blur", 0.7))
     if sc.get("unsharp"):
         radius, amount = sc["unsharp"]
@@ -378,10 +387,27 @@ def scan_effects(a: np.ndarray, sc: dict, rng, noise: bool) -> np.ndarray:
         a = 255.0 * (np.clip(a, 0, 255) / 255.0) ** sc["gamma"]
     if sc.get("fade"):                                       # a washed out copy: contrast shrinks toward white
         a = 255.0 - (255.0 - a) * sc["fade"]
+    if sc.get("bw"):
+        level, soft = sc["bw"]
+        g = a.mean(axis=-1, keepdims=True)
+        a = np.repeat(255.0 / (1.0 + np.exp(-(g - level) / soft)), 3, axis=-1)
+    if noise and sc.get("speckle"):
+        flip = rng.random((a.shape[0], a.shape[1], 1)) < sc["speckle"]
+        a = np.where(flip, rng.uniform(0, 80, (a.shape[0], a.shape[1], 1)), a)
     if noise and sc.get("noise", 2.5) > 0:
         a = a + rng.normal(0, sc.get("noise", 2.5), (a.shape[0], a.shape[1], 1)).astype(np.float32) \
             + rng.normal(0, sc.get("noise", 2.5) / 3, (a.shape[0], a.shape[1], 3)).astype(np.float32)
     return np.clip(a, 0, 255)
+
+
+def to_page(a: np.ndarray, shape) -> np.ndarray:
+    """A scan at its native resolution as the viewer draws it at the page resolution (MuPDF: no interpolation above a
+    factor of two, bilinear below)."""
+    if a.shape[:2] == tuple(shape[:2]):
+        return a
+    method = Image.NEAREST if shape[1] / a.shape[1] > 2 else Image.BILINEAR
+    return np.asarray(Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8)).resize(
+        (shape[1], shape[0]), method)).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -444,6 +470,17 @@ def cases() -> list[dict]:
             ("blue", {"blur": 1.0}, {"ink": (30, 45, 125)}, "held"),
             ("textlayer", {"sigmoid": (9.0, 0.55), "noise": 1.5}, {"text_layer": True, "font": "rockwell"}, "dev")):
         add(f"tone_{name}", "tone", split, scan=scan, **kw)
+    # sharp and high contrast but a poor scan: a low native resolution, a hard cut (no antialiasing), harsh JPEG, speckle;
+    # what a copier or a document scanner in 'text' mode gives. The replacement must not come out softer than the text around.
+    for name, scan, bg, split in (
+            ("bw200", {"dpi": 200, "blur": 0.6, "bw": (140, 6), "noise": 0, "speckle": 0.0003, "jpeg": 70}, "flat", "dev"),
+            ("bw150", {"dpi": 150, "blur": 0.6, "bw": (140, 6), "noise": 0, "jpeg": 60}, "flat", "dev"),
+            ("bw100", {"dpi": 100, "blur": 0.5, "bw": (135, 5), "noise": 0, "jpeg": 60}, "flat", "held"),
+            ("thick150", {"dpi": 150, "blur": 0.6, "bw": (190, 6), "noise": 0, "jpeg": 65}, "flat", "dev"),
+            ("thin200", {"dpi": 200, "blur": 0.6, "bw": (90, 6), "noise": 0, "speckle": 0.0004, "jpeg": 70}, "flat", "held"),
+            ("contrast150", {"dpi": 150, "blur": 0.8, "sigmoid": (45.0, 0.5), "noise": 2.0, "jpeg": 40}, "paper", "dev"),
+            ("jpeg200", {"dpi": 200, "blur": 0.5, "sigmoid": (30.0, 0.5), "noise": 1.0, "jpeg": 25}, "paper", "held")):
+        add(f"sharp_{name}", "sharp", split, bg=bg, scan=scan)
     import make_test_documents
 
     out.extend(make_test_documents.doc_cases())
@@ -503,9 +540,11 @@ def render_case(spec: dict, texts: dict | None = None, noise: bool = False) -> d
         ys, xs = np.nonzero(mk)
         rows.append({"box": box, "mask": mk, "bbox": (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)})
     sc_rng = np.random.default_rng(spec["seed"] + 7)
-    clean = scan_effects(warp(clean, maps), spec["scan"], sc_rng, False)
-    withv = scan_effects(warp(withv, maps), spec["scan"], sc_rng, noise)
-    return {"with": withv, "clean": clean, "rows": rows, "layout": layout}
+    shape = clean.shape
+    clean_n = scan_effects(warp(clean, maps), spec["scan"], sc_rng, False)
+    with_n = scan_effects(warp(withv, maps), spec["scan"], sc_rng, noise)
+    return {"with": to_page(with_n, shape), "clean": to_page(clean_n, shape), "native": with_n, "rows": rows,
+            "layout": layout}
 
 
 def to_jpeg(arr: np.ndarray, quality: int) -> bytes:
@@ -521,7 +560,7 @@ def write_pdf(spec: dict, path: Path) -> dict:
     r = render_case(spec, noise=True)
     doc = fitz.open()
     page = doc.new_page(width=r["with"].shape[1] * PT, height=r["with"].shape[0] * PT)
-    page.insert_image(page.rect, stream=to_jpeg(r["with"], spec["scan"]["jpeg"]))
+    page.insert_image(page.rect, stream=to_jpeg(r["native"], spec["scan"]["jpeg"]))
     if spec.get("text_layer"):                                   # a searchable scan: invisible text in a wrong font
         for text, x, y in r["layout"]:
             page.insert_text((x * PT, y * PT), text, fontname="helv", fontsize=11, render_mode=3)

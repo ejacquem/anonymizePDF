@@ -20,6 +20,7 @@ Measures per value (all on 200 dpi pixels, both images blurred a little so that 
             0 = the ideal text, 1 = the text erased and nothing written, more than 1 = worse than that
   mass      ink of the output / ink of the ideal (the weight of the text: 1 = the same, <1 thinner / lighter)
   dark      |darkness of the ink, output - ideal| in grey levels;  height  rows holding ink, output / ideal (size)
+  edge      sharpness: the strong edges of the output over those of the original value (under 1: the fake is softer)
   dx, dy    shift of the ink centre of the output from the ideal's, in pixels (position, baseline, warp)
   coll      share of the pixels away from every value (x 10 000) that the run changed by more than 40 levels (a label
             replaced, a stamp wiped, a patch pasted too wide)
@@ -63,7 +64,7 @@ BLUR = 1.2                  # both images are blurred by this before they are co
 INK = 20.0                  # grey levels under the clean page that count as ink
 FOUND = 0.6                 # share of the value's box the report's boxes must cover
 FAR = 18                    # pixels from a value's box beyond which a change is collateral
-MEASURES = ("bg", "bg95", "floor", "ink_rel", "mass", "dark", "height", "dy", "dx", "coll")
+MEASURES = ("bg", "bg95", "floor", "ink_rel", "mass", "dark", "height", "edge", "dy", "dx", "coll")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -162,6 +163,13 @@ def measure_row(orig, out, clean, ideal, bbox) -> dict:
     # the best fit over a shift of up to 2 px: the position is judged by dx / dy, the shape and weight by ink_rel
     res["ink_rel"] = float(min(np.abs(np.roll(xg, (sy, sx), axis=(0, 1)) - ig).mean()
                                for sy in range(-2, 3) for sx in range(-2, 3)) / want) if want > 1e-3 else None
+    # sharpness: the strong edges (95th percentile of the grey gradient, no blur) of the output over those of the original
+    # value, in the same region: under 1 = the replacement is softer than the text it replaces
+    raw_o, raw_x = grey(cut(orig, reg)), grey(cut(out, reg))
+
+    def edge(g):
+        return float(np.percentile(np.hypot(np.diff(g, axis=1)[:-1], np.diff(g, axis=0)[:, :-1]), 95))
+    res["edge"] = edge(raw_x) / edge(raw_o) if edge(raw_o) > 1.0 else None
     wi, wx = np.clip(cg - ig, 0, None), np.clip(cg - xg, 0, None)
     # darkness of the ink (levels, the 3rd percentile of the grey, output minus ideal) and its height (rows holding ink)
     res["dark"] = float(np.percentile(xg, 3) - np.percentile(ig, 3))
@@ -273,6 +281,8 @@ def groups_of(r: dict) -> list[str]:
         g.append(f"bg:{r['bgkind']}")
     if r["family"] == "doc":
         g.append(f"case:{r['case']}")
+    if r["family"] == "sharp":
+        g.append(f"sharp:{r['case'].split('sharp_')[-1]}")
     if r["tone"] != "none":
         g.append(f"tone:{r['case'].split('tone_')[-1]}")
     return g
@@ -307,7 +317,7 @@ def cell(v, fmt="{:.2f}"):
 
 def print_summary(summary: dict) -> None:
     cols = (("found", "{:.0%}"), ("det", "{:.0%}"), ("bg_excess", "{:.2f}"), ("bg95", "{:.1f}"), ("bg_worst", "{:.1f}"), ("ink_rel", "{:.2f}"),
-            ("mass", "{:.2f}"), ("dark", "{:.1f}"), ("height", "{:.2f}"), ("dy", "{:.1f}"), ("dx", "{:.1f}"),
+            ("mass", "{:.2f}"), ("dark", "{:.1f}"), ("height", "{:.2f}"), ("edge", "{:.2f}"), ("dy", "{:.1f}"), ("dx", "{:.1f}"),
             ("coll", "{:.1f}"))
     print(f"{'group':<26}{'n':>4}" + "".join(f"{c:>10}" for c, _ in cols))
     order = sorted(summary, key=lambda s: (s != "ALL", s.split(":")[0] not in ("family", "split"), s))
