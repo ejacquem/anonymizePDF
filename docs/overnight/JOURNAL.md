@@ -272,3 +272,48 @@ Not kept: a curve for a coarse page whose blur is large (`doc_vieux_worse`: blur
 Full run `final_sharp_full.json` vs `baseline_sharp_fixed.json`: found 87 -> 88 % (0 values lost, 5 gained), edge 0.80 -> 0.84, edge_rel 1.00, dark 4.8 -> 4.4; soft families
 unchanged except the intended gains. `tools/bench.py` 170.6 -> 168.6 s. `check_all --fast` on 3c83798: 1813 passed, 0 failed. Two debugging hooks (a dump of a surface window, a value
 printed by `ANON_DEBUG_SURFACE`) were removed afterwards; the four new test groups and `backdrop_tests` re-run green (28 checks). Report: `REPORT_SHARP.md`.
+
+
+# Stage A (branch `claude/stage-a-5e52b1`, from `claude/sharp-quality-32d24f` 5e85cc7; brief: close the review findings of run 2)
+
+Method: a test that fails on the old code first (`stage_a_backdrop_tests`, `stage_a_font_tests`, `stage_a_scan_tests` in `tools/check_all.py`, all in
+`--fast`), then the fix. Bench: `challenge_bench.py` on one fixed selection (`--only deco_ bg_ doc_ tone_ sharp_ font_`, 390 values; geom_ left out), the base
+run made on an export of 5e85cc7, the others on exports of the commits named below. Pictures: `sheet_view.py`.
+
+## A1 the ghost guard fails open / A2 12 % accepted / A3 polarity (commit 8f4be45, then 9834f9c and ddcfaf8)
+
+Old code, `stage_a_backdrop_tests`: 15 of 17 checks failed. A dense bold value on a blurred 100-150 dpi copy: darkest residual -75 / -41 / -57 levels
+(the box showed the original strokes at 20-30 % of their contrast) with the rung 'closing 0.000' (cannot measure = clean). Two more ways to read clean
+that the finding did not name: `near_here` empty (a smear above 25 % of the contrast found no ring pixel of the colour of the level and reported 0), and a
+solid heavy value whose ink mask (made against the level that follows it) is almost empty (a ring searched INSIDE the blob).
+- Fix: `ghost_parts` returns a `Ghost` in grey levels, infinite when it cannot measure (contrast < 2 x MIN_INK, fewer than 8 strong pixels, no ring even grown
+  around the box, nothing of the level's colour next to the strokes). The strokes the page shows (dark in every channel against the paper just outside the box)
+  count as ink for the ring; the paper of the contrast is the larger of the box's and the ring's. No `GHOST_LAST`: clean = 4 % of the contrast (a few levels of
+  grain allowed: `max(4 %, min(6, 4 % + 2))`, the review asked that faint copies do not get 6 of 28 levels). None clean: no surface; the box is flat, with the
+  ring colour of the caller, or, in a tint (a highlighter that ends at the box: the ring is the white of the page), with the area's colour (`flat_colour`).
+- First version of `flat_colour` took the box + 6 px: a blue highlighter hugging the text came out white (bg 21 on `doc_releve_tilt`); now the 80th percentile of the
+  non-stroke pixels INSIDE the box, a tint only when its chroma differs by > 20 or it is lighter than the ring by > 12 (a smear darkens and keeps the hue: first version
+  painted yellow bands 15 levels too dark).
+- A3: `is_dark_paper` reads the ring 1-4 px outside the box. The review of the diff (leak angle) found a regression: a band exactly as tall as the box has the light page
+  above and below, so the ring alone called it light; the left / right (above / below) sides now decide too (test written first, it failed).
+- After: 20 of 20 pass (+ `sharp_review_tests`, `backdrop_tests` green). Bench, base -> last, same selection: `found` identical on all 390 values (0 lost, 0 gained);
+  bg_, sharp_, tone_ families bit for bit the same; deco `bg_worst` 4.53 -> 7.59 (`hl_half`: a highlighter that covers half of the value is now one flat colour, no
+  shadow of the letters in it), `bg_excess` 0.63 -> 0.71; `doc_contrat_persp` `bg_worst` 22.9 -> 7.6 (the known leftover of run 2, a yellow row, now keeps its
+  colour), `doc_releve_bend` 6.2 -> 9.3, `doc_releve_tilt` 4.9 -> 6.3, `doc_contrat_bend` 6.3 -> 7.1. Looked at the highlighter and `hl_` pictures of the last sheet:
+  yellow and blue bands keep their colour, no shadow of the digits.
+- Tried and dropped: tint colour from the box + 6 px (white hole in a blue band), from the median (too dark on blur).
+
+## A4 fonts (commits f4be0d9, b1fdd5e)
+
+Old code: a proportional paragraph beside a bigger Courier block took Consolas (`mono_page` share 0.6); a short figure beside bigger words took the line's size
+(23.8 px for 20). `mono_page` -> `mono_block` (vote on the block of the value's words, else its line, else, when nothing around it tells, the page); prior = a bonus
+`MONO_BONUS` x evidence weight on the monospace families, no filter. First version (no page fallback): `doc_vieux_bad` 8 of 9 replaced values in Courier faces (a Verdana among them: the two-word blocks of an address have no vote), fax 7 of 11; with the page
+fallback (the page's vote only when nothing around the value tells; local evidence always wins) `doc_vieux_bad` 9 of 9 (as before), fax 8 of 11 (it was 12 of 12 with the whole-page rule; the 3 others have a block that votes
+proportional: DejaVu Sans x2, Georgia Bold), `font_lucida` 4 of 5 (5 of 5 with the whole-page rule). (Counted with a script on the trace `look` of the report, run on an export of 5e85cc7 and on the branch.) Bench: `font:lucida` `ink_rel` 0.37 -> 0.56 (the run-2 gain was 0.86 -> 0.37), `font:courier` `dark` 5.8 -> 6.8,
+`doc_vieux_fax` `dark` 3.9 -> 4.4, `coll` 5.3 -> 5.7; `found` unchanged. The `SIZE_LINE_*` rule is removed (no measurable change on the bench).
+
+## A5 (commit dc9b669)
+
+Old code: duplicate warning and numbers after a failed `compose`, a painting error swallowed (both tests failed). `_scan_page`: only `straighten` / `flatten` and the way back are in
+the try; `_mark` / `_rollback`. `ocrpage.agreement` indexed (same value on 40 random readings). `ANON_DEBUG_SURFACE` removed, `ANON_TONE` kept and documented (test with it off). The two
+backslash-broken one-liners (+ one in `quality.py`) rewritten, `backdrop.py` docstring updated.
