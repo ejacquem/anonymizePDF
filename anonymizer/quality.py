@@ -376,7 +376,9 @@ TONE_ON = os.environ.get("ANON_TONE", "1") != "0"      # fit a tone curve on the
 TONE_STEEP = (8.0, 16.0, 40.0, 100.0)    # slopes of the tone curves tried (a hard cut is the steepest)
 TONE_MID = (0.35, 0.5, 0.65)             # coverages they are centred on
 TONE_BLUR = (0.0, 0.5, 1.0)              # blurs tried with them (page pixels: the focus blurs before the cut)
-TONE_EDGE = 1.2                          # the scan's strong edges over those of the fitted candidates, from which a page is hard
+TONE_EDGE = 1.5                          # the scan's strong edges over those of the fitted candidates, from which a page is hard...
+TONE_EDGE_LOW = 1.2                      # ... or from this one when its ink pixels are mostly black or white (TONE_MID_SHARE)
+TONE_MID_SHARE = 0.35                    # share of mid-tones among the ink pixels (`hardness`) under which a page is black and white-ish
 TONE_MAX_BLUR = 1.9                      # a page whose linear fit needs more blur than this is a soft page: no tone curve
 TONE_SAMPLES = 10                        # words the curves are searched on
 
@@ -387,7 +389,7 @@ def edge_p95(arrays: list[np.ndarray]) -> float:
     return float(np.percentile(np.concatenate(g), 95)) if g else 0.0
 
 
-def fit_tone(samples: list[Sample], q: Quality) -> Quality:
+def fit_tone(samples: list[Sample], q: Quality, mid_share: float | None = None) -> Quality:
     """A steep tone curve for a page whose edges are harder than blur and spread can make them (a hard cut, a high contrast
     copy: the fitted candidates are softer than the scan, the residual cannot tell because the shapes of the letters differ
     more than the edges do). The strong edges of the scan (95th percentile of the gradient of its coverage) are the
@@ -396,13 +398,13 @@ def fit_tone(samples: list[Sample], q: Quality) -> Quality:
     keeps the quality it had (steep 0)."""
     if q.hard or q.blur > TONE_MAX_BLUR or len(samples) < MIN_SAMPLES:
         return q
-    if os.environ.get("ANON_TONE_FORCE"):                                    # (experiments)
-        k_, m_, b_ = (float(v) for v in os.environ["ANON_TONE_FORCE"].split(","))
-        return replace(q, steep=k_, mid=m_, blur=b_)
     few = samples[::max(len(samples) // TONE_SAMPLES, 1)][:TONE_SAMPLES]
     want = edge_p95([s.a for s in few])
     have = edge_p95([s.degraded(q) for s in few])
-    if want <= 0 or have <= 0 or want < TONE_EDGE * have:
+    if want <= 0 or have <= 0:
+        return q
+    needed = TONE_EDGE_LOW if mid_share is not None and mid_share < TONE_MID_SHARE else TONE_EDGE
+    if want < needed * have:
         return q
     mass = sum(float(s.degraded(q).sum()) for s in few)              # the ink the fit without a curve puts on these words
     best, best_key = None, None
@@ -420,7 +422,7 @@ def fit_tone(samples: list[Sample], q: Quality) -> Quality:
     return replace(best, fit=_total(samples, best))
 
 
-def fit(samples: list[Sample], scale: float = 1.0, hard: bool = False, tone: bool = False) -> Quality:
+def fit(samples: list[Sample], scale: float = 1.0, hard: bool = False, tone: bool = False, mid_share: float | None = None) -> Quality:
     """Blur and spread that make the sharp candidates look like the scan (every blur at every spread, the spread
     refined by a quarter pixel: a thick copy and a soft one are told apart only together).
     A black and white scan (`hard`) has no blur: its pixels are ink or paper, only the thickness is fitted.
@@ -439,7 +441,7 @@ def fit(samples: list[Sample], scale: float = 1.0, hard: bool = False, tone: boo
         bl, d = zero[1], 0.0             # no clear gain: strokes kept as printed (a faded or JPEG copy can fake it)
     q = replace(q, blur=bl, spread=d)
     q = replace(q, fit=_total(samples, q))
-    return fit_tone(samples, q) if tone else q
+    return fit_tone(samples, q, mid_share) if tone else q
 
 
 # ---------------------------------------------------------------------------

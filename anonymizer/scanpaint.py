@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 import random
 import time
 from dataclasses import replace
@@ -771,6 +772,8 @@ def _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             surf = backdrop.Surface(img, box) if q is not None and not blackbox and not coarse else None   # the page without the value
             if surf is not None and surf.ok:
                 fill = surf.colour(box, fill)
+            if surf is not None and os.environ.get("ANON_DEBUG_SURFACE"):
+                print("SURFACE", m.value[:20], surf.rung, flush=True)
             saved_rules = _rules_in(img, box) if not blackbox else None     # an underline in the box is the page's (B4)
             if q is not None:
                 quality.erase(img, box, fill, q, key, surf)    # the background, with the grain of the scan

@@ -98,32 +98,32 @@ def ink_mask(win: np.ndarray, height: float, core=None) -> np.ndarray:
 
 
 GHOST_RING = 4                           # pixels: the paper next to a stroke, to compare the surface over the stroke with
-GHOST_FILLED = 0.08                      # ... and after the fallback fill (a lifted surface still has the noise of the paper around)
+GHOST_LAST = 0.12                        # the most smear of the strokes a surface may keep when no way takes it all out (else the flat patch)
 GHOST_MAX = 0.04                         # share of the ink's contrast a surface may keep over the strokes (and at least 4 levels)
 
 
-def ghost_of(win: np.ndarray, level: np.ndarray, ink: np.ndarray, core, dark_paper: bool) -> float:
+def ghost_parts(win: np.ndarray, level: np.ndarray, ink: np.ndarray, core, dark_paper: bool) -> tuple:
     """How much of the strokes the surface `level` still shows over them, as a share of the strokes' contrast: the
     surface over the strongest ink pixels of the box against the surface right next to the strokes. A surface made
     from the paper alone has the same colour on both; a blurred or thick stroke that the closing did not remove leaves
     it darker (lighter, on a dark paper) over the stroke: a ghost of the value under its replacement."""
     x0, y0, x1, y1 = (max(int(v), 0) for v in core)
     if y1 <= y0 or x1 <= x0:
-        return 0.0
+        return 0.0, 0.0
     lum_w, lum_l = _lum(win.astype(np.float32)), _lum(level)
     part = lum_w[y0:y1, x0:x1]
     sgn = -1.0 if dark_paper else 1.0                            # strokes are darker than the paper (lighter on a dark one)
     paper = float(np.percentile(part, 10 if dark_paper else 90))
     contrast = abs(paper - float(np.percentile(part, 98 if dark_paper else 2)))
     if contrast < 2 * MIN_INK:
-        return 0.0
+        return 0.0, 0.0
     box = np.zeros(ink.shape, bool)
     box[y0:y1, x0:x1] = True
     strong = box & (sgn * (paper - lum_w) > 0.5 * contrast)
     near = morph.square_max(ink.astype(np.uint8), 3).astype(bool)
     ring = box & morph.square_max(ink.astype(np.uint8), 2 * GHOST_RING + 1).astype(bool) & ~near
     if strong.sum() < 8 or ring.sum() < 8:
-        return 0.0
+        return 0.0, 0.0
     # (the ring is the paper next to the ink mask, which is grown by GROW: it lies outside the soft edge of a stroke.) Only
     # the part of it that is the surface of the same area: a highlighter's rim or the page behind it is no reference
     here = float(lum_l[strong].mean())
@@ -134,7 +134,12 @@ def ghost_of(win: np.ndarray, level: np.ndarray, ink: np.ndarray, core, dark_pap
     # ... or the level is a hole: lighter over the strokes than around them (a closing that took a thin highlighter away)
     dug = ring & (np.abs(lum_l - here) < contrast)
     hole = max(sgn * float(here - lum_l[dug].mean()), 0.0) if dug.sum() >= 8 else 0.0
-    return max(smear, hole) / contrast
+    return smear / contrast, hole / contrast
+
+
+def ghost_of(win: np.ndarray, level: np.ndarray, ink: np.ndarray, core, dark_paper: bool) -> float:
+    """The larger of the two defects of `ghost_parts`."""
+    return max(ghost_parts(win, level, ink, core, dark_paper))
 
 
 def _bias(win: np.ndarray, level: np.ndarray, known: np.ndarray) -> np.ndarray:
@@ -145,7 +150,8 @@ def _bias(win: np.ndarray, level: np.ndarray, known: np.ndarray) -> np.ndarray:
     return np.stack([quality.blur((win[..., c] - level[..., c]) * w, BIAS_SIGMA) for c in range(3)], axis=-1) / den[..., None]
 
 
-def _fill_around_ink(win: np.ndarray, level: np.ndarray, ink: np.ndarray, height: float, dark_paper: bool) -> np.ndarray:
+def _fill_around_ink(win: np.ndarray, level: np.ndarray, ink: np.ndarray, height: float, dark_paper: bool,
+                     lift: bool = True) -> np.ndarray:
     """The level with the smear of the strokes taken out: around the strokes (grown by a margin that holds the soft edge and
     the tails of a thick or blurred stroke) each pixel takes the lightest (darkest, on a dark paper) level within a few
     pixels, but never more than a fraction of the strokes' contrast above (below) its own: the smear is a slight darkening
@@ -161,11 +167,12 @@ def _fill_around_ink(win: np.ndarray, level: np.ndarray, ink: np.ndarray, height
     contrast = max(float(np.percentile(lum[near], 95) - np.percentile(lum[near], 5)), 40.0)
     tol = max(FILL_RISE * contrast, 12.0)
     out = np.empty_like(level, dtype=np.float32)
+    up = (not dark_paper) if lift else dark_paper        # a smear is lifted toward the paper; a hole sinks to its neighbours
     for c in range(3):
         ch = level[..., c].astype(np.float32)
         u8 = np.clip(np.round(ch), 0, 255).astype(np.uint8)
-        far = (morph.square_min(u8, 2 * FILL_REACH + 1) if dark_paper else morph.square_max(u8, 2 * FILL_REACH + 1)).astype(np.float32)
-        far = np.maximum(far, ch - tol) if dark_paper else np.minimum(far, ch + tol)
+        far = (morph.square_max(u8, 2 * FILL_REACH + 1) if up else morph.square_min(u8, 2 * FILL_REACH + 1)).astype(np.float32)
+        far = np.minimum(far, ch + tol) if up else np.maximum(far, ch - tol)
         out[..., c] = np.where(near, far, ch)
     soft = np.stack([quality.blur(out[..., c], 2.0) for c in range(3)], axis=-1)
     edge = morph.square_max(near.astype(np.uint8), 5).astype(bool)          # the smoothing stays around the strokes
@@ -177,6 +184,7 @@ class Surface:
 
     def __init__(self, img, box, margin: float | None = None):
         self.fallback = None
+        self.rung = ""                                       # which way the surface was made (for the log and the tests)
         x0, y0, x1, y1 = (float(v) for v in box)
         h = max(y1 - y0, 4.0)
         m = int(math.ceil(margin if margin is not None else 1.2 * h + 8))
@@ -188,8 +196,14 @@ class Surface:
             return
         win = np.asarray(img.crop((X0, Y0, X1, Y1)).convert("RGB"))
         core = (x0 - X0, y0 - Y0, x1 - X0, y1 - Y0)           # the value's box in the window
-        level, ink = self._clean(win, h, core)
+        level, ink, self.rung = self._clean(win, h, core)
         if level is None:
+            import os as _os
+            if _os.environ.get("ANON_DEBUG_SURFACE_DUMP"):                 # (a debugging aid: the window of a surface given up)
+                from PIL import Image as _I
+                _I.fromarray(win).save(_os.environ["ANON_DEBUG_SURFACE_DUMP"] + "_win.png")
+                _I.fromarray(np.clip(paper_and_ink(win, h, core, 0.55, is_dark_paper(win, core))[0], 0, 255).astype(np.uint8)).save(_os.environ["ANON_DEBUG_SURFACE_DUMP"] + "_level.png")
+                print("core", core, flush=True)
             self.rgb = None
             return
         known = ~ink
@@ -207,18 +221,26 @@ class Surface:
         code did before the surface)."""
         dark = is_dark_paper(win, core)
         level, ink = paper_and_ink(win, h, core, 0.55, dark)
-        if ghost_of(win, level, ink, core, dark) <= GHOST_MAX:
-            return level, ink
+        g1 = ghost_of(win, level, ink, core, dark)
+        if g1 <= GHOST_MAX:
+            return level, ink, f"closing {g1:.3f}"
         # a smear of the strokes in the level (thick or blurred strokes, a page resampled): a larger closing takes it away
         # (unless it takes a thin highlighter with it: the check sees the hole), else it is lifted around the strokes by the
         # paper a few pixels farther (a highlighter keeps its colour), else no surface at all
         level2, ink2 = paper_and_ink(win, h, core, 0.9, dark)
-        if ghost_of(win, level2, ink2, core, dark) <= GHOST_MAX:
-            return level2, ink2
-        filled = _fill_around_ink(win, level, ink, h, dark)
-        if ghost_of(win, filled, ink, core, dark) <= GHOST_FILLED:
-            return filled, ink
-        return None, None
+        g2 = ghost_of(win, level2, ink2, core, dark)
+        if g2 <= GHOST_MAX:
+            return level2, ink2, f"larger closing {g1:.3f} -> {g2:.3f}"
+        smear, hole = ghost_parts(win, level, ink, core, dark)
+        filled = _fill_around_ink(win, level, ink, h, dark, lift=smear >= hole)
+        g3 = ghost_of(win, filled, ink, core, dark)
+        # none is clean: the least bad of the three, if it is not a smear that shows (a faint shadow of the strokes in a
+        # highlighter reads worse as a white box than as a shadow nobody can read), else the flat patch
+        best = min((g1, 0), (g2, 1), (g3, 2))
+        if best[0] <= GHOST_LAST:
+            level_, ink_ = ((level, ink), (level2, ink2), (filled, ink))[best[1]]
+            return level_, ink_, f"{('closing', 'larger closing', 'lifted')[best[1]]} {g1:.3f} {g2:.3f} {g3:.3f}"
+        return None, None, f"flat patch {g1:.3f} {g2:.3f} {g3:.3f}"
 
     @property
     def ok(self) -> bool:

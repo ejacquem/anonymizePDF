@@ -5017,6 +5017,78 @@ def sharp_read_tests():
     check("a blank page is not reported", not extras.get("warnings"))
 
 
+def sharp_tone_tests():
+    """The fake is as hard as the page (quality.py: steep / mid, fit_tone), the weight match moves the centre of the curve, and a
+    typewritten page has typewritten values (fontmatch.PageFonts.mono_page). No OCR needed."""
+    print("\n== hard pages: a tone curve, the weight, the pitch")
+    from collections import namedtuple
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    from anonymizer import fontmatch, quality
+
+    fonts = ROOT / "anonymizer" / "fonts"
+    c = np.linspace(0, 1, 11)
+    t = quality.tone(c, 16.0, 0.4)
+    check("the tone curve keeps 0 and 1 and is steeper than a line around its centre",
+          abs(t[0]) < 1e-9 and abs(t[-1] - 1) < 1e-9 and t[5] > c[5] and np.all(np.diff(t) >= 0), str(t.round(2).tolist()))
+
+    words = "Gaspard Delcourt habite Avenue Louise numero contrat assurance Bruxelles ouverture compte epargne".split()
+
+    def page(font_file, hard=False, soft=0.0, size=24):
+        img = Image.new("L", (1900, 260), 250)
+        d = ImageDraw.Draw(img)
+        font = ImageFont.truetype(str(fonts / font_file), size)
+        boxes, x = [], 30
+        for k, w in enumerate(words[:10]):
+            y = 60 + 90 * (k // 5)
+            if k % 5 == 0:
+                x = 30
+            d.text((x, y), w, font=font, fill=20, anchor="ls")
+            l, tp, r, b = d.textbbox((x, y), w, font=font, anchor="ls")
+            boxes.append((l, tp, r, b))
+            x = r + 40
+        if soft:
+            img = img.filter(ImageFilter.GaussianBlur(soft))
+        if hard:                                                            # a 200 dpi scan cut at a level, drawn at 300 dpi
+            small = img.resize((int(img.width * 2 / 3), int(img.height * 2 / 3)), Image.BOX)
+            small = small.point(lambda v: 255 if v > 150 else 0)
+            img = small.resize(img.size, Image.BILINEAR)
+        ws = [{"text": w, "box": b, "line": ("l", k // 5)} for k, (w, b) in enumerate(zip(words, boxes))]
+        return np.asarray(img), ws
+
+    g, ws = page("Roboto-Regular.ttf", hard=True)
+    q = fontmatch.PageFonts(g, ws, 2 / 3).page_quality()
+    check("a hard-cut page gets a tone curve, no blur to speak of", q.steep > 0 and q.blur <= 1.0, q.describe())
+    g, ws = page("Roboto-Regular.ttf", soft=2.5)
+    q = fontmatch.PageFonts(g, ws, 1.0).page_quality()
+    check("a blurred page keeps no tone curve (its quality is what it was)", q.steep == 0, q.describe())
+
+    Look = namedtuple("Look", "paper ink")
+    look = Look((250, 250, 250), (20, 20, 20))
+    regular, heavy = (ImageFont.truetype(str(fonts / n), 34) for n in ("Roboto-Regular.ttf", "Roboto-Bold.ttf"))
+
+    def line(font):
+        img = Image.new("L", (400, 90), 250)
+        ImageDraw.Draw(img).text((20, 60), "Mathis Verhaegen", font=font, fill=20, anchor="ls")
+        return np.asarray(img)
+
+    def runs(font, text):
+        return [(text, None, False, font, (20.0, 60.0), 1.0)]
+
+    qt = quality.Quality(blur=0.0, steep=16.0, mid=0.5)
+    thick = scanpaint.weight_matched(qt, line(heavy), (10, 15, 390, 80), None, look, runs(regular, "Mathis Verhaegen"),
+                                     runs(regular, "Gaspard Delcourt"))
+    check("a heavier page than the matched font: the centre of the tone curve goes down (thicker strokes)",
+          thick.mid < qt.mid and thick.spread == qt.spread, (thick.mid, thick.spread))
+    thin = scanpaint.weight_matched(qt, line(regular), (10, 15, 390, 80), None, look, runs(heavy, "Mathis Verhaegen"),
+                                    runs(heavy, "Gaspard Delcourt"))
+    check("a lighter page than the matched font: the centre goes up", thin.mid > qt.mid, thin.mid)
+
+    g, ws = page("CourierPrime-Regular.ttf", size=26)
+    check("a page typed in a fixed pitch is a typewritten page", fontmatch.PageFonts(g, ws, 1.0).mono_page())
+    g, ws = page("Roboto-Regular.ttf")
+    check("a page in a proportional face is not", not fontmatch.PageFonts(g, ws, 1.0).mono_page())
+
+
 GROUPS = [
     "layout_tests", "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
@@ -5030,7 +5102,7 @@ GROUPS = [
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
-    "sharp_review_tests", "sharp_read_tests",
+    "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

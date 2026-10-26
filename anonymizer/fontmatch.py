@@ -26,6 +26,11 @@ from . import layout, memo, morph, quality, timing
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
 
 # family, kind, regular file names, bold file names (the first file found is used)
+MONO_MIN_LETTERS = 5            # a word that tells the pitch of a page: letters at least
+MONO_WORDS = 40                 # ... the longest this many
+MONO_MIN_WORDS = 8              # ... at least this many of them measured
+MONO_SHARE = 0.33               # a page is typewritten when this share of them is best written in a monospace face
+
 CATALOG = [
     ("Arial", "sans", ("arial.ttf",), ("arialbd.ttf",)),
     ("Arial Narrow", "sans", ("arialn.ttf",), ("arialnb.ttf",)),
@@ -471,6 +476,8 @@ SAMPLE_WORDS = 20                   # words of the page measured for its quality
 MIN_BLOCK_WORDS = 4                 # measurable words a block needs for its own style (fewer: the value's own rules)
 BLOCK_WORDS = 24                    # the longest measurable words of a block are the ones measured
 BLOCK_SPLIT = 0.25                  # the bold scores of a block are two clusters when their largest gap is this wide
+SIZE_LINE_LETTERS = 9               # a value with fewer letters than this takes the size of its line when its own differs...
+SIZE_LINE_SLACK = 0.06              # ... by more than this
 SIZE_SLACK = 0.12                   # a value whose own size is this close to its block's takes the block's size
 
 
@@ -527,6 +534,7 @@ class PageFonts:
         self._scores: dict[int, tuple | None] = {}
         self._bold: dict[tuple, float | None] = {}
         self._quality = None
+        self._mono = None           # is the page typewritten (mono_page)
         self._layout = None         # (blocks, block of each word): anonymizer/layout.py, made on first use
         self._styles: dict[int, BlockStyle] = {}
         self._block_cols: dict[int, tuple | None] = {}
@@ -592,11 +600,11 @@ class PageFonts:
                     smp = self._sample(i, max(s, key=s.get))
                     if smp:
                         samples.append(smp)
-            hard = False
-            if self.scale < quality.NEAREST_BELOW:           # a black and white scan: its pixels are read on its own grid
+            hard, mid = False, None
+            if self.scale < 0.95:                            # a scan's pixels are read on its own grid
                 mid = quality.hardness(self.gray, [self.words[i]["box"] for i in idx[::step][:SAMPLE_WORDS]], self.scale)
-                hard = mid is not None and mid < quality.HARD_MID
-            self._quality = quality.fit(samples, self.scale, hard, tone=quality.TONE_ON)
+                hard = self.scale < quality.NEAREST_BELOW and mid is not None and mid < quality.HARD_MID   # black and white
+            self._quality = quality.fit(samples, self.scale, hard, tone=quality.TONE_ON, mid_share=mid)
         return self._quality
 
     def _mass(self, i: int, f: Face) -> float | None:
@@ -783,6 +791,12 @@ class PageFonts:
             return None
         sizes, bases = got
         size = float(np.median(sizes))
+        if sum(_letters(self.words[i]["text"]) for i in own) < SIZE_LINE_LETTERS:
+            # a few letters (a town, a house number): the other words of the line, written at one size, say more than they do
+            near = self.line_words(own)
+            on_line = self._fit_words(near, f, soft, baseline=False) if len(near) >= 3 else None
+            if on_line and len(on_line[0]) >= 3 and abs(size / float(np.median(on_line[0])) - 1) > SIZE_LINE_SLACK:
+                size = float(np.median(on_line[0]))
         style = self.block_style(self._blocks()[1][own[0]]) if own else None
         if style is not None and style.size and abs(size / style.size - 1) <= SIZE_SLACK:
             size = style.size                          # the letters of the block (its median over many words)
@@ -867,6 +881,22 @@ class PageFonts:
         return near[:limit]
 
     @_fonts
+    def mono_page(self) -> bool:
+        """Is this page typed on a typewriter (fixed pitch)? Among its longest words, the share whose best face is a
+        monospace one: a page that is mostly set in a fixed pitch has no proportional values (a short value, a few digits or
+        a town cannot tell Courier from Georgia on a coarse copy, the page can)."""
+        if self._mono is None:
+            idx = sorted((i for i, w in enumerate(self.words) if _letters(w["text"]) >= MONO_MIN_LETTERS and i not in self.skip),
+                         key=lambda i: -_letters(self.words[i]["text"]))[:MONO_WORDS]
+            kinds = []
+            for i in idx:
+                s = self.scores(i)
+                if s:
+                    kinds.append(max(s, key=s.get).kind == "mono")
+            self._mono = len(kinds) >= MONO_MIN_WORDS and sum(kinds) / len(kinds) >= MONO_SHARE
+        return self._mono
+
+    @_fonts
     def face_for(self, box, bold_hint: bool | None = None) -> tuple[Face | None, float]:
         """The face of the value written in `box` and how sure (margin between the best family and the next one,
         per word). Family: the value's words and its line; weight: the value's words (bold_hint when they cannot
@@ -889,6 +919,10 @@ class PageFonts:
                 fam[family] = fam.get(family, 0.0) + k * (v - best)
         if not seen or not fam:
             return None, 0.0
+        if self.mono_page():                               # a typewritten page: its values are in a fixed pitch too
+            mono = {k: v for k, v in fam.items() if (face(k, False) or face(k, True)) is not None
+                    and (face(k, False) or face(k, True)).kind == "mono"}
+            fam = mono or fam
         ranked = sorted(fam.items(), key=lambda kv: -kv[1])
         family = ranked[0][0]
         margin = (ranked[0][1] - ranked[1][1]) / seen if len(ranked) > 1 else 1.0
