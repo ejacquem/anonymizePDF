@@ -123,8 +123,8 @@ def ink_mask(win: np.ndarray, height: float, core=None) -> np.ndarray:
 GHOST_RING = 4                           # pixels: the paper next to a stroke, to compare the surface over the stroke with
 GHOST_MAX = 0.04                         # share of the ink's contrast a surface may keep over the strokes ...
 GHOST_LEVELS = 6.0                       # ... and at least this many grey levels (the grain of a scan)
-FLAT_REACH = 6                           # pixels around the box whose paper gives the flat colour of a tint
-FLAT_TINT = 12.0                         # levels the area's colour must differ from the ring's for it to be a tint
+FLAT_TINT = 12.0                         # levels the area's colour must be lighter than the ring's for it to be a tint...
+FLAT_CHROMA = 20.0                       # ... or levels its chroma must differ from the ring's (a darkening keeps the chroma)
 
 
 class Ghost(NamedTuple):
@@ -204,24 +204,27 @@ def _ring_paper(win: np.ndarray, core):
 
 
 def flat_colour(win: np.ndarray, core, dark_paper: bool = False):
-    """The colour of the area around the box when it is a tint, else None. Where no level is clean the box is painted flat;
+    """The colour of the area under the box when it is a tint, else None. Where no level is clean the box is painted flat;
     the colour of the thin ring around the box is right on a plain page but not in a highlighter or a tinted cell that ends
     there (the page around it is white). The area's own colour: per channel, the 80th percentile (the 20th on a dark paper:
-    the soft edge of a blurred stroke is a darkening, never a lightening) of the pixels up to FLAT_REACH pixels around the
-    box that are not strokes, a stroke being darker than the ring's paper in EVERY channel (a yellow highlighter is dark in
-    blue only, a cyan one in red only: they are paper). None when it is the colour of the ring (the caller's flat patch does
-    it, and a heavy value that fills its box is not taken for a tint) or when too few pixels tell."""
+    the soft edge of a blurred stroke is a darkening, never a lightening) of the pixels INSIDE the box that are not strokes, a
+    stroke being darker than the ring's paper in EVERY channel (a yellow highlighter is dark in blue only, a cyan one in red
+    only: they are paper). It is a tint only when it is not the ring's colour darkened by what is left of the strokes: another
+    chroma (a darkening keeps the hue: the channels move together), or lighter than the ring on a light paper. Else None (the
+    caller's flat patch of the ring does it, and a heavy value that fills its box is not taken for a tint)."""
     ref = _ring_paper(win, core)
     if ref is None:
         return None
     x0, y0, x1, y1 = (int(round(v)) for v in core)
     area = np.zeros(win.shape[:2], bool)
-    area[max(y0 - FLAT_REACH, 0):max(y1 + FLAT_REACH, 0), max(x0 - FLAT_REACH, 0):max(x1 + FLAT_REACH, 0)] = True
+    area[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)] = True
     area &= (((win.astype(float) - ref) if dark_paper else (ref - win.astype(float))).min(axis=-1) < MIN_INK)
     if area.sum() < 30:
         return None
     colour = np.percentile(win[area].astype(float), 20 if dark_paper else 80, axis=0)
-    return colour if float(np.abs(colour - ref).max()) > FLAT_TINT else None
+    chroma = abs(float(colour.max() - colour.min()) - float(ref.max() - ref.min()))
+    lighter = (float(_lum(ref)) - float(_lum(colour))) if dark_paper else (float(_lum(colour)) - float(_lum(ref)))
+    return colour if chroma > FLAT_CHROMA or lighter > FLAT_TINT else None
 
 
 def _bias(win: np.ndarray, level: np.ndarray, known: np.ndarray) -> np.ndarray:

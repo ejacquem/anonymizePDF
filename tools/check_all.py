@@ -4988,14 +4988,15 @@ def stage_a_backdrop_tests():
     paper, yellow, ink = (250, 248, 242), (255, 235, 60), (25, 25, 30)
     text = "Mathis Verhaegen"
 
-    def page(font_file, size, blur, scale, band):
-        """(blurred page with the value, the same page without it, the value's box): drawn at 1x, resampled by `scale`, blurred."""
+    def page(font_file, size, blur, scale, band, margin=(8, 6), colour=yellow):
+        """(blurred page with the value, the same page without it, the value's box): drawn at 1x, resampled by `scale`, blurred.
+        `band`: a highlighter around the box, `margin` pixels wider than it."""
         font = ImageFont.truetype(str(fonts / font_file), size)
         small = Image.new("RGB", (260, 80), paper)
         d = ImageDraw.Draw(small)
         l, t, r, b = d.textbbox((14, 52), text, font=font, anchor="ls")
         if band:
-            d.rectangle((l - 8, t - 6, r + 8, b + 6), fill=yellow)
+            d.rectangle((l - margin[0], t - margin[1], r + margin[0], b + margin[1]), fill=colour)
         clean = small.copy()
         d.text((14, 52), text, font=font, fill=ink, anchor="ls")
 
@@ -5034,6 +5035,16 @@ def stage_a_backdrop_tests():
             check(f"A2 {name}, {'on a yellow band' if band else 'on white'}: no shadow of the value (std of the erased box < 2, "
                   f"no pixel 10 levels off)", res.std() < 2.0 and abs(res).max() < 10,
                   f"std {res.std():.2f}, max {abs(res).max():.1f}, mean {res.mean():.1f}, rung {surf.rung}")
+
+    # ... and a highlighter that ends right at the box (the ring around the box is the white of the page): the box keeps the highlighter's
+    # colour, it is not a white hole in it
+    blue = (110, 180, 250)
+    for name, args in (("Roboto Bold 16 px, blur 4", ("Roboto-Bold.ttf", 16, 4.0, 2)), ("DejaVu Sans Bold 20 px, blur 5", ("DejaVuSans-Bold.ttf", 20, 5.0, 2))):
+        img, clean, box = page(*args, True, margin=(1, 1), colour=blue)
+        res, surf = residual(img, clean, box)
+        res = res[4:-4, 4:-4]                          # (the soft edge of the highlighter itself is not the value's)
+        check(f"A2 {name}, a blue highlighter ending at the box: the box keeps its colour (within 20 levels, no structure)",
+              res.std() < 3 and abs(res).max() < 20, f"std {res.std():.2f}, max {abs(res).max():.1f}, mean {res.mean():.1f}, rung {surf.rung}")
 
     # A3: a heavy black value that covers more than half of its box is not dark paper; white text on a thin navy band is
     def heavy(stroke, size, blur):

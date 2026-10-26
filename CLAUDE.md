@@ -142,7 +142,8 @@ Run: `python app.py --root <folder with client folders>` → http://127.0.0.1:50
 Options: `--port`, `--ocr-lang fra+eng`, `--ocr-engine auto|tesseract|windows`, `--spacy-model` (repeatable).
 Env: `ANON_SECRET_FILE` (key path), `ANON_OCR_ENGINE`, `TESSERACT_CMD`, `TESSDATA_PREFIX`, `ANON_WORKERS` (pages in
 parallel processes: 1 = never, default = the cores minus one, at most 6, fewer when the free memory is short),
-`ANON_WORKER_MB` (memory expected per worker, default 800: a worker peaks near 500 MB on a 3-page A4 scan).
+`ANON_WORKER_MB` (memory expected per worker, default 800: a worker peaks near 500 MB on a 3-page A4 scan),
+`ANON_TONE=0` (no tone curve for hard pages, section 10b: the blur and the stroke spread only; for comparing, not for production).
 
 ## 4. UI
 
@@ -805,13 +806,16 @@ Order must never change a result (`order_tests`): a value written with several s
   121 values of `sharp_` / `doc_sharp_` / `doc_vieux`, `dark` 17 -> 12; a sharper fake is not better aligned than a soft one, so `ink_rel`
   0.68 -> 0.69. Not kept: choosing the curve by the residual alone (the shapes differ more than the edges: it never chose one); the
   soft five-row pages have the same edge ratio (1.1-1.4) as the hard ones, only the mid-tone share and a ratio of 1.5 tell them apart.
-- **Typewritten pages** (`PageFonts.mono_page`): among the 40 longest words (>= 5 letters, >= 8 measured) the share whose best face is a
-  monospace one (`MONO_SHARE` 0.33: typewritten pages 0.35-0.57 because the long words go to Courier New / Courier Prime / Consolas, proportional
-  pages 0.00-0.30) makes `face_for` choose among the monospace families only. A value of few letters (a town, digits) cannot tell Courier from
-  Georgia on a coarse copy; the page can. Run 1's note still holds: giving every value its block's family loses accuracy on proportional
-  pages, so this is a prior for fixed pitch only.
-- **A value of few letters takes the size of its line** (`PageFonts.metrics`): fewer than `SIZE_LINE_LETTERS` (9) letters in its words and its own
-  fitted size more than 6 % from the median of the line's other words (>= 3 fitted) -> the line's size (a town written smaller than its street).
+- **Typewritten text** (`PageFonts.mono_block`, stage A4: it was a whole-page rule, `mono_page`): among the 40 longest words (>= 5 letters,
+  >= 4 measured) of the BLOCK of the value's own words (else, when the block has too few, of its line) the share whose best face is a
+  monospace one (`MONO_SHARE` 0.33: typed text 0.35-0.57 because the long words go to Courier New / Courier Prime / Consolas, proportional
+  text 0.00-0.30) gives `face_for` a prior: a bonus (`MONO_BONUS` per unit of evidence weight) on the monospace families, the others stay in
+  the vote. A value of few letters (a town, digits) cannot tell Courier from Georgia on a coarse copy; the text around it can. A page
+  with a Consolas table and a proportional paragraph keeps the paragraph's values proportional (`stage_a_font_tests`: the whole-page rule
+  put every value of such a page in a fixed pitch). Run 1's note still holds: giving every value its block's family loses accuracy on
+  proportional pages, so this is a prior for fixed pitch only.
+- (Run 2 also had 'a value of few letters takes the size of its line': removed in stage A4, no measurable gain on the bench and it flattened
+  a real difference of size, a small-print figure beside a label.)
 - Limits: close look-alikes are mixed up on soft copies (Arial / Roboto, Courier New / Courier Prime, DejaVu Sans
   Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; ~0.1-0.3 s per value. A value in a
   font other than its line's (an IBAN in Consolas inside a Garamond sentence) takes the line's family: the value's own
@@ -834,14 +838,22 @@ Order must never change a result (`order_tests`): a value written with several s
   merged like the other readings (`ocrpage.page_words`). Not kept: the fonts measured on that flat grey (one value lost on a bent page,
   JOURNAL P1-3). Tests: `backdrop_tests`.
 
-- **The surface does not keep the strokes** (run 2, review of run 1): the polarity is decided on the pixels of the value's own box
-  (`is_dark_paper`: a name in white on a thin navy band lies in a window that is mostly light paper), and `ghost_parts` measures what is
-  left of the strokes in the level over the strongest ink pixels of the box: the SMEAR (the level is darker there than the paper
-  next to the strokes, taken from the pixels of the same colour only, so the rim of a highlighter or the page behind it is no reference)
-  and the HOLE (lighter than around: a too large closing that took a thin highlighter away). Above 4 % of the strokes' contrast: a closing of
-  0.9 heights, else the level lifted around the strokes by the lightest similar colour a few pixels away (`_fill_around_ink`, a bounded rise),
-  and if none is clean the least bad one is used while its smear is under 12 %, else the flat patch of the old code. `Surface.rung` says
-  which was used (log with ANON_DEBUG_SURFACE=1). Tests: `sharp_review_tests`.
+- **The surface does not keep the strokes** (run 2, review of run 1; stage A closed the three ways it failed open): the polarity is decided on the
+  paper just OUTSIDE the value's box, a ring 1-4 px wide (`is_dark_paper`; the box itself called a heavy dark value that covers more than half
+  of it dark paper: the closing then kept the strokes as the paper; a name in white on a thin navy band has the band all around its box), and
+  `ghost_parts` measures what is left of the strokes in the level over the strongest ink pixels of the box, in grey levels: the SMEAR (the
+  level is darker there than the paper next to the strokes, taken from the pixels of the same colour only, so the rim of a highlighter or the
+  page behind it is no reference) and the HOLE (lighter than around: a too large closing that took a thin highlighter away). The strokes next
+  to which the ring is searched are the ink mask AND what the page shows dark in every channel against the paper outside the box (a solid
+  heavy value has almost no ink mask: the level follows it). The paper of the contrast is the larger of the box's and the ring's. A box
+  that cannot be measured is UNSAFE, never clean (stage A1: contrast under 2 x MIN_INK, fewer than 8 strong pixels, no paper beside the
+  strokes even in the ring grown around the box, none of it of the colour of the level: `Ghost` is infinite). Clean = at most `GHOST_MAX`
+  (4 %) of the contrast and at least `GHOST_LEVELS` (6) levels. Ladder: closing 0.3 / 0.55 heights, a closing of 0.9, the level lifted
+  around the strokes (`_fill_around_ink`, a bounded rise); none clean: NO surface (stage A2: the old 'least bad under 12 %' is gone, it
+  left a shadow of the letters under the fake). Then the box is flat: the ring colour of the caller (`background_color`), or, when the area
+  is a tint (a highlighter that ends at the box: the ring is the page's white), the area's colour (`flat_colour`: the 80th percentile per
+  channel of the pixels around the box that are not strokes, only when it differs from the ring's by more than 12 levels; the surface is
+  then a constant window, rung '... tint'). `Surface.rung` says which was used. Tests: `sharp_review_tests`, `stage_a_backdrop_tests`.
 
 ## 10d. Turned and bent pages (`dewarp.py`)
 
@@ -855,8 +867,10 @@ Order must never change a result (`order_tests`): a value written with several s
   (grown 2 px): what was not replaced keeps the pixels of the scan. The Windows OCR straightens a page it finds turned by 10
   degrees or more and gives the boxes of the straightened page: before this a page turned by 12 degrees was never replaced at its place.
 - `_scan_page` runs `dewarp.straighten` in black-box mode too (the Windows OCR returns the boxes of the straightened page: black boxes of a page
-  turned by 10 degrees or more landed at the wrong place); `straighten` and the flat paint + `compose` are in a try / except: a failure logs and
-  redoes the page the old per-word way (test: `sharp_review_tests`).
+  turned by 10 degrees or more landed at the wrong place); only the dewarp is inside a try / except (stage A5): `straighten` and `flatten`, and the way back (`box_to_page`, `compose`). Their failure
+  logs and redoes the page the old per-word way, after `_rollback` took back everything the failed attempt added (records, trace, black boxes,
+  MRZ, warnings, the numbers of the placeholders); an error of `_scan_flat` (OCR, fonts, paint) is not caught: the file ends in error. Tests:
+  `sharp_review_tests`, `stage_a_scan_tests`.
 - Maps: page p -> rotated canvas u = c_u + R(a)(p - c_o) -> flat (x, y) with u = (x, y + d(x, y)); the inverse of d is a fixed
   point iteration. Cubic (Catmull-Rom) resampling along the columns for d, PIL bicubic for the turn. The page is resampled twice
   where it changed (a little blur); a page turned by less than 2 degrees is left to the old per-word path (`TILT_MIN`).
@@ -1112,7 +1126,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
 - Run 2 (`sharp_review_tests`, `sharp_read_tests`, `sharp_tone_tests`): white text on a thin dark band, a blurred 150 dpi copy and a thin blurred
   highlighter leave no ghost (the surface, `_erase_patch`), black-box mode on a page turned 12 degrees covers every value; the block factors of
   coarse scans (3 x 3, a fax 1.5 x 3, smooth pages 1 x 1), the smooth page, the unread-page warning; a hard cut page gets a tone curve and a
-  blurred one does not, the weight match moves the centre of the curve, a fixed pitch page is a typewritten page.
+  blurred one does not, the weight match moves the centre of the curve, a fixed pitch block is typewritten.
+- Stage A (`stage_a_backdrop_tests`, `stage_a_font_tests`, `stage_a_scan_tests`, all in `--fast`): a dense bold value on a blurred copy and a heavy black value leave nothing under the fake (the guard fails closed), a blurred thick value on white and on a yellow band leaves no shadow (std < 2), the polarity of a heavy value and of white text on a navy band; a proportional paragraph beside a Courier block stays proportional, a short figure keeps its own size; the dewarp fallback forgets the failed attempt and lets a painting error go up; `agreement` with an index equals the loop; `ANON_TONE=0` (`quality.TONE_ON`) gives no tone curve.
 - Underlined and framed values on a scan (`underline_tests`, B4): each underline stays, no replacement is bold where the
   original is regular.
 - Corrupted text layer (`corrupt_layer_tests`: the page is read by OCR, its values replaced), a town with its region code
