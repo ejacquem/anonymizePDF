@@ -96,3 +96,40 @@ watermark of a 150 dpi poor copy). 0 of 12 keys on the base commit. The backgrou
 (faithful to the card), which makes the OCR of the thin serif fake worse; the pixels differ by 1.5 levels on average. A
 chaotic flip of the OCR on a font mismatch (the first name should be written in the bold sans of the card, the font match picks a serif
 for it), not a leak; see REPORT.md.
+
+## P3-1 tone curve in `Quality` (tried, NOT kept)
+
+Hypothesis (brief 3c): `tone:boost` / `dark` / `halo` have a nonlinear tone curve; fit it on the pixels (monotone knots from the median scan
+darkness at each level of the degraded candidates) and paint through it. On the three pages the fitted knots were the identity to within
+the noise (the linear fit of each word, `a ~ c p + b`, already takes the scale), the residual never fell by more than 1 %: no curve kept.
+Not kept, nothing committed. A halo (unsharp mask) is not a tone curve: its overshoot is clipped by the coverage normalisation.
+
+## P3-2 weight of the fake matched to the original (`scanpaint.weight_matched`)
+
+Hypothesis: the `dark` (darkness of the ink, 3rd percentile) and `mass` of `font:rockwell` (44, 0.76), `tone:textlayer` (47), `tone:halo`
+(32), `tone:dark` (20), `font:bahnschrift` (19) come from the matched face being lighter than the page's font (a slab, a font outside the
+catalog) or from a tone that thins the fake: whatever the cause, the ink of the fake is too little. Measure the ink the original value has
+(grey page before painting, normalised by the Surface and the ink colour, rules left out), the ink the same text has when written in the
+matched face at the page's quality, and move the fake's stroke spread so that the fake's ink is that ratio times its own, only when the ratio is
+outside 0.89 .. 1.13.
+First version (observed against the paper colour of the look): the values under a highlighter measured 1.5-1.8 (the highlight was ink):
+doc_assurance_bendtilt / wave `dark` 7 -> 10 / 5.9 -> 8.3. Against the Surface of the box: fixed.
+Full run `p3d_full.json` vs `p2e_full.json` (phase 2): font:rockwell dark 44.3 -> 6.2, mass 0.76 -> 1.03; tone:textlayer dark 46.7 -> 6.9,
+mass 0.76 -> 1.06; tone:dark dark 20.5 -> 5.3; tone:halo dark 31.9 -> 14.4, mass 0.87 -> 1.02; font:bahnschrift dark 19.3 -> 5.9; sylfaen 10.5 -> 4.8;
+lucida mass 1.27 -> 1.10; font:courier (docs) dark 29.8 -> 7.8, mass 2.25 -> 1.59; family:font dark 4.95 -> 4.21, family:tone 9.99 -> 6.78,
+family:doc 4.91 -> 4.40; found unchanged. Slightly worse: rockwell / textlayer ink_rel +0.03..0.06 (the glyph shapes are still the catalog's),
+a few `dx` medians of 5 values (franklin 9.8 -> 14.1, doc_contrat_persp `dark` 2.9 -> 4.2), bahnschrift mass 0.98 -> 1.13.
+Time: the full bench takes 478 s against 381 s at the baseline (phase 1 flat OCR on coloured pages, phase 2 dewarp, this): see REPORT.md.
+
+## P3-3 the 'Eltoe' flake of `carte_identite_faible_qualite.pdf` found: the Surface of a turned word (fixed)
+
+`check_all` (random keys) failed about one run in three on the poor ID copy (Dossier Test 09): the second check read the fake first
+name back as a different word ('Eltoe', 'Ehne', 'Lime'). 0 of 30 random keys at the baseline, 3-9 of 20 with the branch. Bisected with a fixed
+set of 16 keys (`Random(1000 + i)`, the same keys on both trees): not the Surface of the main paint path (`FLATSURF`), not the weight match,
+not the soft edge of the rules; all three off still failed, so one more difference: `render.paint_tilted` (the words of the card slanted by
+more than 1.5 degrees, painted in a turned patch) also erased with a Surface: with it off, 0 of 16 / 0 of 24. In the turned patch the tight
+ink band is short, the closing is small, the pink SPECIMEN watermark runs on through the erased name and the OCR misreads the thin serif fake over
+it. Decision: `paint_tilted` keeps the flat patch (the page's bend is handled by dewarp; a turned word on a highlighter is rare). A closing taken
+from a band grown by 30 or 60 % (the height of an OCR box) did not remove the failures (1 of 16, 2 of 24).
+The soft edge of a rule (+-2 px) is now put back only where no ink of a letter is within 2 px (a descender that crosses the line would leave a piece
+of the value): bg95 of `deco:underline` stays at 5.7.

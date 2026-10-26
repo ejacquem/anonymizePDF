@@ -4828,6 +4828,41 @@ def dewarp_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def weight_tests():
+    """The fake is as heavy as the text it replaces (scanpaint.weight_matched): a page written in a heavier font than the one
+    matched thickens the strokes of the fake, a lighter one thins them, the same font leaves them alone."""
+    print("\n== weight of the fake")
+    from collections import namedtuple
+    from PIL import Image, ImageDraw, ImageFont
+    from anonymizer import quality
+
+    fonts = ROOT / "anonymizer" / "fonts"
+    regular, heavy = (ImageFont.truetype(str(fonts / n), 34) for n in ("Roboto-Regular.ttf", "Roboto-Bold.ttf"))
+    Look = namedtuple("Look", "paper ink")
+    look = Look((250, 250, 250), (20, 20, 20))
+    text = "Mathis Verhaegen"
+
+    def page(font):
+        img = Image.new("L", (400, 90), 250)
+        ImageDraw.Draw(img).text((20, 60), text, font=font, fill=20, anchor="ls")
+        return np.asarray(img)
+
+    q = quality.Quality(blur=0.7)
+    box = (10, 15, 390, 80)
+
+    def runs(font, t):
+        return [(t, None, False, font, (20.0, 60.0), 1.0)]
+
+    same = scanpaint.weight_matched(q, page(regular), box, None, look, runs(regular, text), runs(regular, "Gaspard Delcourt"))
+    check("the same font: the spread is left alone", same.spread == q.spread, same.spread)
+    thick = scanpaint.weight_matched(q, page(heavy), box, None, look, runs(regular, text), runs(regular, "Gaspard Delcourt"))
+    check("a heavier page than the matched font: the strokes are thickened", thick.spread >= q.spread + 0.3, thick.spread)
+    thin = scanpaint.weight_matched(q, page(regular), box, None, look, runs(heavy, text), runs(heavy, "Gaspard Delcourt"))
+    check("a lighter page than the matched font: the strokes are thinned", thin.spread <= q.spread - 0.3, thin.spread)
+    none = scanpaint.weight_matched(q, page(heavy), box, None, None, runs(regular, text), runs(regular, "Gaspard Delcourt"))
+    check("nothing measured (no look): the quality is returned as it is", none is q)
+
+
 GROUPS = [
     "layout_tests", "detector_tests", "reported_cases_tests", "invisible_copy_tests", "text_loss_tests", "names_tests",
     "common_words_tests", "text_overlap_tests", "bank_identifier_tests", "config_edit_tests", "review_skip_tests",
@@ -4840,7 +4875,7 @@ GROUPS = [
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
-    "underline_tests", "backdrop_tests", "dewarp_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
+    "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

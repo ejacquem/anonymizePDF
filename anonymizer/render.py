@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from . import backdrop, morph, quality
+from . import morph, quality
 from .pii import fitz
 
 # ---------------------------------------------------------------------------
@@ -888,8 +888,7 @@ def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: boo
         d.rectangle(t, fill=(0, 0, 0))
     else:
         if q is not None:
-            surf = backdrop.Surface(turned, t)
-            quality.erase(turned, t, surf.colour(t, paper), q, key, surf)
+            quality.erase(turned, t, paper, q, key)
         else:
             d.rectangle(t, fill=paper)
         if new:

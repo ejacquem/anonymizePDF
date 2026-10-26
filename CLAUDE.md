@@ -772,6 +772,14 @@ Order must never change a result (`order_tests`): a value written with several s
   trace look says which block (`block N`). A value with no OCR word under it, or in a block with fewer words: the
   per-value rules, as before. Tried and dropped: giving a value with few letters the block's family (contrat p1 family
   98 % -> 77 %).
+- Weight of the fake (`scanpaint.weight_matched`, overnight run): the ink the original value has on the scan (grey page before
+  anything is painted, against the background of `backdrop.Surface`, the rules of the box left out) over the ink the same text
+  written in the matched face at the page's quality has (`_ink_mass`); when they differ by more than 15 % (a value on one line, not on a coarse scan: blocks, native scale under 0.5) the stroke spread of the
+  fake is moved (-0.5 .. +1.5 px, the step that makes the fake's ink the original's ratio times the fake's own). A catalog face that is
+  lighter or heavier than the page's font (a slab, a semi-bold, a font that is not in the catalog) no longer gives a fake of another
+  weight than the text around it: `font:rockwell` dark 44 -> 6, `tone:textlayer` 47 -> 7, `tone:dark` 20 -> 5, `tone:halo` 32 -> 14.
+  Test: `weight_tests`. Tried and not kept: a tone curve in `Quality` (coverage of the rendering -> darkness of the scan, fitted by
+  binning): once the linear fit of each word has taken the scale, the curve is the identity to within the noise.
 - Limits: close look-alikes are mixed up on soft copies (Arial / Roboto, Courier New / Courier Prime, DejaVu Sans
   Bold / Verdana Bold); a page entirely in bold is read as regular with ink spread; ~0.1-0.3 s per value. A value in a
   font other than its line's (an IBAN in Consolas inside a Garamond sentence) takes the line's family: the value's own
@@ -780,8 +788,8 @@ Order must never change a result (`order_tests`): a value written with several s
 
 ## 10c. Background under an erased value (`backdrop.py`, overnight run, docs/overnight/JOURNAL.md)
 
-- The box of a replaced value on a scan (and of a picture of a digital page, and of a turned word) is no longer painted with
-  ONE colour: `backdrop.Surface(img, box)` rebuilds what the page shows without the strokes. Per channel, the grey CLOSING of a
+- The box of a replaced value on a scan (and of a picture of a digital page; not of a turned word, not on a coarse scan whose
+  blocks a flat patch matches exactly) is no longer painted with ONE colour: `backdrop.Surface(img, box)` rebuilds what the page shows without the strokes. Per channel, the grey CLOSING of a
   window around the box (0.3 text heights, removes what is thinner than the strokes, keeps a highlighter, a stripe, a gradient and
   their edges), where the small closing still keeps something dark in every channel (a coarse or blurred stroke, `GHOST_DROP`)
   the closing of 0.55 heights; plus a smooth bias taken from the paper pixels (the closing keeps the brightest noise). The ink

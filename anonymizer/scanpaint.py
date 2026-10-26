@@ -22,7 +22,7 @@ from dataclasses import replace
 import numpy as np
 from PIL import Image, ImageDraw
 
-from . import backdrop, dewarp, faces, fields, fontmatch, memo, quality, regions, render, timing
+from . import backdrop, dewarp, faces, fields, fontmatch, memo, morph, quality, regions, render, timing
 from .fake import match_case
 from .ocr import ocr_words, render_page
 from .ocrpage import page_words
@@ -171,6 +171,58 @@ def layout_value(pf, original: str, part: str, b, face, is_bold: bool) -> list:
     size, baseline = metrics if metrics else (None, None)
     return [(t, runs[k][1], runs[k][2], font, xy, sx)
             for t, k, font, xy, sx in render.scan_runs_layout(original, runs, b, size, baseline, fill)]
+
+
+WEIGHT_TOLERANCE = 0.15          # ln of the ink ratio (observed / written) under which the weight of the fake is left alone
+WEIGHT_STEPS = (-0.5, -0.3, -0.15, 0.15, 0.3, 0.5, 0.75, 1.0, 1.5)     # strokes thinned / thickened by this (pixels)
+
+
+def _ink_mass(runs, q) -> float:
+    """The ink (sum of the coverage) that these runs (layout_value) put on the page at quality `q`."""
+    return sum(float(quality.text_coverage(font, text, xy, sx, q)[0].sum()) for text, _, _, font, xy, sx in runs)
+
+
+def weight_matched(q, gray, box, rules, look, original_runs, fake_runs, surface=None):
+    """The quality with the stroke spread that makes the fake as heavy as the value it replaces: the ink the original value
+    has on the scan (`gray` before anything is painted, the rules of the box left out) over the ink the same text
+    written in the matched face at the page's quality would have. A face of the catalog that is lighter or heavier than
+    the page's font (a slab, a semi-bold) gives a fake lighter or heavier than the text around it; the ratio of the two
+    inks says how much to thicken or thin the strokes. `q` when the weights agree or nothing can be measured."""
+    if look is None or look.paper is None or look.ink is None or not original_runs or not fake_runs:
+        return q
+    lum = lambda c: 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]          # noqa: E731
+    paper, ink = lum(look.paper), lum(look.ink)
+    if paper - ink < 60:
+        return q
+    x0, y0 = max(int(math.floor(box[0])), 0), max(int(math.floor(box[1])), 0)
+    x1, y1 = min(int(math.ceil(box[2])), gray.shape[1]), min(int(math.ceil(box[3])), gray.shape[0])
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return q
+    paper_map = paper                                  # the background the scan had there (a highlighter), else the paper
+    if surface is not None and surface.ok:
+        rgb = surface.crop((x0, y0, x1, y1), look.paper)
+        paper_map = rgb @ np.array([0.299, 0.587, 0.114])
+    cov = np.clip((paper_map - gray[y0:y1, x0:x1].astype(float)) / np.maximum(paper_map - ink, 20.0), 0.0, 1.0)
+    if rules is not None and rules[1].shape == cov.shape:
+        cov = np.where(rules[1], 0.0, cov)
+    observed = float(cov.sum())
+    written = _ink_mass(original_runs, q)
+    if observed < 5.0 or written < 5.0:
+        return q
+    ratio = min(max(observed / written, 0.6), 1.8)
+    if abs(math.log(ratio)) < WEIGHT_TOLERANCE:
+        return q
+    base = _ink_mass(fake_runs, q)
+    if base <= 0:
+        return q
+    best, best_err = q, abs(math.log(ratio))          # the target: the fake's ink at the page's spread, times the ratio
+    for d in WEIGHT_STEPS:
+        cand = replace(q, spread=q.spread + d)
+        mass = _ink_mass(fake_runs, cand)
+        err = abs(math.log(max(mass, 1e-6) / (base * ratio)))
+        if err < best_err:
+            best, best_err = cand, err
+    return best
 
 
 def _face_name(face, is_bold: bool) -> str:
@@ -391,11 +443,14 @@ def _rules_in(img, box):
     rules = fontmatch.rules_of((paper - gray) / (paper - ink) > 0.5)
     if not rules.any():
         return None
-    grown = rules.copy()
-    for dy in (1, 2):                                # the soft edge of a line (a scan blurs it by a pixel or two)
-        grown[dy:] |= rules[:-dy]
-        grown[:-dy] |= rules[dy:]
-    rules = grown
+    # the soft edge of a line (a scan blurs it by a pixel or two) is put back too, but never next to the ink of a letter (a
+    # descender that crosses the line, the foot of a letter on it): that would leave a piece of the value on the page
+    edge = rules.copy()
+    for dy in (1, 2):
+        edge[dy:] |= rules[:-dy]
+        edge[:-dy] |= rules[dy:]
+    letters = morph.square_max(((paper - gray) / (paper - ink) > 0.3).astype(np.uint8) & ~edge, 5).astype(bool)
+    rules = rules | (edge & ~letters)
     return (x0, y0), rules, np.asarray(region).copy()
 
 
@@ -680,7 +735,8 @@ def _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             b = (render.ink_start(img, b), b[1], b[2], b[3])        # the value starts at its first glyph, not a colon
             box = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
             fill = (0, 0, 0) if blackbox else render.background_color(img, box)
-            surf = backdrop.Surface(img, box) if q is not None and not blackbox else None   # the page without the value
+            coarse = q is not None and q.scale < quality.NEAREST_BELOW      # blocks of a coarse scan: a flat patch is exact
+            surf = backdrop.Surface(img, box) if q is not None and not blackbox and not coarse else None   # the page without the value
             if surf is not None and surf.ok:
                 fill = surf.colour(box, fill)
             saved_rules = _rules_in(img, box) if not blackbox else None     # an underline in the box is the page's (B4)
@@ -700,10 +756,14 @@ def _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
                 lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
                 ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
                 color = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)
-                for r, (text, f, bd, font, xy, sx) in enumerate(layout_value(
-                        pf if look is not None else None, m.value, part, b, face, is_bold)):
+                fake_runs = layout_value(pf if look is not None else None, m.value, part, b, face, is_bold)
+                q_value = q
+                if q is not None and look is not None and len(boxes) == 1 and not coarse:   # (a value on two lines: not matched)
+                    q_value = weight_matched(q, gray, box, saved_rules, look, layout_value(pf, m.value, m.value, b, face,
+                                                                                          is_bold), fake_runs, surf)
+                for r, (text, f, bd, font, xy, sx) in enumerate(fake_runs):
                     if q is not None:
-                        quality.paint(img, text, font, xy, sx, color, q, key + (r,))
+                        quality.paint(img, text, font, xy, sx, color, q_value, key + (r,))
                     else:
                         render.write_text(img, xy, text, font, color, sx)
                     fonts_used[_face_name(f, bd)] = fonts_used.get(_face_name(f, bd), 0) + 1
