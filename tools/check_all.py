@@ -4975,6 +4975,104 @@ def sharp_review_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def stage_a_backdrop_tests():
+    """Stage A (docs/overnight/REPORT_STAGE_A.md), three findings of the review of run 2 on `backdrop.py`: A1 a box the ghost
+    guard cannot measure is unsafe (a dense bold value on a blurred copy leaves no ring: the strokes stayed in the level), A2 a surface
+    that keeps up to 12 % of the strokes is not accepted (a shadow of the value in the shape of its letters), A3 the polarity is
+    read on the paper around the value (a heavy dark value is not dark paper). No OCR needed."""
+    print("\n== stage A: the surface under an erased value (unmeasurable box, residual smear, polarity)")
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    from anonymizer import backdrop, quality, render
+
+    fonts = ROOT / "anonymizer" / "fonts"
+    paper, yellow, ink = (250, 248, 242), (255, 235, 60), (25, 25, 30)
+    text = "Mathis Verhaegen"
+
+    def page(font_file, size, blur, scale, band):
+        """(blurred page with the value, the same page without it, the value's box): drawn at 1x, resampled by `scale`, blurred."""
+        font = ImageFont.truetype(str(fonts / font_file), size)
+        small = Image.new("RGB", (260, 80), paper)
+        d = ImageDraw.Draw(small)
+        l, t, r, b = d.textbbox((14, 52), text, font=font, anchor="ls")
+        if band:
+            d.rectangle((l - 8, t - 6, r + 8, b + 6), fill=yellow)
+        clean = small.copy()
+        d.text((14, 52), text, font=font, fill=ink, anchor="ls")
+
+        def finish(im):
+            im = im.resize((260 * scale, 80 * scale), Image.BILINEAR)
+            return im.filter(ImageFilter.GaussianBlur(blur))
+        return finish(small), finish(clean), (l * scale, t * scale, r * scale, b * scale)
+
+    def residual(img, clean, box):
+        """The erased box against the page without the value: luminance of (output - clean) over the box. Painted as the scan
+        path does it: the surface, else the flat colour of the ring around the box."""
+        surf = backdrop.Surface(img, box)
+        out = img.copy()
+        quality.erase(out, box, surf.colour(box, render.background_color(img, box)), quality.Quality(grain=0.0), ("t",), surf)
+        x0, y0, x1, y1 = (int(v) for v in box)
+        return (np.asarray(out).astype(float) - np.asarray(clean).astype(float))[y0:y1, x0:x1].mean(axis=-1), surf
+
+    # A1: the ring around the box is empty (the ink mask of a dense, blurred value covers the box): the old code took 'cannot
+    # measure' for 'clean' and the strokes stayed in the level under the fake
+    for name, args in (("Roboto Bold 20 px, blur 3", ("Roboto-Bold.ttf", 20, 3.0, 1)),
+                       ("DejaVu Sans Bold 16 px, blur 5", ("DejaVuSans-Bold.ttf", 16, 5.0, 1)),
+                       ("Roboto Bold 16 px, blur 3, 150 dpi", ("Roboto-Bold.ttf", 16, 3.0, 2))):
+        img, clean, box = page(*args, False)
+        res, surf = residual(img, clean, box)
+        check(f"A1 {name}: nothing of the dense strokes stays under the fake (no structure of the strokes, within 25 levels of the page)",
+              res.std() < 3 and abs(res).max() < 25, f"darkest residual {res.min():.0f}, std {res.std():.1f}, rung {surf.rung}")
+
+    # A2: a blurred thick-stroke value whose best surface still keeps 4-12 % of the strokes: no shadow of the letters, on white and
+    # on a yellow band (the band keeps its colour, not the white of the page around it)
+    for band in (False, True):
+        for name, args in (("Roboto Bold 16 px, blur 4, 150 dpi", ("Roboto-Bold.ttf", 16, 4.0, 2)),
+                           ("Roboto Bold 20 px, blur 5, 150 dpi", ("Roboto-Bold.ttf", 20, 5.0, 2)),
+                           ("DejaVu Sans Bold 20 px, blur 5, 150 dpi", ("DejaVuSans-Bold.ttf", 20, 5.0, 2))):
+            img, clean, box = page(*args, band)
+            res, surf = residual(img, clean, box)
+            check(f"A2 {name}, {'on a yellow band' if band else 'on white'}: no shadow of the value (std of the erased box < 2, "
+                  f"no pixel 10 levels off)", res.std() < 2.0 and abs(res).max() < 10,
+                  f"std {res.std():.2f}, max {abs(res).max():.1f}, mean {res.mean():.1f}, rung {surf.rung}")
+
+    # A3: a heavy black value that covers more than half of its box is not dark paper; white text on a thin navy band is
+    def heavy(stroke, size, blur):
+        font = ImageFont.truetype(str(fonts / "DejaVuSans-Bold.ttf"), size)
+        small = Image.new("RGB", (300, 90), paper)
+        d = ImageDraw.Draw(small)
+        d.text((14, 62), "MWMWMWMW", font=font, fill=(15, 15, 18), anchor="ls", stroke_width=stroke, stroke_fill=(15, 15, 18))
+        box = d.textbbox((14, 62), "MWMWMWMW", font=font, anchor="ls", stroke_width=stroke)
+        return small.filter(ImageFilter.GaussianBlur(blur)), box
+
+    for stroke, size, blur in ((3, 24, 1.0), (2, 26, 1.0), (4, 22, 1.0)):
+        img, box = heavy(stroke, size, blur)
+        x0, y0, x1, y1 = box
+        m = int(math.ceil(1.2 * (y1 - y0) + 8))
+        X0, Y0, X1, Y1 = max(x0 - m, 0), max(y0 - m, 0), min(x1 + m, img.width), min(y1 + m, img.height)
+        win = np.asarray(img.crop((X0, Y0, X1, Y1)))
+        core = (x0 - X0, y0 - Y0, x1 - X0, y1 - Y0)
+        mid = float(np.median(backdrop._lum(win[core[1]:core[3], core[0]:core[2]])))
+        check(f"A3 a heavy black value (stroke {stroke}, median of its box {mid:.0f}): the paper is light",
+              not backdrop.is_dark_paper(win, core), f"median of the box {mid:.0f}")
+        out = img.copy()
+        surf = backdrop.Surface(img, box)
+        quality.erase(out, box, surf.colour(box, render.background_color(img, box)), quality.Quality(grain=0.0), ("t",), surf)
+        left = 249 - np.asarray(out.convert("L")).astype(float)[y0:y1, x0:x1]
+        check(f"A3 the same value erased (stroke {stroke}): the darkest pixel left is within 14 levels of the paper",
+              left.max() < 14, f"{left.max():.0f}, rung {surf.rung}")
+    navy = (22, 34, 84)
+    font = ImageFont.truetype(str(fonts / "Roboto-Regular.ttf"), 34)
+    band = Image.new("RGB", (560, 170), paper)
+    ImageDraw.Draw(band).rectangle((40, 62, 500, 114), fill=navy)
+    ImageDraw.Draw(band).text((60, 100), "Mathis Verhaegen", font=font, fill=(255, 255, 255), anchor="ls")
+    bx = (58, 66, 60 + int(font.getlength("Mathis Verhaegen")) + 2, 110)
+    check("A3 white text on a thin navy band (the ring around the value is navy): the paper is dark",
+          backdrop.is_dark_paper(np.asarray(band), bx), "")
+    plain = Image.new("RGB", (560, 170), paper)
+    ImageDraw.Draw(plain).text((60, 100), "Mathis Verhaegen", font=font, fill=(25, 25, 30), anchor="ls")
+    check("A3 dark text on plain paper: the paper is light", not backdrop.is_dark_paper(np.asarray(plain), bx), "")
+
+
 def sharp_read_tests():
     """Pages scanned coarsely are read as the scan was (anonymizer/ocrpage.py: block_factors, smooth) and a page the OCR cannot
     read is said so (scanpaint._unread_warning). No OCR needed."""
@@ -5102,7 +5200,7 @@ GROUPS = [
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
-    "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests",
+    "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

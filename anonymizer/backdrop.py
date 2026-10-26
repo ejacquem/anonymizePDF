@@ -7,13 +7,17 @@ edge of a highlighter or of a stripe, a gradient in that ring made the patch ano
 `Surface(img, box)` reconstructs the background of a window around the box from the paper pixels only:
 
 1. the local paper level of each channel is the grey closing of the window (a closing removes what is thinner than its
-   size, the strokes of the text, and keeps big areas and their edges: a highlighter, a stripe, a gradient);
+   size, the strokes of the text, and keeps big areas and their edges: a highlighter, a stripe, a gradient); a larger
+   closing, or the level lifted around the strokes by the paper a few pixels farther, when the first one keeps a smear of
+   them (a blurred or thick stroke wider than the closing);
 2. the ink is what is darker than that level in any channel (per channel, so a yellow or a magenta highlighter, which
    is dark in blue or in green only, is paper), grown by a margin (the soft edge of a stroke);
-3. the background of every ink pixel is taken from the paper pixels around it, by a normalised Gaussian average (the
-   weights of the known pixels), from fine to coarse scales: edges stay as sharp as the scan's, a wide ink area is
-   filled from farther away.
+3. the level is corrected by a smooth map of how far the paper pixels lie from it (the closing keeps the brightest noise).
 
+A level is accepted only when `ghost_parts` MEASURES that the strokes are not in it: the surface over the strongest ink
+pixels against the paper right next to them. A box that cannot be measured (no ring of paper, too little contrast, too few
+strokes) is unsafe, not clean. When no level is clean there is no surface: the flat colour of the ring around the box (the
+code before the surface), or, in a highlighter or a tint, the flat colour of the area (`flat_colour`), never the level.
 Only the paper pixels give information: nothing of the strokes (their shape or their colour) goes into the surface,
 and the whole box is repainted from it (never the original pixels). The grain is the caller's (`quality.erase`).
 Rules (underlines, frame edges) are thin dark lines: they are 'ink' here and are put back by `scanpaint._rules_in`.
@@ -21,6 +25,7 @@ Rules (underlines, frame edges) are thin dark lines: they are 'ink' here and are
 from __future__ import annotations
 
 import math
+from typing import NamedTuple
 
 import numpy as np
 
@@ -54,16 +59,34 @@ def _lum(a: np.ndarray) -> np.ndarray:
     return a @ np.array([0.299, 0.587, 0.114])
 
 
+POLARITY_GAP, POLARITY_WIDTH = 1, 3      # pixels: the ring of paper just outside the value's box that decides the polarity
+POLARITY_MIN = 30                        # pixels the ring must have (else the box itself decides)
+
+
+def _ring_mask(shape, core, gap: int, width: int) -> np.ndarray:
+    """The pixels of a window from `gap` to `gap + width` outside the box `core` = (x0, y0, x1, y1), on all four sides."""
+    x0, y0, x1, y1 = (int(round(v)) for v in core)
+    out = np.zeros(shape, bool)
+    out[max(y0 - gap - width, 0):max(y1 + gap + width, 0), max(x0 - gap - width, 0):max(x1 + gap + width, 0)] = True
+    out[max(y0 - gap, 0):max(y1 + gap, 0), max(x0 - gap, 0):max(x1 + gap, 0)] = False
+    return out
+
+
 def is_dark_paper(win: np.ndarray, core=None) -> bool:
-    """Is the paper under the text dark (light ink on a band)? Judged on the pixels of `core` = (x0, y0, x1, y1) in
-    the window, the value's own box, when given: a name in white on a thin navy band lies in a window that is mostly
-    light paper, and the window's median would take the strokes for the paper."""
+    """Is the paper under the text dark (light ink on a band)? Judged on the paper just OUTSIDE the value's box `core` =
+    (x0, y0, x1, y1) in the window, where no stroke is (a name in white on a thin navy band lies in a window that is mostly
+    light paper, but the band is all around the box; the box itself would call a heavy dark value that covers more than half
+    of it dark paper and keep its strokes as the paper). Without a ring (the box at the edge of the page) the box decides."""
+    lum = _lum(win)
     if core is not None:
+        ring = _ring_mask(lum.shape, core, POLARITY_GAP, POLARITY_WIDTH)
+        if ring.sum() >= POLARITY_MIN:
+            return float(np.median(lum[ring])) < 90
         x0, y0, x1, y1 = (int(v) for v in core)
-        part = win[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)]
+        part = lum[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)]
         if part.size:
-            win = part
-    return float(np.median(_lum(win))) < 90
+            return float(np.median(part)) < 90
+    return float(np.median(lum)) < 90
 
 
 def paper_and_ink(win: np.ndarray, height: float, core=None, big_factor: float = 0.55, dark_paper: bool | None = None):
@@ -98,48 +121,107 @@ def ink_mask(win: np.ndarray, height: float, core=None) -> np.ndarray:
 
 
 GHOST_RING = 4                           # pixels: the paper next to a stroke, to compare the surface over the stroke with
-GHOST_LAST = 0.12                        # the most smear of the strokes a surface may keep when no way takes it all out (else the flat patch)
-GHOST_MAX = 0.04                         # share of the ink's contrast a surface may keep over the strokes (and at least 4 levels)
+GHOST_MAX = 0.04                         # share of the ink's contrast a surface may keep over the strokes ...
+GHOST_LEVELS = 6.0                       # ... and at least this many grey levels (the grain of a scan)
+FLAT_REACH = 6                           # pixels around the box whose paper gives the flat colour of a tint
+FLAT_TINT = 12.0                         # levels the area's colour must differ from the ring's for it to be a tint
 
 
-def ghost_parts(win: np.ndarray, level: np.ndarray, ink: np.ndarray, core, dark_paper: bool) -> tuple:
-    """How much of the strokes the surface `level` still shows over them, as a share of the strokes' contrast: the
-    surface over the strongest ink pixels of the box against the surface right next to the strokes. A surface made
-    from the paper alone has the same colour on both; a blurred or thick stroke that the closing did not remove leaves
-    it darker (lighter, on a dark paper) over the stroke: a ghost of the value under its replacement."""
+class Ghost(NamedTuple):
+    """What `ghost_parts` measured, in grey levels (inf: the box could not be measured, which is not the same as clean)."""
+    smear: float                         # the strokes show as a darkening of the level over them
+    hole: float                          # the level is lighter over the strokes than around them
+    contrast: float                      # the strokes' contrast against the paper
+
+    @property
+    def clean(self) -> bool:
+        return max(self.smear, self.hole) <= max(GHOST_MAX * self.contrast, GHOST_LEVELS)
+
+    @property
+    def share(self) -> float:
+        return max(self.smear, self.hole) / max(self.contrast, 1.0)
+
+
+def ghost_parts(win: np.ndarray, level: np.ndarray, ink: np.ndarray, core, dark_paper: bool) -> Ghost:
+    """How much of the strokes the surface `level` still shows over them: the surface over the strongest ink pixels of the
+    box against the surface right next to the strokes. A surface made from the paper alone has the same colour on both; a
+    blurred or thick stroke that the closing did not remove leaves it darker (lighter, on a dark paper) over the stroke: a
+    ghost of the value under its replacement. A box that cannot be measured (the strokes' contrast under 2 x MIN_INK, fewer
+    than 8 strong pixels, no paper beside the strokes, or none of it of the colour of the level) is UNSAFE: the ghost is
+    infinite, the caller does not take its level for clean."""
     x0, y0, x1, y1 = (max(int(v), 0) for v in core)
+    unsafe = Ghost(math.inf, math.inf, 0.0)
     if y1 <= y0 or x1 <= x0:
-        return 0.0, 0.0
+        return unsafe
     lum_w, lum_l = _lum(win.astype(np.float32)), _lum(level)
     part = lum_w[y0:y1, x0:x1]
     sgn = -1.0 if dark_paper else 1.0                            # strokes are darker than the paper (lighter on a dark one)
     paper = float(np.percentile(part, 10 if dark_paper else 90))
+    beside = _ring_mask(lum_w.shape, core, POLARITY_GAP, POLARITY_WIDTH)
+    if beside.sum() >= POLARITY_MIN:                  # a value that fills its box has no paper of its own in it: the paper beside it
+        paper = min(paper, float(np.median(lum_w[beside]))) if dark_paper else max(paper, float(np.median(lum_w[beside])))
     contrast = abs(paper - float(np.percentile(part, 98 if dark_paper else 2)))
+    unsafe = Ghost(math.inf, math.inf, contrast)
     if contrast < 2 * MIN_INK:
-        return 0.0, 0.0
+        return unsafe
     box = np.zeros(ink.shape, bool)
     box[y0:y1, x0:x1] = True
     strong = box & (sgn * (paper - lum_w) > 0.5 * contrast)
+    # the strokes as the page shows them: dark in every channel against the paper just outside the box. The ink mask is
+    # made against the level, so a value so heavy that the level follows it (a solid blob) has almost none: the paper
+    # beside the strokes would be searched inside the blob.
+    ref = _ring_paper(win, core)
+    if ref is not None:
+        seen = ((win.astype(np.float32) - ref) if dark_paper else (ref - win.astype(np.float32))).min(axis=-1) > 0.25 * contrast
+        ink = ink | seen
     near = morph.square_max(ink.astype(np.uint8), 3).astype(bool)
-    ring = box & morph.square_max(ink.astype(np.uint8), 2 * GHOST_RING + 1).astype(bool) & ~near
+    reach = morph.square_max(ink.astype(np.uint8), 2 * GHOST_RING + 1).astype(bool)
+    ring = box & reach & ~near
+    if ring.sum() < 8:                       # a dense value: the ink mask covers the box. The paper just outside it is the ring
+        grown = np.zeros(ink.shape, bool)
+        g = GHOST_RING + GROW + 1
+        grown[max(y0 - g, 0):y1 + g, max(x0 - g, 0):x1 + g] = True
+        ring = grown & reach & ~near
     if strong.sum() < 8 or ring.sum() < 8:
-        return 0.0, 0.0
+        return unsafe
     # (the ring is the paper next to the ink mask, which is grown by GROW: it lies outside the soft edge of a stroke.) Only
     # the part of it that is the surface of the same area: a highlighter's rim or the page behind it is no reference
     here = float(lum_l[strong].mean())
     near_here = ring & (np.abs(lum_l - here) < 0.25 * contrast)
-    smear = 0.0
-    if near_here.sum() >= 8:                                       # the strokes still show as a darkening of the level
-        smear = max(sgn * float(lum_l[near_here].mean() - here), 0.0)
+    if near_here.sum() < 8:                  # nothing beside the strokes has the colour of the level over them: not measured
+        return unsafe
+    smear = max(sgn * float(lum_l[near_here].mean() - here), 0.0)      # the strokes still show as a darkening of the level
     # ... or the level is a hole: lighter over the strokes than around them (a closing that took a thin highlighter away)
     dug = ring & (np.abs(lum_l - here) < contrast)
     hole = max(sgn * float(here - lum_l[dug].mean()), 0.0) if dug.sum() >= 8 else 0.0
-    return smear / contrast, hole / contrast
+    return Ghost(smear, hole, contrast)
 
 
-def ghost_of(win: np.ndarray, level: np.ndarray, ink: np.ndarray, core, dark_paper: bool) -> float:
-    """The larger of the two defects of `ghost_parts`."""
-    return max(ghost_parts(win, level, ink, core, dark_paper))
+def _ring_paper(win: np.ndarray, core):
+    """The colour of the paper just outside the value's box (median per channel of the ring), or None."""
+    ring = _ring_mask(win.shape[:2], core, POLARITY_GAP, POLARITY_WIDTH)
+    return np.median(win[ring].astype(float), axis=0) if ring.sum() >= POLARITY_MIN else None
+
+
+def flat_colour(win: np.ndarray, core, dark_paper: bool = False):
+    """The colour of the area around the box when it is a tint, else None. Where no level is clean the box is painted flat;
+    the colour of the thin ring around the box is right on a plain page but not in a highlighter or a tinted cell that ends
+    there (the page around it is white). The area's own colour: per channel, the 80th percentile (the 20th on a dark paper:
+    the soft edge of a blurred stroke is a darkening, never a lightening) of the pixels up to FLAT_REACH pixels around the
+    box that are not strokes, a stroke being darker than the ring's paper in EVERY channel (a yellow highlighter is dark in
+    blue only, a cyan one in red only: they are paper). None when it is the colour of the ring (the caller's flat patch does
+    it, and a heavy value that fills its box is not taken for a tint) or when too few pixels tell."""
+    ref = _ring_paper(win, core)
+    if ref is None:
+        return None
+    x0, y0, x1, y1 = (int(round(v)) for v in core)
+    area = np.zeros(win.shape[:2], bool)
+    area[max(y0 - FLAT_REACH, 0):max(y1 + FLAT_REACH, 0), max(x0 - FLAT_REACH, 0):max(x1 + FLAT_REACH, 0)] = True
+    area &= (((win.astype(float) - ref) if dark_paper else (ref - win.astype(float))).min(axis=-1) < MIN_INK)
+    if area.sum() < 30:
+        return None
+    colour = np.percentile(win[area].astype(float), 20 if dark_paper else 80, axis=0)
+    return colour if float(np.abs(colour - ref).max()) > FLAT_TINT else None
 
 
 def _bias(win: np.ndarray, level: np.ndarray, known: np.ndarray) -> np.ndarray:
@@ -197,8 +279,14 @@ class Surface:
         win = np.asarray(img.crop((X0, Y0, X1, Y1)).convert("RGB"))
         core = (x0 - X0, y0 - Y0, x1 - X0, y1 - Y0)           # the value's box in the window
         level, ink, self.rung = self._clean(win, h, core)
-        if level is None:
-            self.rgb = None
+        if level is None:                                    # no clean level: the flat colour of a tint, else the caller's ring
+            tint = flat_colour(win, core, is_dark_paper(win, core))
+            if tint is not None:
+                self.rung += " tint"
+                self.rgb = np.empty(win.shape, float)
+                self.rgb[:] = tint
+            else:
+                self.rgb = None
             return
         known = ~ink
         if known.sum() < 0.05 * known.size:                  # (nearly) all ink: a black area, no paper to learn from
@@ -209,32 +297,28 @@ class Surface:
 
     @staticmethod
     def _clean(win, h, core):
-        """(level, ink) of the window with no ghost of the strokes in the level, or (None, None): the paper level of
-        the polarity the box shows; if that keeps the strokes (a blurred or thick stroke wider than the closing), a
-        larger closing; if that does too, no surface at all (the caller paints the flat colour of the ring, as the
-        code did before the surface)."""
+        """(level, ink, rung) of the window with no ghost of the strokes in the level, or (None, ink, rung): the paper level
+        of the polarity the box shows; if that keeps the strokes (a blurred or thick stroke wider than the closing), a
+        larger closing; then the level lifted around the strokes. A level counts as clean only when `ghost_parts` measures
+        the strokes out of it (a box it cannot measure is not clean). If none is, no level at all: the caller paints a flat
+        colour (the ring of the box, as the code did before the surface, or `flat_colour` in a tint)."""
         dark = is_dark_paper(win, core)
         level, ink = paper_and_ink(win, h, core, 0.55, dark)
-        g1 = ghost_of(win, level, ink, core, dark)
-        if g1 <= GHOST_MAX:
-            return level, ink, f"closing {g1:.3f}"
+        g1 = ghost_parts(win, level, ink, core, dark)
+        if g1.clean:
+            return level, ink, f"closing {g1.share:.3f}"
         # a smear of the strokes in the level (thick or blurred strokes, a page resampled): a larger closing takes it away
         # (unless it takes a thin highlighter with it: the check sees the hole), else it is lifted around the strokes by the
-        # paper a few pixels farther (a highlighter keeps its colour), else no surface at all
+        # paper a few pixels farther (a highlighter keeps its colour), else no level at all
         level2, ink2 = paper_and_ink(win, h, core, 0.9, dark)
-        g2 = ghost_of(win, level2, ink2, core, dark)
-        if g2 <= GHOST_MAX:
-            return level2, ink2, f"larger closing {g1:.3f} -> {g2:.3f}"
-        smear, hole = ghost_parts(win, level, ink, core, dark)
-        filled = _fill_around_ink(win, level, ink, h, dark, lift=smear >= hole)
-        g3 = ghost_of(win, filled, ink, core, dark)
-        # none is clean: the least bad of the three, if it is not a smear that shows (a faint shadow of the strokes in a
-        # highlighter reads worse as a white box than as a shadow nobody can read), else the flat patch
-        best = min((g1, 0), (g2, 1), (g3, 2))
-        if best[0] <= GHOST_LAST:
-            level_, ink_ = ((level, ink), (level2, ink2), (filled, ink))[best[1]]
-            return level_, ink_, f"{('closing', 'larger closing', 'lifted')[best[1]]} {g1:.3f} {g2:.3f} {g3:.3f}"
-        return None, None, f"flat patch {g1:.3f} {g2:.3f} {g3:.3f}"
+        g2 = ghost_parts(win, level2, ink2, core, dark)
+        if g2.clean:
+            return level2, ink2, f"larger closing {g1.share:.3f} -> {g2.share:.3f}"
+        filled = _fill_around_ink(win, level, ink, h, dark, lift=g1.smear >= g1.hole)
+        g3 = ghost_parts(win, filled, ink, core, dark)
+        if g3.clean:
+            return filled, ink, f"lifted {g1.share:.3f} {g2.share:.3f} {g3.share:.3f}"
+        return None, ink, f"flat patch {g1.share:.3f} {g2.share:.3f} {g3.share:.3f}"
 
     @property
     def ok(self) -> bool:
