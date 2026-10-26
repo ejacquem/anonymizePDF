@@ -62,7 +62,8 @@ def R(text: str, **kw) -> dict:
 class Page:
     """Collects the drawing operations of one page: rects and rules (base), words, highlights, and the values."""
 
-    def __init__(self):
+    def __init__(self, seed: int = 0):
+        self.rng = np.random.default_rng(seed)               # the jitter of a typewriter ('jit')
         self.ops: list = []
         self.values: list[dict] = []
         self.hl: list = []                                  # [colour name, (x0, y0, x1, y1), baseline y]
@@ -72,7 +73,7 @@ class Page:
         out = []
         for r in ([runs] if isinstance(runs, (str, dict)) else runs):
             r = {"t": r} if isinstance(r, str) else r
-            a = {"fam": "arial", "size": 10.5, "b": False, "i": False, "color": INK, "v": None, "hl": None}
+            a = {"fam": "arial", "size": 10.5, "b": False, "i": False, "color": INK, "v": None, "hl": None, "jit": False}
             a.update(style)
             a.update({k: v for k, v in r.items() if k != "t"})
             out.append((r["t"], a))
@@ -112,14 +113,18 @@ class Page:
                 f = self._font(a)
                 w = f.getlength(text) / SS
                 em = a["size"] * gen.DPI / 72
+                dy, col = 0.0, a["color"]
+                if a["jit"]:                                # a typewriter: each word a little off the line and unevenly inked
+                    dy = float(self.rng.uniform(-1.3, 1.3))
+                    col = tuple(c + float(self.rng.uniform(0, 0.12)) * (255 - c) for c in a["color"])
                 if a["v"]:
                     self.values.append({"id": len(self.values), "text": text, "kind": a["v"], "x": x, "y": y,
                                         "fam": a["fam"], "size": a["size"], "b": a["b"], "i": a["i"], "color": a["color"],
                                         "box": [x, y - 0.85 * em, x + w, y + 0.25 * em], "hl": a["hl"]})
-                    self.ops.append(("word", text, x, y, (a["fam"], a["size"], a["b"], a["i"]), a["color"],
+                    self.ops.append(("word", text, x, y + dy, (a["fam"], a["size"], a["b"], a["i"]), col,
                                      len(self.values) - 1))
                 else:
-                    self.ops.append(("word", text, x, y, (a["fam"], a["size"], a["b"], a["i"]), a["color"], None))
+                    self.ops.append(("word", text, x, y + dy, (a["fam"], a["size"], a["b"], a["i"]), col, None))
                 if a["hl"]:
                     self.hl.append([a["hl"], [x - 3, y - 0.92 * em, x + w + 3, y + 0.3 * em], y])
                 x += w
@@ -385,6 +390,47 @@ def build_contrat(p, hl) -> Page:
     return g
 
 
+def build_vieux(p, hl) -> Page:
+    """An old typed letter (Courier New with a typewriter's jitter, Book Antiqua headings, bold terms, two paragraphs)."""
+    g = Page(seed=77)
+    t = {"fam": "courier", "jit": True, "size": 10.5}
+    g.line(150, 170, [R("CABINET DELVAUX & FILS", b=True, size=17)], fam="bookman")
+    g.line(150, 215, [R("Assurances - Placements - Crédits", i=True, size=9.5)], fam="courier", jit=True)
+    g.line(150, 250, [R("Rue du Pont 12", v="street"), R(" - "), R("5000 Namur", v="town")], fam="courier", size=9.5, jit=True)
+    g.rule((150, 285), (1504, 285), 3.0)
+    g.line(1504, 360, "Namur, le 3 mars 1998", align="right", **t)
+    g.line(980, 470, [R(p["civ"])], fam="courier", size=11, jit=True)
+    g.line(980, 515, [R(full(p), v="name", b=True)], fam="courier", size=11, jit=True)
+    g.line(980, 560, [R(p["street"], v="street")], fam="courier", size=11, jit=True)
+    g.line(980, 605, [R(p["town"], v="town")], fam="courier", size=11, jit=True)
+    g.line(150, 720, [R("N/Réf. : ", b=True), R("98/0417 - Ouverture de compte", b=True)], **t)
+    g.line(150, 810, [R(("Chère " if p["civ"] == "Madame" else "Cher ") + p["civ"] + " "), R(p["last"], v="name"), R(",")], **t)
+    y = g.para(150, 880, 1354, [
+        R("Suite à votre demande du 12 février dernier, nous avons le plaisir de vous confirmer l'ouverture d'un compte "
+          "d'épargne au nom de "), R(full(p), v="name", b=True), R(", domicilié "), R(p["street"], v="street"), R(", "),
+        R(p["town"], v="town"), R(". Le numéro qui vous a été attribué est le "), R(p["iban"], v="iban", b=True),
+        R(". Nous vous prions de bien vouloir le "), R("mentionner dans toute correspondance", b=True),
+        R(" et de nous signaler sans délai tout changement de votre situation. Pour toute question, vous pouvez "
+          "nous joindre au "), R(p["phone"], v="phone"), R(" pendant les heures de bureau.")],
+        fam="courier", size=10.5, leading=1.5, jit=True)
+    y = g.para(150, y + 50, 1354, [
+        R("Nous attirons votre attention sur le fait que, selon nos dossiers, vous êtes né"
+          + ("e" if p["civ"] == "Madame" else "") + " le "), R(p["birth"], v="birth"),
+        R(" et que les conditions ci-jointes, ", fam="bookman"), R("lues et approuvées", fam="bookman", b=True, i=True),
+        R(", font partie intégrante de la présente convention. ", fam="bookman"),
+        R("Les intérêts sont crédités une fois par an et les retraits sont limités à deux par mois, sauf accord écrit de "
+          "notre part. Toute modification des conditions vous sera notifiée par lettre recommandée.", fam="bookman")],
+        fam="bookman", size=11, leading=1.45)
+    g.line(150, y + 70, [R("Veuillez agréer, "), R(p["civ"]), R(", l'expression de nos salutations distinguées.")], **t)
+    g.line(1000, y + 190, [R("Le directeur,", i=True)], **t)
+    g.line(1000, y + 300, [R(p["agent"], v="name", b=True)], fam="courier", size=11, jit=True)
+    g.rule((150, 2150), (1504, 2150), 1.5, (150, 150, 155))
+    g.para(150, 2200, 1354, [R("Société coopérative à responsabilité limitée. Les opérations sont soumises aux "
+                               "conditions générales dont un exemplaire est remis au client.", i=True)],
+           fam="courier", size=8.5, align="left", jit=True)
+    return g
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # the cases and the rendering
 
@@ -392,8 +438,9 @@ HL_FILL = {   # which values carry a highlighter in each document: {value key: c
     "releve": {"name": "yellow", "iban": "blue", "email": "magenta"},
     "assurance": {"ref": "yellow", "iban": "blue", "phone": "magenta"},
     "contrat": {"name": "yellow", "iban": "blue", "date": "magenta", "duree": "yellow", "art1": "blue"},
+    "vieux": {},
 }
-BUILD = {"releve": build_releve, "assurance": build_assurance, "contrat": build_contrat}
+BUILD = {"releve": build_releve, "assurance": build_assurance, "contrat": build_contrat, "vieux": build_vieux}
 
 
 def doc_spec(name: str, doc: str, person: int, split: str, geom, scan, seed: int, ink=INK, bg: str = "paper") -> dict:
@@ -429,6 +476,14 @@ def doc_cases() -> list[dict]:
                  {"dpi": 200, "blur": 0.6, "bw": (120, 6), "noise": 0, "speckle": 0.0004, "jpeg": 70}, 2008, bg="flat"),
         doc_spec("doc_sharp_contrat_contrast120", "contrat", 1, "dev", [("rotate", 1.2)],
                  {"dpi": 120, "blur": 0.6, "sigmoid": (35.0, 0.5), "noise": 2.0, "jpeg": 40}, 2009),
+        # an old typed letter, worse and worse: 150 dpi hard cut, 100 dpi blocky with speckle, a fax (200 x 100 dpi)
+        doc_spec("doc_vieux_bad", "vieux", 0, "dev", [("rotate", 0.9)],
+                 {"dpi": 150, "blur": 0.7, "bw": (175, 6), "noise": 0, "speckle": 0.0006, "jpeg": 45}, 2010, bg="flat"),
+        doc_spec("doc_vieux_worse", "vieux", 1, "held", [("rotate", -1.6), ("wave", 5, 1100.0)],
+                 {"dpi": 100, "blur": 0.6, "bw": (185, 5), "noise": 0, "speckle": 0.0012, "jpeg": 30}, 2011, bg="flat"),
+        doc_spec("doc_vieux_fax", "vieux", 2, "dev", [("rotate", 0.6)],
+                 {"dpi": 200, "dpi_y": 100, "blur": 0.5, "bw": (172, 5), "noise": 0, "speckle": 0.0008, "jpeg": 40}, 2012,
+                 bg="flat"),
     ]
 
 

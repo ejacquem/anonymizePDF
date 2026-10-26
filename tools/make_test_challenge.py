@@ -366,14 +366,15 @@ def warp(img: np.ndarray, maps) -> np.ndarray:
 
 def scan_effects(a: np.ndarray, sc: dict, rng, noise: bool) -> np.ndarray:
     """The scan of a page (float RGB at DPI). Returns it at the NATIVE resolution of the scan (`dpi` of `sc`, at most
-    DPI): `blur` and `noise` are in native pixels. `bw` = (level, softness): the grey page cut at that level (a copier
+    DPI; `dpi_y` for another vertical resolution): `blur` and `noise` are in native pixels. `bw` = (level, softness): the grey page cut at that level (a copier
     or a binarising scanner: sharp edges, no antialiasing, strokes that thicken or break with the level); `speckle`:
     share of pixels flipped to dark."""
     f = min(sc.get("dpi", DPI) / DPI, 1.0)
-    if f < 0.999:
+    fy = min(sc.get("dpi_y", sc.get("dpi", DPI)) / DPI, 1.0)                 # a fax: 200 x 100 dpi
+    if f < 0.999 or fy < 0.999:
         h0, w0 = a.shape[:2]
         a = np.asarray(Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8)).resize(
-            (max(round(w0 * f), 1), max(round(h0 * f), 1)), Image.BOX)).astype(np.float32)
+            (max(round(w0 * f), 1), max(round(h0 * fy), 1)), Image.BOX)).astype(np.float32)
     a = gblur(a, sc.get("blur", 0.7))
     if sc.get("unsharp"):
         radius, amount = sc["unsharp"]
@@ -405,7 +406,7 @@ def to_page(a: np.ndarray, shape) -> np.ndarray:
     factor of two, bilinear below)."""
     if a.shape[:2] == tuple(shape[:2]):
         return a
-    method = Image.NEAREST if shape[1] / a.shape[1] > 2 else Image.BILINEAR
+    method = Image.NEAREST if max(shape[1] / a.shape[1], shape[0] / a.shape[0]) > 2 else Image.BILINEAR
     return np.asarray(Image.fromarray(np.clip(np.round(a), 0, 255).astype(np.uint8)).resize(
         (shape[1], shape[0]), method)).astype(np.float32)
 
