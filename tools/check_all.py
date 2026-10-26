@@ -5142,6 +5142,129 @@ def stage_a_font_tests():
           got is not None and got[0] < 22.5, got)
 
 
+def stage_a_scan_tests():
+    """Stage A5 (docs/overnight/REPORT_STAGE_A.md): the way back from a straightened page (a failure of the dewarp redoes the page as
+    it is and forgets everything the failed attempt added; an error of the painting is not hidden), `ocrpage.agreement` with an index
+    (same value as the quadratic loop), the tone switch (ANON_TONE=0 = quality.TONE_ON off). No OCR needed."""
+    print("\n== stage A: dewarp fallback, agreement, tone switch")
+    import random
+    from PIL import Image, ImageDraw, ImageFont
+    from anonymizer import fontmatch, ocrpage, quality
+    from anonymizer.pii import Numberer
+
+    class Flat:
+        angle = 3.0
+
+        def __init__(self, compose_fails):
+            self.compose_fails = compose_fails
+
+        def flatten(self, img):
+            return img.copy()
+
+        def box_to_page(self, box):
+            return tuple(box)
+
+        def compose(self, img, before, out):
+            if self.compose_fails:
+                raise ValueError("compose")
+            return out
+
+    calls = []
+
+    def fake_flat(page, pno, n_pages, cfg, pc, lang, numberer, records, extras, log, img, flat=None):
+        calls.append(flat is not None)
+        records.append({"box": (0.0, 0.0, 10.0, 10.0), "original": "x"})
+        extras.setdefault("trace", []).append({"box": (0.0, 0.0, 10.0, 10.0), "kind": "t"})
+        extras.setdefault("warnings", []).append("page 1: a warning")
+        extras["blackouts"].append({"page": pno, "kind": "photo", "box": (0.0, 0.0, 10.0, 10.0)})
+        numberer.fmt("X{n}", "value %d" % len(calls))
+        if flat is not None and flat.compose_fails == "raise":
+            raise RuntimeError("the painting failed")
+        return img
+
+    saved = (scanpaint._scan_flat, scanpaint.render_page, scanpaint.dewarp.straighten)
+    scanpaint._scan_flat, scanpaint.render_page = fake_flat, lambda page, dpi: Image.new("RGB", (60, 60), "white")
+    try:
+        for fails in (True, "raise"):
+            calls.clear()
+            flat = Flat(fails)
+            scanpaint.dewarp.straighten = lambda img, flat=flat: flat
+            records, extras, numberer = [], {"blackouts": [], "mrz": []}, Numberer()
+            try:
+                scanpaint._scan_page(None, 1, 1, {}, None, "fra", numberer, records, extras, lambda m: None)
+                raised = None
+            except RuntimeError as e:
+                raised = e
+            if fails is True:
+                check("a failure of the way back (compose) redoes the page as it is: one attempt's records, trace, black boxes",
+                      raised is None and calls == [True, False] and len(records) == 1 and len(extras["trace"]) == 1
+                      and len(extras["blackouts"]) == 1, (calls, len(records), extras))
+                check("... and one attempt's warnings and numbers (the failed attempt's are forgotten)",
+                      len(extras["warnings"]) == 1 and list(numberer.maps["X{n}"].values()) == [1],
+                      (extras.get("warnings"), numberer.maps))
+            else:
+                check("an error of the painting itself goes up (the file ends in error, no second pass hides it)",
+                      isinstance(raised, RuntimeError) and calls == [True], (raised, calls))
+    finally:
+        scanpaint._scan_flat, scanpaint.render_page, scanpaint.dewarp.straighten = saved
+
+    # agreement: the index gives the value of the loop over every pair
+    def reference(base, alts):
+        if not base or not alts:
+            return 1.0
+        same = 0
+        for w in base:
+            key = ocrpage._fold(w["text"])
+            same += any(ocrpage._fold(a["text"]) == key and ocrpage._overlap(w["box"], a["box"]) >= 0.4 for alt in alts for a in alt)
+        return same / len(base)
+
+    rng = random.Random(7)
+    pool = ["Gaspard", "gaspard", "Délcourt", "Delcourt", "0481", "O481", "Avenue", "Louise", "BE97", "1430", "rue", "n°5"]
+
+    def reading(n):
+        out = []
+        for _ in range(n):
+            x, y = rng.randint(0, 900), rng.randint(0, 600)
+            out.append({"text": rng.choice(pool), "box": (x, y, x + rng.randint(20, 90), y + rng.randint(12, 24))})
+        return out
+
+    same, n = 0, 0
+    for _ in range(40):
+        base, alts = reading(rng.randint(0, 60)), [reading(rng.randint(0, 60)) for _ in range(rng.randint(0, 4))]
+        for a in alts:                                  # some words really are read again: the same place, the same letters (or not)
+            a.extend({"text": w["text"] if rng.random() < 0.7 else rng.choice(pool), "box": tuple(v + rng.randint(-3, 3) for v in w["box"])}
+                     for w in base[:20])
+        n += 1
+        same += abs(ocrpage.agreement(base, alts) - reference(base, alts)) < 1e-12
+    check("ocrpage.agreement with the index = the loop over every pair (40 random readings)", same == n, f"{same} of {n}")
+
+    # the tone switch: a hard-cut page gets its tone curve; with the switch off (ANON_TONE=0) it does not
+    fonts = ROOT / "anonymizer" / "fonts"
+    font = ImageFont.truetype(str(fonts / "Roboto-Regular.ttf"), 24)
+    names = "Gaspard Delcourt habite Avenue Louise numero contrat assurance Bruxelles ouverture".split()
+    img = Image.new("L", (1900, 260), 250)
+    d = ImageDraw.Draw(img)
+    ws, x = [], 30
+    for k, w in enumerate(names):
+        if k % 5 == 0:
+            x = 30
+        y = 60 + 90 * (k // 5)
+        d.text((x, y), w, font=font, fill=20, anchor="ls")
+        l, t, r, b = d.textbbox((x, y), w, font=font, anchor="ls")
+        ws.append({"text": w, "box": (l, t, r, b), "line": ("l", k // 5)})
+        x = r + 40
+    small = img.resize((int(img.width * 2 / 3), int(img.height * 2 / 3)), Image.BOX).point(lambda v: 255 if v > 150 else 0)
+    hard = np.asarray(small.resize(img.size, Image.BILINEAR))
+    on = fontmatch.PageFonts(hard, ws, 2 / 3).page_quality()
+    quality.TONE_ON = False
+    try:
+        off = fontmatch.PageFonts(hard, ws, 2 / 3).page_quality()
+    finally:
+        quality.TONE_ON = True
+    check("the tone switch: on, a hard-cut page has a tone curve; off (ANON_TONE=0), none", on.steep > 0 and off.steep == 0,
+          (on.describe(), off.describe()))
+
+
 def sharp_read_tests():
     """Pages scanned coarsely are read as the scan was (anonymizer/ocrpage.py: block_factors, smooth) and a page the OCR cannot
     read is said so (scanpaint._unread_warning). No OCR needed."""
@@ -5271,7 +5394,7 @@ GROUPS = [
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
-    "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests",
+    "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

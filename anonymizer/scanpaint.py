@@ -13,9 +13,9 @@ and the others keep working.
 """
 from __future__ import annotations
 
+import copy
 import io
 import math
-import os
 import random
 import time
 from dataclasses import replace
@@ -219,7 +219,10 @@ def weight_matched(q, gray, box, rules, look, original_runs, fake_runs, surface=
         return q
     best, best_err = q, abs(math.log(ratio))          # the target: the fake's ink at the page's spread, times the ratio
     # (a page with a tone curve: the weight is the centre of the curve, a low one thickens; else the stroke spread)
-    cands = [replace(q, mid=min(max(q.mid + d, 0.15), 0.85)) for d in WEIGHT_MIDS] if q.steep > 0         else [replace(q, spread=q.spread + d) for d in WEIGHT_STEPS]
+    if q.steep > 0:
+        cands = [replace(q, mid=min(max(q.mid + d, 0.15), 0.85)) for d in WEIGHT_MIDS]
+    else:
+        cands = [replace(q, spread=q.spread + d) for d in WEIGHT_STEPS]
     for cand in cands:
         mass = _ink_mass(fake_runs, cand)
         err = abs(math.log(max(mass, 1e-6) / (base * ratio)))
@@ -617,36 +620,54 @@ def _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
     back on the scan."""
     with timing.stage("render"):
         img = render_page(page, 300)
-    flat = None
+    flat = turned = None
     with timing.stage("angles"):
         try:
             flat = dewarp.straighten(img)                    # (black-box mode too: the boxes are drawn on the flat page)
-        except Exception as e:                               # a failure leaves the old per-word path, never a lost page
+            turned = flat.flatten(img) if flat is not None else None
+        except Exception as e:                               # a failure of the dewarp leaves the old per-word path, never a lost page
             log(f"   page {pno}: could not be turned straight ({type(e).__name__}: {e}), read as it is")
+            flat = None
     if flat is None:
         return _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, img)
-    n_records, n_notes = len(records), len(extras.get("trace", []))
-    n_black, n_mrz = len(extras["blackouts"]), len(extras["mrz"])
+    mark = _mark(records, extras, numberer)
+    before = turned.copy()
+    # an error of the painting itself (OCR, fonts, paint) is not the dewarp's: it goes up, the file ends in error as it did
+    out = _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, turned, flat)
     try:
-        turned = flat.flatten(img)
-        before = turned.copy()
-        out = _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, turned, flat)
-        for r in records[n_records:]:                         # the boxes were made on the flat page: give those of the page
+        for r in records[mark[0]:]:                           # the boxes were made on the flat page: give those of the page
             r["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in r["box"]))])
-        for item in extras.get("trace", [])[n_notes:]:
-            item["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in item["box"]))])
-        for item in extras["blackouts"][n_black:]:
-            item["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in item["box"]))])
+        for key in ("trace", "blackouts"):
+            for item in extras.get(key, [])[mark[1].get(key, 0):]:
+                item["box"] = _pt_box([flat.box_to_page(tuple(v * 300 / 72 for v in item["box"]))])
         result = flat.compose(img, before, out)
-    except Exception as e:                                    # the flat path failed: forget its records, redo the page as it is
-        log(f"   page {pno}: the straightened page could not be painted ({type(e).__name__}: {e}), read as it is")
-        del records[n_records:]
-        if "trace" in extras:
-            del extras["trace"][n_notes:]
-        del extras["blackouts"][n_black:], extras["mrz"][n_mrz:]
+    except Exception as e:                                    # the way back to the scan failed: forget the flat attempt, redo as it is
+        log(f"   page {pno}: the straightened page could not be put back on the scan ({type(e).__name__}: {e}), read as it is")
+        _rollback(mark, records, extras, numberer)
         return _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log, img)
     log(f"   page {pno}: turned by {flat.angle:+.2f} degrees, read and painted straight")
     return result
+
+
+def _mark(records, extras, numberer) -> tuple:
+    """What a page has added so far: (records, {list of extras: length}, the numbers given): `_rollback` takes it all back."""
+    return (len(records), {k: len(v) for k, v in extras.items() if isinstance(v, list)},
+            copy.deepcopy(numberer.maps) if numberer is not None else None)
+
+
+def _rollback(mark, records, extras, numberer) -> None:
+    """Forget everything added since `mark`: the records, every list of the extras (trace, black boxes, MRZ, warnings) and the
+    numbers the placeholders were given, so a page done a second time is not done twice."""
+    n, sizes, maps = mark
+    del records[n:]
+    for key in list(extras):
+        if isinstance(extras[key], list):
+            if key in sizes:
+                del extras[key][sizes[key]:]
+            else:
+                del extras[key]
+    if maps is not None:
+        numberer.maps = maps
 
 
 def _page_words(words: list[dict], flat) -> list[dict]:
@@ -772,8 +793,6 @@ def _scan_flat(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras,
             surf = backdrop.Surface(img, box) if q is not None and not blackbox and not coarse else None   # the page without the value
             if surf is not None and surf.ok:
                 fill = surf.colour(box, fill)
-            if surf is not None and os.environ.get("ANON_DEBUG_SURFACE"):
-                print("SURFACE", surf.rung, flush=True)             # (a debugging aid: how the surface of each value was made)
             saved_rules = _rules_in(img, box) if not blackbox else None     # an underline in the box is the page's (B4)
             if q is not None:
                 quality.erase(img, box, fill, q, key, surf)    # the background, with the grain of the scan

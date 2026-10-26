@@ -51,7 +51,12 @@ class Quality:
 
     def describe(self) -> str:
         dpi = f"{int(round(300 * self.scale))} dpi, " if self.scale < 0.95 else ""
-        return f"{dpi}blur {self.blur:.1f}px, spread {self.spread:+.2f}px, grain {self.grain:.0f}" +             (", black and white" if self.hard else "") + (f", tone {self.steep:.0f}/{self.mid:.2f}" if self.steep > 0 else "")
+        text = f"{dpi}blur {self.blur:.1f}px, spread {self.spread:+.2f}px, grain {self.grain:.0f}"
+        if self.hard:
+            text += ", black and white"
+        if self.steep > 0:
+            text += f", tone {self.steep:.0f}/{self.mid:.2f}"
+        return text
 
 
 SHARP = Quality()
@@ -298,7 +303,10 @@ class Sample:
         key = (q.spread, q.scale, q.hard)
         if key not in self.bases:
             a = _down(_spread(self.hi, q.spread))
-            self.bases[key] = _native(a, q.scale, self.region[:2], q.hard) if q.scale < NEAREST_BELOW                 else _resample(a, q.scale)
+            if q.scale < NEAREST_BELOW:
+                self.bases[key] = _native(a, q.scale, self.region[:2], q.hard)
+            else:
+                self.bases[key] = _resample(a, q.scale)
         if q.scale < NEAREST_BELOW:
             return np.clip(_blocks(self.bases[key], q.blur * q.scale, q), 0, 1)
         return np.clip(blur(self.bases[key], q.blur), 0, 1)

@@ -325,10 +325,11 @@ def agreement(base: list[dict], alts: list[list[dict]]) -> float:
     place). A clean page: 96-100 %; a coarse, thin or broken one: 80-90 %. Read from the readings that were made anyway."""
     if not base or not alts:
         return 1.0
-    same = 0
-    for w in base:
-        key = _fold(w["text"])
-        same += any(_fold(a["text"]) == key and _overlap(w["box"], a["box"]) >= 0.4 for alt in alts for a in alt)
+    seen: dict[str, list] = {}                      # the boxes of the other readings, by their letters: each word is compared with its own kind
+    for alt in alts:
+        for a in alt:
+            seen.setdefault(_fold(a["text"]), []).append(a["box"])
+    same = sum(any(_overlap(w["box"], box) >= 0.4 for box in seen.get(_fold(w["text"]), ())) for w in base)
     return same / len(base)
 
 
