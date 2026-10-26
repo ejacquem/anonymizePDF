@@ -5073,6 +5073,75 @@ def stage_a_backdrop_tests():
     check("A3 dark text on plain paper: the paper is light", not backdrop.is_dark_paper(np.asarray(plain), bx), "")
 
 
+def stage_a_font_tests():
+    """Stage A4 (docs/overnight/REPORT_STAGE_A.md): the fixed-pitch prior of a typewritten page is read on the block of the value's own
+    words, not on the whole page, and it is a bonus on the monospace families, not a filter that drops the others; a value of few
+    letters keeps its own size beside a bigger label (no 'size of its line'). No OCR needed."""
+    print("\n== stage A: fixed pitch per block, size of a short value")
+    from PIL import Image, ImageDraw, ImageFont
+    from anonymizer import fontmatch
+
+    fonts = ROOT / "anonymizer" / "fonts"
+    words = ("Gaspard Delcourt habite Avenue Louise numero contrat assurance Bruxelles ouverture compte epargne relevé mensuel "
+             "titulaire garantie prestation versement echeance operation montant facture reference paiement agence solde "
+             "virement cheque courrier adresse domicile telephone mandataire beneficiaire").split()
+
+    def paragraph(d, font, x0, y0, lines, per_line, pitch, start=0):
+        """Words of a paragraph drawn with `font`: [(text, box, line id)]."""
+        out, k = [], start
+        for r in range(lines):
+            x = x0
+            for _ in range(per_line):
+                w = words[k % len(words)]
+                k += 1
+                d.text((x, y0 + pitch * r), w, font=font, fill=20, anchor="ls")
+                l, t, rr, b = d.textbbox((x, y0 + pitch * r), w, font=font, anchor="ls")
+                out.append({"text": w, "box": (l, t, rr, b), "line": ("l", y0 + pitch * r)})
+                x = rr + 22
+        return out
+
+    def mixed(prop_font, mono_font, prop_lines, mono_lines):
+        img = Image.new("L", (1500, 120 + 34 * prop_lines + 160 + 34 * mono_lines), 250)
+        d = ImageDraw.Draw(img)
+        a = paragraph(d, ImageFont.truetype(str(fonts / prop_font), 24), 40, 60, prop_lines, 5, 34)
+        b = paragraph(d, ImageFont.truetype(str(fonts / mono_font), 24), 40, 60 + 34 * prop_lines + 120, mono_lines, 5, 34, start=7)
+        return np.asarray(img), a, b
+
+    # a page with a big fixed-pitch block (a table in Consolas, a typed annex) and a proportional paragraph: the paragraph's values
+    # are proportional (the old rule asked for a monospace family for EVERY value once a third of the long words voted for one)
+    g, prop, mono = mixed("Roboto-Regular.ttf", "CourierPrime-Regular.ttf", 3, 6)
+    pf = fontmatch.PageFonts(g, prop + mono, 1.0)
+    f_prop, _ = pf.face_for(prop[7]["box"])
+    f_mono, _ = pf.face_for(mono[12]["box"])
+    check("a proportional paragraph on a page with a bigger fixed-pitch block: its values stay proportional",
+          f_prop is not None and f_prop.kind != "mono", f_prop)
+    check("... and the values of the fixed-pitch block are fixed pitch", f_mono is not None and f_mono.kind == "mono", f_mono)
+    g, prop, mono = mixed("DejaVuSerif.ttf", "CourierPrime-Regular.ttf", 3, 6)
+    pf = fontmatch.PageFonts(g, prop + mono, 1.0)
+    f_prop, _ = pf.face_for(prop[3]["box"])
+    check("the same with a serif paragraph", f_prop is not None and f_prop.kind != "mono", f_prop)
+    # a page typed in a fixed pitch from top to bottom: all its values are fixed pitch, the short ones too
+    g, _, mono = mixed("CourierPrime-Regular.ttf", "CourierPrime-Regular.ttf", 1, 6)
+    pf = fontmatch.PageFonts(g, mono, 1.0)
+    kinds = [pf.face_for(w["box"])[0] for w in mono[::3]]
+    check("a page typed in a fixed pitch: every value is in a fixed pitch face", all(f is not None and f.kind == "mono" for f in kinds),
+          [f for f in kinds if f is None or f.kind != "mono"])
+
+    # the size of a value of few letters is its own (a figure in small print among the words of its line), not its line's
+    img = Image.new("L", (1100, 160), 250)
+    d = ImageDraw.Draw(img)
+    big, small = ImageFont.truetype(str(fonts / "Roboto-Regular.ttf"), 25), ImageFont.truetype(str(fonts / "Roboto-Regular.ttf"), 20)
+    ws = []
+    for text, font, x in (("Montant", big, 30), ("total", big, 200), ("Avenue", big, 320), ("Louise", big, 470), ("12 EUR", small, 640)):
+        d.text((x, 100), text, font=font, fill=20, anchor="ls")
+        l, t, r, b = d.textbbox((x, 100), text, font=font, anchor="ls")
+        ws.append({"text": text, "box": (l, t, r, b), "line": ("l", 0)})
+    pf = fontmatch.PageFonts(np.asarray(img), ws, 1.0)
+    got = pf.metrics(ws[4]["box"], fontmatch.face("Roboto", False))
+    check("a short figure in small print among bigger words of its line keeps its own size (20 px, not the line's 25)",
+          got is not None and got[0] < 22.5, got)
+
+
 def sharp_read_tests():
     """Pages scanned coarsely are read as the scan was (anonymizer/ocrpage.py: block_factors, smooth) and a page the OCR cannot
     read is said so (scanpaint._unread_warning). No OCR needed."""
@@ -5117,7 +5186,7 @@ def sharp_read_tests():
 
 def sharp_tone_tests():
     """The fake is as hard as the page (quality.py: steep / mid, fit_tone), the weight match moves the centre of the curve, and a
-    typewritten page has typewritten values (fontmatch.PageFonts.mono_page). No OCR needed."""
+    typewritten block has typewritten values (fontmatch.PageFonts.mono_block). No OCR needed."""
     print("\n== hard pages: a tone curve, the weight, the pitch")
     from collections import namedtuple
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -5182,9 +5251,11 @@ def sharp_tone_tests():
     check("a lighter page than the matched font: the centre goes up", thin.mid > qt.mid, thin.mid)
 
     g, ws = page("CourierPrime-Regular.ttf", size=26)
-    check("a page typed in a fixed pitch is a typewritten page", fontmatch.PageFonts(g, ws, 1.0).mono_page())
+    pf = fontmatch.PageFonts(g, ws, 1.0)
+    check("a page typed in a fixed pitch: the block of a value is typewritten", pf.mono_block(pf.value_words(ws[3]["box"])))
     g, ws = page("Roboto-Regular.ttf")
-    check("a page in a proportional face is not", not fontmatch.PageFonts(g, ws, 1.0).mono_page())
+    pf = fontmatch.PageFonts(g, ws, 1.0)
+    check("a page in a proportional face is not", not pf.mono_block(pf.value_words(ws[3]["box"])))
 
 
 GROUPS = [
@@ -5200,7 +5271,7 @@ GROUPS = [
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
-    "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests",
+    "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own
