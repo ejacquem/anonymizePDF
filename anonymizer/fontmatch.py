@@ -873,9 +873,9 @@ class PageFonts:
         near.sort(key=lambda i: -_letters(self.words[i]["text"]))
         return near[:limit]
 
-    def _mono_vote(self, pool) -> bool | None:
+    def _mono_vote(self, pool, share: float = MONO_SHARE) -> bool | None:
         """Among the longest words of `pool` (>= MONO_MIN_LETTERS letters, measurable), is the share whose best face is a
-        monospace one at least MONO_SHARE? None when fewer than MONO_MIN_WORDS tell."""
+        monospace one at least `share`? None when fewer than MONO_MIN_WORDS tell."""
         idx = sorted((i for i in pool if _letters(self.words[i]["text"]) >= MONO_MIN_LETTERS and i not in self.skip),
                      key=lambda i: -_letters(self.words[i]["text"]))[:MONO_WORDS]
         kinds = []
@@ -883,14 +883,15 @@ class PageFonts:
             s = self.scores(i)
             if s:
                 kinds.append(max(s, key=s.get).kind == "mono")
-        return sum(kinds) / len(kinds) >= MONO_SHARE if len(kinds) >= MONO_MIN_WORDS else None
+        return sum(kinds) / len(kinds) >= share if len(kinds) >= MONO_MIN_WORDS else None
 
     @_fonts
     def mono_block(self, own: list[int]) -> bool:
         """Is the text around a value set in a fixed pitch? Voted on the block of its words (a paragraph, a table, a typed
-        annex), else, when that has too few long words, on the words of its line: a statement with a Consolas table has
-        proportional values elsewhere on its page, and a short value (a town, a few digits) cannot tell Courier from Georgia
-        on a coarse copy, but the text around it can. Never the whole page."""
+        annex), else, when that has too few long words, on the words of its line, else (nothing around it tells: a town or a
+        figure alone in its block) on the page. Local evidence always wins over the page's: a statement with a Consolas table
+        has proportional values elsewhere on its page, and the table does not decide for them. A short value cannot tell
+        Courier from Georgia on a coarse copy, but the text around it can."""
         if not own:
             return False
         bid = self._blocks()[1][own[0]]
@@ -900,7 +901,10 @@ class PageFonts:
                 self._mono[key] = self._mono_vote(pool)
             if self._mono[key] is not None:
                 return self._mono[key]
-        return False
+        # nothing around the value tells (a town or a figure alone in its block): only a page that is typed from top to bottom does
+        if "page" not in self._mono:
+            self._mono["page"] = bool(self._mono_vote(range(len(self.words))))
+        return self._mono["page"]
 
     @_fonts
     def face_for(self, box, bold_hint: bool | None = None) -> tuple[Face | None, float]:
