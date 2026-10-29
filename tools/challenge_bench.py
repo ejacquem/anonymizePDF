@@ -262,6 +262,26 @@ def report_box(items: list[dict], ink_box_px, grow_px: float):
     return got
 
 
+def replaced_boxes(items: list[dict], own_px, reg) -> np.ndarray:
+    """Over `reg`: the report's boxes of the OTHER replaced words (pixels, grown 2 px): a box that overlaps the value's
+    own bbox by less than 30 % of its area. What the run replaced on purpose (a word the detector took, a fake beside)
+    is neither this value's fake nor damage to a neighbour."""
+    m = np.zeros((reg[3] - reg[1], reg[2] - reg[0]), bool)
+    for item in items:
+        for b in item.get("boxes", []):
+            if b.get("page", 1) != 1:
+                continue
+            bx0, by0, bx1, by1 = [v / gen.PT for v in b["box"]]
+            if bx1 <= reg[0] or bx0 >= reg[2] or by1 <= reg[1] or by0 >= reg[3]:
+                continue
+            ov = max(min(bx1, own_px[2]) - max(bx0, own_px[0]), 0) * max(min(by1, own_px[3]) - max(by0, own_px[1]), 0)
+            if ov >= 0.3 * max((bx1 - bx0) * (by1 - by0), 1e-3):
+                continue
+            m[max(int(by0) - 2 - reg[1], 0):max(int(by1) + 3 - reg[1], 0),
+              max(int(bx0) - 2 - reg[0], 0):max(int(bx1) + 3 - reg[0], 0)] = True
+    return m
+
+
 def page_mask(mask, bbox, shape, reg):
     """The value's area (a mask cut to its bbox, see _truth) as a mask over `reg`."""
     full = np.zeros((reg[3] - reg[1], reg[2] - reg[0]), bool)
@@ -289,6 +309,14 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
         if ob[2] <= reg[0] or ob[0] >= reg[2] or ob[3] <= reg[1] or ob[1] >= reg[3]:
             continue
         foreign[max(ob[1] - 2 - reg[1], 0):max(ob[3] + 2 - reg[1], 0), max(ob[0] - 2 - reg[0], 0):max(ob[2] + 2 - reg[0], 0)] = True
+    foreign |= replaced_boxes(items, bbox, reg)
+    # the value's own band: its rows +- 0.35 of its height (the line above and below are other words)
+    rows = np.nonzero(own.any(1))[0]
+    if rows.size:
+        hh = rows[-1] - rows[0] + 1
+        band = np.zeros_like(area)
+        band[max(rows[0] - int(0.35 * hh), 0):rows[-1] + int(0.35 * hh) + 1] = True
+        foreign |= ~band
     foreign &= ~area
     v_ink = ((grey(cut(clean, reg)) - grey(cut(with0, reg))) > INK) & area
     ink_i = ((cg - ig) > INK) & ~foreign
@@ -328,12 +356,12 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
     res["base"] = float(ef["base"] - ei["base"]) if ef and ei else None
     res["xh"] = float(ef["h"] / ei["h"]) if ef and ei and ei["h"] > 2 else None
     # neighbours: the ink of the clean page (labels, words, rules: no value) within one line height of the value, outside
-    # the value's own area grown 3 px; damaged = changed by more than NBR_LEVEL between the original scan and the output
+    # the value's own area grown 3 px and outside the boxes of the other words the run replaced on purpose; damaged = changed by more than NBR_LEVEL between the original scan and the output
     lh = max(bbox[3] - bbox[1], 8)
     nreg = (max(bbox[0] - lh, 0), max(bbox[1] - lh, 0), min(bbox[2] + lh, orig.shape[1]), min(bbox[3] + lh, orig.shape[0]))
     cl = grey(cut(clean, nreg))
     paper = np.percentile(cl, 90)
-    n_ink = ((paper - cl) > 60) & ~grow(page_mask(mask, bbox, orig.shape, nreg), 3)
+    n_ink = ((paper - cl) > 60) & ~grow(page_mask(mask, bbox, orig.shape, nreg), 3) & ~replaced_boxes(items, bbox, nreg)
     if n_ink.sum() >= 20:
         ch = np.abs(gen.gblur(cut(out, nreg), 1.0) - gen.gblur(cut(orig, nreg), 1.0)).max(-1)
         res["nbr"] = float((ch[n_ink] > NBR_LEVEL).mean())
@@ -592,7 +620,7 @@ def cmd_run(args) -> int:
                                           "scan_s": res["scan_s"], "anon_s": res["anon_s"]}, indent=1,
                                          ensure_ascii=False), encoding="utf-8")
     if args.sheet:
-        write_sheet(res["records"], res["crops"], Path(args.sheet), by=args.sheet_by)
+        write_sheet(res["records"], res["crops"], Path(args.sheet), limit=160 if args.sheet_by == "place" else 80, by=args.sheet_by)
         print(f"sheet -> {args.sheet}")
     print(f"-> {args.out}")
     return 0
