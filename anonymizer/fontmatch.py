@@ -478,6 +478,12 @@ MIN_BLOCK_WORDS = 4                 # measurable words a block needs for its own
 BLOCK_WORDS = 24                    # the longest measurable words of a block are the ones measured
 BLOCK_SPLIT = 0.25                  # the bold scores of a block are two clusters when their largest gap is this wide
 SIZE_SLACK = 0.12                   # a value whose own size is this close to its block's takes the block's size
+# a word's fitted baseline must lie in its OCR box: from this share of its height below the top to this share below the
+# bottom (run P: with a leading of 1.0 the ink crop of a word takes a bracket or the next line's ascenders, and the fit
+# gave letters 70 % too big whose baseline sat on the next line: such a word is left out of the value's size and baseline)
+BASE_LOW, BASE_BELOW = 0.4, 0.15
+NEAR_SIZE_LOG = 0.18                 # ln of the value's fitted size over its nearest line words' (2 at least) above which the
+                                     # value's own fit is not its letters: their size and baseline are taken
 
 
 @dataclass
@@ -790,12 +796,31 @@ class PageFonts:
             return None
         sizes, bases = got
         size = float(np.median(sizes))
+        if bases:                                      # the value's own fit against its nearest words on the line
+            near = self._near_line_words(own, box)
+            nb = self._fit_words(near, f, soft) if near else None
+            if nb and nb[1] and len(nb[0]) >= 2 and math.log(size / float(np.median(nb[0]))) > NEAR_SIZE_LOG:
+                sizes, bases = nb                      # fitted on what is not the value's letters (a bracket, the next line)
+                size = float(np.median(sizes))
         style = self.block_style(self._blocks()[1][own[0]]) if own else None
         if style is not None and style.size and abs(size / style.size - 1) <= SIZE_SLACK:
             size = style.size                          # the letters of the block (its median over many words)
-        if not bases:                                  # measured on the line only: the baseline from the box
-            return size, None
+        if not bases:                                  # measured on the line only: the baseline of its nearest words
+            near = self._near_line_words(own, box)
+            nb = self._fit_words(near, f, soft) if near else None
+            if not nb or not nb[1]:
+                return size, None                      # nothing measured around: the baseline from the box
+            return size, float(np.median(nb[1]))
         return size, float(np.median(bases))
+
+    def _near_line_words(self, own, box, count: int = 3) -> list:
+        """The `count` words of the value's line nearest to its box (x of their centres), the value's own left out: on a
+        turned page only the words beside a value share its baseline."""
+        if not own:
+            return []
+        cx = (box[0] + box[2]) / 2
+        others = [i for i in self.line_words(own) if i not in set(own)]
+        return sorted(others, key=lambda i: abs((self.words[i]["box"][0] + self.words[i]["box"][2]) / 2 - cx))[:count]
 
     def _fit_words(self, idx, f: Face, soft: float, baseline: bool = True):
         """Sizes and baselines (pixels) of the words idx fitted in face f (fit_rows); None when none fits. The
@@ -813,9 +838,13 @@ class PageFonts:
             if not fit:
                 continue
             k, top = fit
+            base = top + rendered[1] * k
+            wy0, wy1 = w["box"][1], w["box"][3]
+            if baseline and not (wy0 + BASE_LOW * (wy1 - wy0) <= base <= wy1 + BASE_BELOW * (wy1 - wy0)):
+                continue                                 # fitted on what is not the word (a bracket, the next line's ink)
             sizes.append(PROBE * k)
             if baseline:
-                bases.append(top + rendered[1] * k)
+                bases.append(base)
         return (sizes, bases) if sizes else None
 
     @_fonts

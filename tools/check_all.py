@@ -5168,6 +5168,45 @@ def stage_a_font_tests():
           got is not None and got[0] < 22.5, got)
 
 
+def placement_tests():
+    """Run P (docs/overnight/REPORT_PLACEMENT.md): with a leading of 1.0 the ink crop of a word glued to a bracket reaches the next
+    line, and the row fit took letters 70 % too big whose baseline sat on the next line (the fake was written over it). A word's
+    fitted baseline must lie in its OCR box; when the value's own words give none, the baseline is the one of the nearest words of
+    its line, not the box's bottom (which holds the bracket's tail). No OCR needed."""
+    print("\n== run P: the baseline of a value on a tight line")
+    from PIL import Image, ImageDraw, ImageFont
+    from anonymizer import fontmatch
+
+    font = ImageFont.truetype(str(ROOT / "anonymizer" / "fonts" / "Roboto-Regular.ttf"), 30)
+    pitch = 31                                                     # a leading of 1.0
+    img = Image.new("L", (1300, 60 + pitch * 5), 250)
+    d = ImageDraw.Draw(img)
+    lines = [["exécuté", "chaque", "mois", "(réf.", "VIR-7996607)."], ["Pour", "toute", "question,", "Hélène", "Jaffré"],
+             ["agence", "Bruxelles", "Ghislain", "lj@hjkl.be", "Philippe"]]
+    ws, base_of = [], {}
+    for r, line in enumerate(lines):
+        y, x = 60 + pitch * r, 30
+        for w in line:
+            d.text((x, y), w, font=font, fill=20, anchor="ls")
+            l, t, rr, b = d.textbbox((x, y), w, font=font, anchor="ls")
+            ws.append({"text": w, "box": (l, t, rr, b), "line": ("l", r)})
+            base_of[w] = y
+            x = rr + 18
+    # the OCR box of the value: the word without '(réf.' and with the bracket and the dot (the bracket's tail is below the baseline)
+    pf = fontmatch.PageFonts(np.asarray(img), ws, 1.0)
+    vbox = [w["box"] for w in ws if w["text"].startswith("VIR")][0]
+    got = pf.metrics(vbox, fontmatch.face("Roboto", False))
+    check("a value glued to a bracket on a tight line: its baseline is its line's (within 3 px), not the next line's",
+          got is not None and got[1] is not None and abs(got[1] - base_of["VIR-7996607)."]) <= 3, (got, base_of["VIR-7996607)."]))
+    check("... and its letters are the line's size (within 15 %)", got is not None and abs(got[0] / 30 - 1) <= 0.15
+          or got is not None and abs(got[0] / pf.metrics(ws[1]["box"], fontmatch.face("Roboto", False))[0] - 1) <= 0.15, got)
+    # a value whose words fit: its own baseline is kept (the window takes nothing away from a normal word)
+    nb = [w["box"] for w in ws if w["text"] == "Hélène"][0]
+    got = pf.metrics(nb, fontmatch.face("Roboto", False))
+    check("a word that fits keeps its own baseline", got is not None and got[1] is not None and abs(got[1] - base_of["Hélène"]) <= 2,
+          (got, base_of["Hélène"]))
+
+
 def stage_a_scan_tests():
     """Stage A5 (docs/overnight/REPORT_STAGE_A.md): the way back from a straightened page (a failure of the dewarp redoes the page as
     it is and forgets everything the failed attempt added; an error of the painting is not hidden), `ocrpage.agreement` with an index
@@ -5420,7 +5459,7 @@ GROUPS = [
     "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
-    "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests",
+    "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",
 ]
 SLOW_GROUPS = {"font_unit_tests", "font_scan_tests", "contract_tests", "quality_offset_tests", "parallel_tests", "paragraph_scan_tests"}   # left out by --fast
 MAIN_GROUPS = {"parallel_tests"}      # run by the main process: a pool worker (a daemon) may not start workers of its own

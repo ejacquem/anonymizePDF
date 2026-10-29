@@ -330,6 +330,10 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
     vcols = np.nonzero(v_ink.any(0))[0]
     if vcols.size:
         ink_i[:, :max(int(vcols[0]) - 3, 0)] = False
+    # and on the value's own rows (its box): a neighbouring line's ideal text can be longer than that value's box
+    if rows.size:
+        ink_i[:max(rows[0] - 1, 0)] = False
+        ink_i[rows[-1] + 2:] = False
     diff = cg - xg
     zone = ~grow(ink_i | v_ink | (diff > INK), 2)
     if zone.sum() > 50:
@@ -367,6 +371,15 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
     # the edges, baseline and height of the fake are read at the SAME level as the ideal's (INK): a lower level (the
     # noise allowance can be 10) makes the blurred strokes a pixel wider on every side, +10 % of a 20 px height
     fake = (diff > max(allow, INK)) & ~foreign & ~remnant_parts
+    if rows.size and fake.any():                     # tight leading: the next line's fake reaches into the band; a part
+        flab = components(fake)                      # of the fake has most of its pixels on the value's own rows
+        n_all = np.bincount(flab.ravel())
+        inrows = np.zeros_like(fake)
+        inrows[rows[0]:rows[-1] + 1] = True
+        n_in = np.bincount(flab[inrows].ravel(), minlength=n_all.size)
+        keep = n_in >= 0.5 * n_all
+        keep[0] = False
+        fake = keep[flab]
     _LAST["fake"] = fake
     ef, ei, eo = _edges(fake), _edges(ink_i), _edges(v_ink)
     res["x0"] = float(ef["x0"] - ei["x0"]) if ef and ei else None
