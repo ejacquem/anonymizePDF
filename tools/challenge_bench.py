@@ -359,7 +359,9 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
     n_v = int(v_ink.sum())
     res = {"resid": float(resid_m.sum() / n_v) if n_v else None, "resid_px": int(resid_m.sum()),
            "resid_max": float(diff[resid_m].max()) if resid_m.any() else 0.0}
-    fake = out_ink & ~remnant_parts
+    # the edges, baseline and height of the fake are read at the SAME level as the ideal's (INK): a lower level (the
+    # noise allowance can be 10) makes the blurred strokes a pixel wider on every side, +10 % of a 20 px height
+    fake = (diff > max(allow, INK)) & ~foreign & ~remnant_parts
     _LAST["fake"] = fake
     ef, ei, eo = _edges(fake), _edges(ink_i), _edges(v_ink)
     res["x0"] = float(ef["x0"] - ei["x0"]) if ef and ei else None
