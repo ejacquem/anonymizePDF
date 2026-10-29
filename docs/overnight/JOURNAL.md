@@ -385,3 +385,12 @@ Method: `diag.py` (scratch) runs scan + anonymize of one or two cases in one pro
 - 'REF DOM-...' erased with nothing written (bench run of stage 1, place_table_calibri7 row 31): not reproduced in a single-case run (the
   OCR reads 'DOMS307423', the term is that misreading, the fake is written, in a wrong italic face 'Century Gothic Italic'). Written down.
 - Glued labels (fix 4): not done (time).
+
+## P3 closing (tag `runP-done`)
+
+- 74183cb: the nearest line words of a value are those whose centre is in its rows (a shared OCR line id gave a baseline of the next rows); the
+  size rule (NEAR_SIZE_LOG) kept, a first version without it lost the size fix. `placement_tests` +2 checks (shared line id fails on the old code).
+- `check_all --fast`: 1847 passed, 3 failed (second check of `releve_150_scan.pdf` x2 and `carte_identite_faible_qualite.pdf`); the same output
+  on main with the same keys (Dossier Test 20 / 09 scanned and anonymized one at a time), so not from run P; tests not loosened.
+- Bench: `runP_final_full.json` (full set, final code) vs `runP_base3_full.json`: found, resid unchanged, held place_ not worse. Report in
+  `REPORT_PLACEMENT.md`. `runP_final_placedoc.json` (place_ + doc_ only) is a partial run, not comparable with the full ones.
