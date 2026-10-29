@@ -196,6 +196,7 @@ def measure_row(orig, out, clean, ideal, bbox) -> dict:
 # placement (run P): where the fake went, what is left of the original, its size, the neighbours
 
 PLACE = ("resid", "resid_px", "resid_max", "x0", "x1err", "base", "xh", "nbr", "boxmiss")
+SAME = 22                   # grey levels: a remnant keeps the original scan's pixels (re-encoded, so not exactly)
 NBR_LEVEL = 40              # a neighbour pixel changed by more than this (grey levels, max channel) is damaged
 
 
@@ -299,8 +300,8 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
     others = the bboxes of the other values of the page: their ink (their own fakes, in the output and in the ideal) is
     not this value's, so it is left out of the edges, the baseline and the height."""
     reg = region(bbox, orig.shape)
-    c = blurred_crops({"x": out, "c": clean, "i": ideal}, reg)
-    cg, xg, ig = grey(c["c"]), grey(c["x"]), grey(c["i"])
+    c = blurred_crops({"x": out, "c": clean, "i": ideal, "o": orig}, reg)
+    cg, xg, ig, og = grey(c["c"]), grey(c["x"]), grey(c["i"]), grey(c["o"])
     # the original value's own ink (noiseless truth: clean minus the page with the values, inside its area grown 2 px)
     own = page_mask(mask, bbox, orig.shape, reg)
     area = grow(own, 2)
@@ -329,9 +330,11 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
     else:
         allow = INK
     out_ink = (diff > allow) & ~foreign
-    # a remnant is a piece of the output's ink that lies (almost) all on the original value's ink: a connected part of
-    # the output's ink with >= 85 % of its pixels on the original's ink grown 1 px. A fake glyph runs off the original's
-    # strokes, so its part is the fake's; the pixels of a remnant part on the ideal's ink (grown 1 px) are explained by it
+    # a remnant is a piece of the output's ink that lies (almost) all on the original value's ink AND still has the
+    # original's pixels: a connected part of the output's ink with >= 85 % of its pixels on the original's ink grown 1 px
+    # whose pixels differ from the original scan by less than SAME levels (median). A fake glyph runs off the original's
+    # strokes, or, when it happens to sit on them (a fake spread to the value's width), it is not the same picture; the
+    # pixels of a remnant part on the ideal's ink (grown 1 px) are explained by it
     lab = components(out_ink)
     on = grow(v_ink, 1)
     resid_m = np.zeros_like(out_ink)
@@ -340,6 +343,10 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
         n_on = np.bincount(lab[on].ravel(), minlength=n_all.size)
         rem = (n_on >= 0.85 * n_all)
         rem[0] = False
+        same = np.abs(xg - og)
+        for k in np.nonzero(rem)[0]:
+            if float(np.median(same[lab == k])) >= SAME:
+                rem[k] = False
         resid_m = rem[lab] & v_ink & ~grow(ink_i, 1)
         remnant_parts = rem[lab] & ~grow(ink_i, 1)            # with their blurred rim: not the fake's ink
     else:
