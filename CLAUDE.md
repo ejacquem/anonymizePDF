@@ -702,7 +702,11 @@ Order must never change a result (`order_tests`): a value written with several s
 - Size and baseline (`PageFonts.metrics`): every word of the value rendered in its face and fitted row by row on the
   scan (`fit_rows`: scale and top that correlate the ink per row), medians over the words; the box of a long value on
   a page turned by 0.8 degree is taller than its letters (fakes were 10-15 % too big). A value whose words cannot be
-  measured takes the size of its line's other words.
+  measured takes the size of its line's other words. Run P (tight leading): a word's fitted baseline must lie in its OCR
+  box (`BASE_LOW` / `BASE_BELOW`), else the word is left out; a value fitted bigger than its 3 nearest line words
+  (`_near_line_words`, ln > `NEAR_SIZE_LOG` 0.18, bigger only: small print keeps its size) takes their size and
+  baseline; a value with no own baseline takes its nearest line words' before the box's bottom. A word glued to a
+  bracket on a line at a leading of 1.0 was fitted 70 % too big and written on the next line (`placement_tests`).
 - Filling (`layout_value`, `scan_runs_layout(fill=)`): when something follows the value on its line (a comma, the next
   word: `PageFonts.followed`), a shorter fake spreads to its box: spaces up to +60 %, letters up to 8 %.
 - A value on two lines is cut by the words of the same rank when the fake has as many words (`scanpaint._cut_lines`:
@@ -1129,6 +1133,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   coarse scans (3 x 3, a fax 1.5 x 3, smooth pages 1 x 1), the smooth page, the unread-page warning; a hard cut page gets a tone curve and a
   blurred one does not, the weight match moves the centre of the curve, a fixed pitch block is typewritten.
 - Stage A (`stage_a_backdrop_tests`, `stage_a_font_tests`, `stage_a_scan_tests`, all in `--fast`): a dense bold value on a blurred copy and a heavy black value leave nothing under the fake (the guard fails closed), a blurred thick value on white and on a yellow band leaves no shadow (std < 2), the polarity of a heavy value and of white text on a navy band; a proportional paragraph beside a Courier block stays proportional, a short figure keeps its own size; the dewarp fallback forgets the failed attempt and lets a painting error go up; `agreement` with an index equals the loop; `ANON_TONE=0` (`quality.TONE_ON`) gives no tone curve.
+- Run P (`placement_tests`, in `--fast`, no OCR): a value glued to a bracket on a line at a leading of 1.0 gets its line's baseline
+  and size, a word that fits keeps its own baseline.
 - Underlined and framed values on a scan (`underline_tests`, B4): each underline stays, no replacement is bold where the
   original is regular.
 - Corrupted text layer (`corrupt_layer_tests`: the page is read by OCR, its values replaced), a town with its region code
@@ -1284,6 +1290,14 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   rendered in parallel processes (cores - 1, 4 at most); the full run takes about 5 minutes, 9 cases (`--only bg_`) 50 s. Same
   selection of cases = same numbers (deterministic); the fakes of a case depend on the other cases in the folder, so compare
   runs of the SAME selection. First baseline and its reading: `docs/challenge_baseline.md`.
+- Run P (placement, `docs/overnight/REPORT_PLACEMENT.md`): `place_` family (16 statement-like A4 pages, 51 values each, 150 dpi
+  JPEG, 7-10 pt, tight tables and leading, glued labels, small skews, and the PDF geometry: /Rotate 90, CropBox, margins, strips,
+  non-uniform scale; `make_test_documents.place_cases`, `make_test_challenge.place_pdf`) and the placement measures
+  (`measure_place`): `resid` (original ink still there, with the original's pixels, not explained by the ideal), `x0`, `x1err`
+  (`x1over`), `base`, `xh`, `nbr` (neighbour words damaged), `boxerr` / `boxmiss` (report box vs the original's ink). They are read
+  on the value's own rows, without the other values (their ideal and fake texts can be longer than their boxes), the words the run
+  replaced on purpose and the clean page's other words; the fake and the ideal at the same ink level. `--sheet-by place`. A run
+  of all 80 cases takes about 25 minutes. Limit: a fake glyph on the same place as the original's same letter counts as a remnant.
 
 ## 13. Known limits / ideas
 

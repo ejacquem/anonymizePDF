@@ -356,3 +356,32 @@ Tanneurs 14' at the start of a wrapped line in 5 place_ pages, '5000 Namur' / '4
 spans two lines (boxerr top -22) and the fake's size / baseline follow it (6, place_tight_verdana9 rows 7-10, glued_verdana8 row 3); a glued
 label erased with the value ('E-mail:' + address, nbr 0.44; 'IBAN:BE48' box misses 25-44 px of ink on the left: 4); weight: Times / Verdana
 capitals written heavier (seen, not counted by these measures). Decision: stage 2 waits for the lead.
+
+## P2 stage 2 (lead's order: fix 1, fix 2, tilted doc_, tight leading, glued labels)
+
+Method: `diag.py` (scratch) runs scan + anonymize of one or two cases in one process with hooks on `layout_value`, `ink_start`,
+`PageFonts.metrics` / `_fit_words`, then `remeasure.py` re-measures chosen values and saves the 6-panel crop.
+
+- Fix 1 (fake 10-16 px right of the value): NOT a painting cause. `layout_value` starts every fake at the box's x (logged:
+  '4000 Liège' -> ('4100', x 2168 = box x0)). The ideal page writes the neighbouring value ('Rue de Fer 22, ' before '5000 Namur') in
+  its longer fake text, which runs into the value's region; the bench took it for the ideal's start. Bench fixed (the ideal's ink left
+  of the original's first column and outside its rows is not the value's); x0 of these values 13-14 -> 0-2. The Times "bold" of 'Rue de
+  la Vallée 25' is not this cause (layout: Times regular, `is_bold` False); not pursued (weight is out of this run's scope). Commit 2c40ae8.
+- Fix 2 (erase grows right to connected ink): dropped. The resid tail (26 place_ values 0.02-0.07) is not ink outside the erase box: on
+  the crops the red pixels are the fake's own glyph where it sits on the original's (the '4' of '94' on the '1' of '31', '.be' on '.be');
+  boxerr right is -0.7 .. -4.6 px (the box covers). `render.ink_tail` already erases the connected ink beyond the box. No target.
+- Tilted / bent doc_ pages: the box misses are on the value's EXTENT, not its geometry: 8 right, 5 left, 2 top of 15 (doc_ + geom_);
+  top / bottom errors are -1 .. -9 px (covered) on pages turned 0.5-4.2 degrees. The misses are parts the detection did not take: the
+  street number of 'Avenue des Arts 8' on the fax (box right +33), the 'g.' of 'g.delcourt@...' (left +23: the term starts at 'delcourt'),
+  the postcode of '5000 Namur' on the fax (left +77). No dewarp or tilt-path error found. The x0 tail on doc_ (15) re-measured on single
+  cases with the fixed bench: 'Étienne Lambert' (doc_sharp_releve_bw150) x0 3 and 1. Detection: out of scope, listed for the next run.
+- Tight leading (fix 3): real. place_tight_verdana9 '(réf. VIR-7996607).' at a leading of 1.0: `_fit_words` fitted the word 70 % too big
+  (67.8 px for the line's 39) on an ink crop that held the bracket and the next line's ascenders; baseline 854 for a box ending at 842: the
+  fake was written on the next line (crop). Fix (`fontmatch`): a word's fitted baseline must lie in its OCR box (0.4 h below its top ..
+  0.15 h below its bottom); a value fitted bigger (ln > 0.18) than its 3 nearest line words takes their size and baseline; a value with no
+  own baseline takes its nearest line words' (the box's bottom held the bracket's tail: 842 -> 831.9, truth 832.6). Small print keeps its
+  size (stage A test still passes: the rule is for a value BIGGER than its neighbours). Test `placement_tests` fails on runP-s1 (size 36.3
+  for 30, baseline 63.6 for 60) and passes. Commit a6b8322.
+- 'REF DOM-...' erased with nothing written (bench run of stage 1, place_table_calibri7 row 31): not reproduced in a single-case run (the
+  OCR reads 'DOMS307423', the term is that misreading, the fake is written, in a wrong italic face 'Century Gothic Italic'). Written down.
+- Glued labels (fix 4): not done (time).
