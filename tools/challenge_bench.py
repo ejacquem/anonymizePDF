@@ -83,8 +83,15 @@ def ideal_text(value: str, reps: list[tuple[str, str]]) -> str:
         return value
     table = {re.sub(r"\s+", " ", f).casefold(): r for f, r in reps}
     pattern = "|".join(r"\s+".join(re.escape(w) for w in f.split()) for f in sorted(table, key=len, reverse=True))
-    return re.sub(pattern, lambda mt: table.get(re.sub(r"\s+", " ", mt.group(0)).casefold(), mt.group(0)), value,
-                  flags=re.I)
+    def case_of(found: str, new: str) -> str:              # match_case (engine): UPPER / lower of the original kept
+        letters = [ch for ch in found if ch.isalpha()]
+        if len(letters) >= 2 and all(ch.isupper() for ch in letters):
+            return new.upper()
+        if letters and all(ch.islower() for ch in letters):
+            return new.lower()
+        return new
+    return re.sub(pattern, lambda mt: case_of(mt.group(0), table.get(re.sub(r"\s+", " ", mt.group(0)).casefold(),
+                                                                        mt.group(0))), value, flags=re.I)
 
 
 def coverage(box_px, items: list[dict]) -> float:
