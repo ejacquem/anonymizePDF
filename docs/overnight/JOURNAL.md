@@ -317,3 +317,42 @@ proportional: DejaVu Sans x2, Georgia Bold), `font_lucida` 4 of 5 (5 of 5 with t
 Old code: duplicate warning and numbers after a failed `compose`, a painting error swallowed (both tests failed). `_scan_page`: only `straighten` / `flatten` and the way back are in
 the try; `_mark` / `_rollback`. `ocrpage.agreement` indexed (same value on 40 random readings). `ANON_DEBUG_SURFACE` removed, `ANON_TONE` kept and documented (test with it off). The two
 backslash-broken one-liners (+ one in `quality.py`) rewritten, `backdrop.py` docstring updated.
+
+# Run P (branch `worktree-agent-a11dd171726032f77`, from main d2ca872; brief `PROMPT_PLACEMENT.md`): placement, coverage, size
+
+## P1 stage 1: measures, `place_` cases, baseline, diagnosis (tag `runP-s1`)
+
+Measures (`challenge_bench.measure_place`, on the value's own band; the other values' boxes, the words the run replaced on purpose (report
+boxes of other items) and the clean page's other words are left out): `resid` = share of the original value's ink still in the output (a
+connected part of the output's ink >= 85 % on the original's ink AND still the original scan's pixels, median |out - orig| < 22, outside the
+ideal's ink grown 1 px), `resid_px`, `resid_max`; `x0` (fake's left ink edge - ideal's), `x1err` (fake's right edge - original's; summary
+`x1over` = share > 3 px); `base` (median of column bottoms, fake - ideal); `xh` (baseline - median column top, fake / ideal); `nbr` (share of
+the neighbour words' ink within one line height changed by > 40 levels); `boxerr` (report box vs the original's ink, + = misses ink;
+`boxmiss` = worst side). `--sheet-by place` (worst placement first; 6th panel: fake ink blue, remnant red). `compare` and `bench_cmp` know
+them. Truth masks cut to their bbox (a 51-value page held 200 MB of full-page masks; the process reached 7.4 GB).
+Validated on a synthetic case (the ideal shifted 3 px with the original's last 30 columns pasted back: x0 3, resid 0.12; the ideal: all 0)
+and on the pictures. Each of these was a false defect in the first runs and is fixed: the ideal ignored match_case (a value in capitals vs a
+Title fake), the fake read at the noise level (10) and the ideal at 20 (every fake 1 px wider each side: `xh` 1.10 everywhere -> 1.00),
+neighbour lines / labels / other values' fakes taken for the fake (x0 = -PAD, base +17), a fake glyph sitting on the original's strokes
+taken for a remnant. The runs before the last fix are kept as `runP_base_*_xhbiased.json` (their old columns are valid).
+
+`place_` (`make_test_documents.place_cases`, 16 pages x 51 values, 8 dev / 8 held, held frozen from 31bdc1d): a dense statement (header,
+address, info block, two paragraphs, a 22-row table whose counterpart IBAN column ends 14 px before the amounts, 7 pt footer), 150 dpi JPEG
+q 60-66 4:2:0, Arial / Calibri / Verdana / Times 7-10 pt, leading 1.0-1.25, labels glued ('IBAN:', 'N°', 'Tél.', 'Réf:', '(réf.X)'), turned
+0.3 / 0.7 / 1.2 / 1.8 degrees, a 9 px bend, a dark lid border with the page off-centre in white margins, /Rotate 90, a CropBox offset, two
+image strips, 150 x 136 dpi. The displayed PDF = the truth page (mean |pdf - truth| 2.0; border 4.3 for its white margins, strips 2.8).
+H6 (page geometry): rotate / crop / strips / margin / scale place the fakes like the plain pages (medians 0-1 px, no boxmiss): not broken.
+
+Baseline (`runP_base_place.json`, place_ alone, 593 s; `runP_base_full.json`, 80 cases, 1398 s). place_: found 83 % (det 83 %); medians
+resid 0.000, |x0| 1, |base| 0, xh 1.00, nbr 0, boxmiss 0. Tails of the 680 found: resid > 0.02: 26, |x0| > 4: 7, |base| >= 3: 9, |xh - 1| >
+0.15: 13, nbr > 0.02: 10, boxmiss > 2: 7. Old families (391 found of 440): resid > 0.02: 10, |x0| > 4: 22 (20 on doc_), |base| >= 3: 10,
+|xh - 1| > 0.15: 14, nbr > 0.02: 9, boxmiss > 2: 20 (most without a remnant: the ink tail or a neighbour box covered it).
+
+Diagnosis (sheet pictures): the synthetic 150 dpi statements are mostly placed right; what the owner sees on real files is not reproduced
+at scale. Causes found, by count: detection misses (136 place_ values, out of scope); the right end of a shorter fake leaves a piece of the
+original's last glyph or the fake's last glyph is spread onto it (most of the 26 resid, x1err < 0: 'Chaussée de Namur 31', 'NL45 ... 28',
+e-mails ending '.be' where the same letter sits at the same place, a measure limit); a fake starting 10-16 px right of the value (13: 'Rue des
+Tanneurs 14' at the start of a wrapped line in 5 place_ pages, '5000 Namur' / '4000 Liège' in doc_contrat_*); tight leading 1.0: report box
+spans two lines (boxerr top -22) and the fake's size / baseline follow it (6, place_tight_verdana9 rows 7-10, glued_verdana8 row 3); a glued
+label erased with the value ('E-mail:' + address, nbr 0.44; 'IBAN:BE48' box misses 25-44 px of ink on the left: 4); weight: Times / Verdana
+capitals written heavier (seen, not counted by these measures). Decision: stage 2 waits for the lead.
