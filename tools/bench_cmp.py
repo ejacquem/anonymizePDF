@@ -1,7 +1,8 @@
 """Compact before / after of two `tools/challenge_bench.py run` files, with the acceptance rule's verdicts.
 
 Per group, the measures that moved, as before -> after with a sign (+ better, - worse; found higher is better, the
-others closer to their ideal: bg_excess, bg95, bg_worst, ink_rel, dark, dy, dx, coll toward 0, mass and height toward 1).
+others closer to their ideal: bg_excess, bg95, bg_worst, ink_rel, dark, dy, dx, coll and the placement measures (resid, x0, base,
+nbr, boxmiss...) toward 0, mass, height and xh toward 1).
 
 Usage: python tools/bench_cmp.py before.json after.json [--groups PREFIX ...] [--min 0.01] [--measures a,b,...]
        (default groups: ALL, family:*, split:*; any group whose name starts with a PREFIX is added)
@@ -13,8 +14,9 @@ import json
 import sys
 from pathlib import Path
 
-MEASURES = ("found", "bg_excess", "bg95", "bg_worst", "ink_rel", "mass", "dark", "height", "edge", "edge_rel", "dy", "dx", "coll")
-ONE = ("mass", "height", "edge", "edge_rel")
+MEASURES = ("found", "bg_excess", "bg95", "bg_worst", "ink_rel", "mass", "dark", "height", "edge", "edge_rel", "dy", "dx", "coll",
+            "resid", "resid90", "resid_n", "x0", "x1over", "base", "xh", "nbr", "boxmiss")      # the last ones: placement (run P)
+ONE = ("mass", "height", "edge", "edge_rel", "xh")
 
 
 def badness(k: str, v):

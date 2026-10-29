@@ -538,7 +538,194 @@ def render_doc(spec: dict, texts: dict | None = None, noise: bool = False) -> di
         rows.append({"box": box, "mask": mk, "bbox": (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)})
     sc_rng = np.random.default_rng(spec["seed"] + 7)
     shape = clean.shape
-    clean_n = gen.scan_effects(gen.warp(clean, maps), spec["scan"], sc_rng, False)
-    with_n = gen.scan_effects(gen.warp(withv, maps), spec["scan"], sc_rng, noise)
+    clean_w, with_w = gen.warp(clean, maps), gen.warp(withv, maps)
+    if spec.get("border"):                                   # run P: the dark edge of the scanner lid, left and top
+        clean_w, with_w = scan_border(clean_w, spec["border"]), scan_border(with_w, spec["border"])
+    clean_n = gen.scan_effects(clean_w, spec["scan"], sc_rng, False)
+    with_n = gen.scan_effects(with_w, spec["scan"], sc_rng, noise)
     return {"with": gen.to_page(with_n, shape), "clean": gen.to_page(clean_n, shape), "native": with_n, "rows": rows,
             "layout": []}
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# run P: placement on statement-like pages (family `place_`)
+#
+# What the owner's real statements look like (docs/font_matching.md section 11): a 150 dpi JPEG (quality 60-70, 4:2:0)
+# placed at 595 x 842 pt, small Arial / Calibri / Verdana / Times (7-10 pt), 200-500 words, a dense table whose columns
+# are tight (a counterpart IBAN right beside the amounts), tight line spacing, values glued to their label ('IBAN:BE..',
+# 'Tél.+32..', 'Réf:..', 'N°..') or inside a longer token ('(réf.HAB-..)'). The cases differ by the font, the size, the
+# leading, the glued labels, a small skew (0.3 .. 1.8 degrees), a slight bend, a dark scanner border with the page placed
+# off-centre, and the geometry of the PDF page itself (make_test_challenge.place_pdf: /Rotate 90, a CropBox offset,
+# margins, two image strips, a non-uniform scale).
+
+def iban_of(country: str, bban: str) -> str:
+    """A valid IBAN of any country from its BBAN (letters and digits), grouped by four."""
+    num = "".join(str(int(ch, 36)) for ch in (bban + country + "00").upper())
+    iban = f"{country}{98 - int(num) % 97:02d}{bban}"
+    return " ".join(iban[i:i + 4] for i in range(0, len(iban), 4))
+
+
+def _digits(rng, n: int) -> str:
+    return "".join(str(int(d)) for d in rng.integers(0, 10, n))
+
+
+def build_place(p, o: dict) -> Page:
+    """A dense bank statement: header, address, an info block (labels glued or not), two paragraphs at the case's leading,
+    a table of 22 operations with a tight counterpart IBAN column beside the amounts, a footer in 7 pt."""
+    g = Page()
+    rng = np.random.default_rng(o["seed"])
+    fam, s, lead, glued = o["fam"], o["size"], o["lead"], o["glued"]
+    em = s * gen.DPI / 72
+    step = em * lead
+    navy = (25, 50, 105)
+    others = [q for q in PEOPLE if q is not p]
+    ibans = [iban_of("FR", _digits(rng, 23)), gen.iban_be(_digits(rng, 10)), iban_of("NL", "INGB" + _digits(rng, 10)),
+             gen.iban_be(_digits(rng, 10))]
+    refs = [f"{a}-{_digits(rng, 7)}" for a in ("VIR", "DOM", "PRL")]
+    acct = f"{_digits(rng, 3)}-{_digits(rng, 7)}-{_digits(rng, 2)}"
+    # header
+    g.line(120, 120, [R("BANQUE DU CONDROZ", b=True, size=s + 7, color=navy)], fam=fam)
+    g.line(1534, 120, [R("EXTRAIT DE COMPTE", b=True, size=s + 3)], align="right", fam=fam)
+    g.line(1534, 120 + 1.6 * step, f"Extrait n° 9 du 01/09/2024 au 30/09/2024", align="right", fam=fam, size=s)
+    g.rule((120, 170 + 1.6 * step), (1534, 170 + 1.6 * step), 2.5, navy)
+    # the address block (right) and the info block (left), at the case's leading
+    y0 = 260 + 1.6 * step
+    for k, (txt, kind) in enumerate(((full(p), "name"), (p["street"], "street"), (p["town"], "town"))):
+        pre = [R(p["civ"] + " ")] if k == 0 else []
+        g.line(900, y0 + k * step * 1.1, pre + [R(txt, v=kind)], fam=fam, size=s + 1)
+    sep = "" if glued else " : "
+    info = [("Titulaire" + (":" if glued else sep), full(p), "name"), ("IBAN" + (":" if glued else sep), p["iban"], "iban"),
+            ("N°" if glued else "Compte n° ", acct, "acct"), ("Tél." if glued else "Téléphone : ", p["phone"], "phone"),
+            ("Réf:" if glued else "Référence : ", p["ref"], "ref"), ("E-mail:" if glued else "E-mail : ", p["email"], "email")]
+    for k, (lab, val, kind) in enumerate(info):
+        g.line(120, y0 + k * step, [R(lab, b=not glued), R(val, v=kind)], fam=fam, size=s)
+    # two paragraphs at the case's leading
+    y = y0 + 6 * step + 2.2 * em
+    ref_tok = [R("(réf." if glued else "(réf. "), R(refs[0], v="ref"), R(")")]
+    y = g.para(120, y, 1414, [
+        R(p["civ"] + " "), R(full(p), v="name"), R(", nous vous informons que l'ordre permanent depuis votre compte "),
+        R(p["iban"], v="iban"), R(" vers le compte "), R(ibans[0], v="iban"), R(" au nom de "),
+        R(full(others[0]), v="name"), R(", "), R(others[0]["street"], v="street"), R(", "), R(others[0]["town"], v="town"),
+        R(", sera exécuté chaque mois "), *ref_tok,
+        R(". Pour toute question, contactez votre agence au "), R(p["phone"], v="phone"), R(" ou écrivez à "),
+        R(p["email"], v="email"), R(". Les frais de tenue de compte sont prélevés trimestriellement selon le tarif en "
+                                    "vigueur, disponible en agence et sur notre site.")],
+        fam=fam, size=s, leading=lead)
+    y = g.para(120, y + 0.8 * em, 1414, [
+        R("Votre gestionnaire "), R(p["agent"], v="name"), R(" reste à votre disposition. Le compte "),
+        R(ibans[1], v="iban"), R(" de "), R(full(others[1]), v="name"),
+        R(" a été ajouté à vos bénéficiaires le 12/09/2024. Si vous n'êtes pas à l'origine de cet ajout, appelez le "),
+        R(("Tél." if glued else "") + "+32 81 22 40 17"), R(" sans attendre.")],
+        fam=fam, size=s, leading=lead)
+    # the table
+    f = dfont(fam, s)
+    amt_w = f.getlength("12.345,67") / SS
+    deb_r, cre_r = 1380, 1534
+    iban_w = max(f.getlength(i) / SS for i in ibans)
+    x_iban = deb_r - amt_w - 14 - iban_w                   # tight: the longest IBAN ends 14 px before the widest amount
+    top = y + 2.0 * em
+    rstep = em * max(lead + 0.12, 1.12)
+    g.rect((120, top - 1.05 * em, 1534, top + 0.4 * em), navy)
+    for x, lab, al in ((120, "Date", "left"), (230, "Libellé", "left"), (x_iban, "Contrepartie", "left"),
+                       (deb_r, "Débit", "right"), (cre_r, "Crédit", "right")):
+        g.line(x, top, [R(lab, b=True, color=(255, 255, 255))], align=al, fam=fam, size=s)
+    names = [full(others[0]), full(others[1]), p["agent"], others[0]["other"]]
+    ops = []
+    for k in range(22):
+        kind = k % 6
+        amount = f"{int(rng.integers(1, 3000)):,}".replace(",", ".") + f",{int(rng.integers(0, 100)):02d}"
+        if kind == 0:
+            lib = [R("VIREMENT DE "), R(names[k % 4].upper(), v="name")]
+            ops.append((lib, ibans[k % 4], None, amount))
+        elif kind == 1:
+            lib = [R("PAIEMENT CARTE " + _digits(rng, 4) + " DELHAIZE")]
+            ops.append((lib, None, amount, None))
+        elif kind == 2:
+            lib = [R("DOMICILIATION ENGIE "), R("REF:" if glued else "REF "), R(refs[1], v="ref")] if glued else \
+                [R("DOMICILIATION ENGIE REF "), R(refs[1], v="ref")]
+            ops.append((lib, ibans[(k + 1) % 4], amount, None))
+        elif kind == 3:
+            lib = [R("VIREMENT A "), R(names[(k + 1) % 4], v="name")]
+            ops.append((lib, ibans[(k + 2) % 4], amount, None))
+        elif kind == 4:
+            lib = [R("RETRAIT DAB RUE DE FER")]
+            ops.append((lib, None, amount, None))
+        else:
+            lib = [R("PRLV SEPA "), R(refs[2], v="ref")]
+            ops.append((lib, ibans[(k + 3) % 4], amount, None))
+    for k, (lib, cp, deb, cre) in enumerate(ops):
+        yy = top + rstep * (k + 1)
+        if k % 2 == 1:
+            g.rect((120, yy - 0.9 * em, 1534, yy + 0.3 * em), (232, 237, 246))
+        g.line(120, yy, f"{1 + k:02d}/09", fam=fam, size=s)
+        g.line(230, yy, lib, fam=fam, size=s)
+        if cp:
+            g.line(x_iban, yy, [R(cp, v="iban")], fam=fam, size=s)
+        if deb:
+            g.line(deb_r, yy, deb, align="right", fam=fam, size=s)
+        if cre:
+            g.line(cre_r, yy, cre, align="right", fam=fam, size=s)
+    end = top + rstep * (len(ops) + 1)
+    g.rule((120, end - 0.6 * em), (1534, end - 0.6 * em), 2.0, navy)
+    g.line(1534, end + 0.6 * em, [R("Nouveau solde : ", b=True), R("2.184,31 EUR", b=True)], align="right", fam=fam, size=s)
+    g.para(120, 2190, 1414, [R("Banque du Condroz SA, Rue de la Station 4, 5590 Ciney. RPM Namur. Les dépôts sont protégés "
+                               "jusqu'à 100.000 EUR par personne et par banque. Toute réclamation doit nous parvenir dans "
+                               "les 60 jours. Conservez ce document : il tient lieu de justificatif.")],
+           fam=fam, size=7, leading=1.15)
+    return g
+
+
+def scan_border(a: np.ndarray, b: dict) -> np.ndarray:
+    """The dark edge a scanner lid leaves along the left and the top of the page (px, a soft inner edge)."""
+    out = a.copy()
+    h, w = out.shape[:2]
+    lv = float(b.get("level", 38))
+    xs = np.arange(w, dtype=np.float32)
+    ys = np.arange(h, dtype=np.float32)
+    cx = np.clip((b.get("left", 0) - xs) / 6.0 + 0.5, 0, 1)[None, :]
+    cy = np.clip((b.get("top", 0) - ys) / 6.0 + 0.5, 0, 1)[:, None]
+    cov = np.maximum(cx, cy)[..., None]
+    return out * (1 - cov) + lv * cov
+
+
+def place_spec(name: str, person: int, split: str, seed: int, fam: str = "arial", size: float = 8.5, lead: float = 1.25,
+               glued: bool = False, geom=(), scan=None, border=None, pdf=None) -> dict:
+    page = build_place(PEOPLE[person], {"fam": fam, "size": size, "lead": lead, "glued": glued, "seed": seed})
+    sc = {"dpi": 150, "blur": 0.7, "noise": 2.5, "jpeg": 66}
+    sc.update(scan or {})
+    rows = [{"label": f"place/{v['kind']}", "value": v["text"], "deco": None, "font": v["fam"], "size": v["size"],
+             "bold": v["b"]} for v in page.values]
+    layout = {"ops": page.ops, "hl": page.merged_highlights(), "boxes": [v["box"] for v in page.values],
+              "values": [{"id": v["id"], "x": v["x"], "y": v["y"], "font": (v["fam"], v["size"], v["b"], v["i"]),
+                          "color": v["color"]} for v in page.values]}
+    spec = {"kind": "doc", "name": name, "family": "place", "split": split, "seed": seed, "bg": "paper", "rows": rows,
+            "layout": layout, "geom": [list(o) for o in geom], "scan": sc, "ink": list(INK), "text_layer": False,
+            "tags": {"bg": "paper", "geom": "+".join(o[0] for o in geom) or "none", "font": fam, "tone": "none"}}
+    if border:
+        spec["border"] = border
+    if pdf:
+        spec["pdf"] = pdf
+    return spec
+
+
+def place_cases() -> list[dict]:
+    """16 cases, 8 dev and 8 held (the held ones are frozen from the commit that added them)."""
+    return [
+        place_spec("place_table_arial8", 0, "dev", 3001, fam="arial", size=8.0, lead=1.2),
+        place_spec("place_table_calibri7", 1, "held", 3002, fam="calibri", size=7.0, lead=1.2, scan={"jpeg": 62}),
+        place_spec("place_tight_verdana9", 2, "dev", 3003, fam="verdana", size=9.0, lead=1.0),
+        place_spec("place_tight_times10", 0, "held", 3004, fam="times", size=10.0, lead=1.1),
+        place_spec("place_glued_arial9", 1, "dev", 3005, fam="arial", size=9.0, lead=1.15, glued=True),
+        place_spec("place_glued_verdana8", 2, "held", 3006, fam="verdana", size=8.0, lead=1.15, glued=True),
+        place_spec("place_tilt03", 0, "dev", 3007, fam="arial", size=9.0, geom=[("rotate", 0.3)]),
+        place_spec("place_tilt07", 1, "held", 3008, fam="calibri", size=9.5, geom=[("rotate", -0.7)]),
+        place_spec("place_tilt12", 2, "dev", 3009, fam="arial", size=8.5, geom=[("rotate", 1.2)], scan={"jpeg": 60}),
+        place_spec("place_tilt18", 0, "held", 3010, fam="times", size=9.5, geom=[("rotate", -1.8)]),
+        place_spec("place_bend", 1, "dev", 3011, fam="arial", size=9.0, geom=[("bend", 9, 0.02, 827), ("rotate", 0.4)]),
+        place_spec("place_border", 2, "held", 3012, fam="arial", size=8.5, geom=[("shift", 36, 22), ("rotate", 0.5)],
+                   border={"left": 44, "top": 30, "level": 34}, pdf={"kind": "margin", "margin": (8, 4, 64, 92)}),
+        place_spec("place_rot90", 0, "dev", 3013, fam="calibri", size=9.0, pdf={"kind": "rot90"}),
+        place_spec("place_crop", 1, "held", 3014, fam="verdana", size=8.5, pdf={"kind": "crop", "offset": (40.0, 25.0)}),
+        place_spec("place_strips", 2, "dev", 3015, fam="arial", size=9.0, pdf={"kind": "strips"}),
+        place_spec("place_scale", 0, "held", 3016, fam="arial", size=8.5, scan={"dpi": 150, "dpi_y": 136}),
+    ]

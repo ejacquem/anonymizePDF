@@ -341,6 +341,8 @@ def geometry_maps(ops, size=None):
             k = op[1]
             u = (sx - cx) / cx
             sy = cy + (sy - cy) * (1 + k * u)
+        elif kind == "shift":                                # the page placed off-centre on the scanner glass (px)
+            sx, sy = sx - op[1], sy - op[2]
         else:
             raise ValueError(kind)
     return sx, sy
@@ -485,6 +487,7 @@ def cases() -> list[dict]:
     import make_test_documents
 
     out.extend(make_test_documents.doc_cases())
+    out.extend(make_test_documents.place_cases())            # run P: placement on statement-like pages
     return out
 
 
@@ -560,8 +563,11 @@ def write_pdf(spec: dict, path: Path) -> dict:
 
     r = render_case(spec, noise=True)
     doc = fitz.open()
-    page = doc.new_page(width=r["with"].shape[1] * PT, height=r["with"].shape[0] * PT)
-    page.insert_image(page.rect, stream=to_jpeg(r["native"], spec["scan"]["jpeg"]), keep_proportion=False)   # a fax fills the page: 200 x 100 dpi
+    if spec.get("pdf"):                                          # run P: the page geometry of the PDF itself
+        page = place_pdf(doc, spec, r)
+    else:
+        page = doc.new_page(width=r["with"].shape[1] * PT, height=r["with"].shape[0] * PT)
+        page.insert_image(page.rect, stream=to_jpeg(r["native"], spec["scan"]["jpeg"]), keep_proportion=False)   # a fax fills the page: 200 x 100 dpi
     if spec.get("text_layer"):                                   # a searchable scan: invisible text in a wrong font
         for text, x, y in r["layout"]:
             page.insert_text((x * PT, y * PT), text, fontname="helv", fontsize=11, render_mode=3)
@@ -572,6 +578,49 @@ def write_pdf(spec: dict, path: Path) -> dict:
             "values": [{"row": i, "label": row.get("label"), "value": row["value"], "deco": row["deco"], "font": row["font"],
                         "bold": row.get("bold", False), "box": [round(v * PT, 2) for v in r["rows"][i]["bbox"]],
                         "box_px": list(r["rows"][i]["bbox"])} for i, row in enumerate(spec["rows"])]}
+
+
+def place_pdf(doc, spec: dict, r: dict):
+    """The scan of a run P case placed in a page whose geometry is not the plain one (the displayed page is always the
+    truth page at DPI, so the bench compares the same pixels):
+      rot90   a landscape MediaBox with /Rotate 90, the picture turned so that it shows upright
+      crop    a MediaBox larger than the page, the picture and the CropBox at an offset
+      margin  the picture cut and placed inside the page with white margins, off-centre (`margin`: l, t, r, b in px)
+      strips  the picture in two images, the top and the bottom halves"""
+    import pymupdf as fitz
+
+    pdf = spec["pdf"]
+    nat = r["native"]
+    hp, wp = r["with"].shape[:2]
+    q = spec["scan"]["jpeg"]
+    W_, H_ = wp * PT, hp * PT
+    fx, fy = nat.shape[1] / wp, nat.shape[0] / hp
+    kind = pdf["kind"]
+    if kind == "rot90":
+        page = doc.new_page(width=H_, height=W_)
+        page.set_rotation(90)
+        page.insert_image(page.rect * page.derotation_matrix, stream=to_jpeg(nat, q), keep_proportion=False, rotate=90)
+    elif kind == "crop":
+        ox, oy = pdf.get("offset", (40.0, 25.0))
+        page = doc.new_page(width=W_ + ox + 30, height=H_ + oy + 50)
+        rect = fitz.Rect(ox, oy, ox + W_, oy + H_)
+        page.insert_image(rect, stream=to_jpeg(nat, q), keep_proportion=False)
+        page.set_cropbox(rect)
+    elif kind == "margin":
+        l, t, rr, b = pdf["margin"]
+        nl, nt, nr, nb = round(l * fx), round(t * fy), round(rr * fx), round(b * fy)
+        part = nat[nt:nat.shape[0] - nb, nl:nat.shape[1] - nr]
+        page = doc.new_page(width=W_, height=H_)
+        page.insert_image(fitz.Rect(nl / fx * PT, nt / fy * PT, (nat.shape[1] - nr) / fx * PT, (nat.shape[0] - nb) / fy * PT),
+                          stream=to_jpeg(part, q), keep_proportion=False)
+    elif kind == "strips":
+        k = nat.shape[0] // 2
+        page = doc.new_page(width=W_, height=H_)
+        page.insert_image(fitz.Rect(0, 0, W_, k / fy * PT), stream=to_jpeg(nat[:k], q), keep_proportion=False)
+        page.insert_image(fitz.Rect(0, k / fy * PT, W_, H_), stream=to_jpeg(nat[k:], q), keep_proportion=False)
+    else:
+        raise ValueError(kind)
+    return page
 
 
 def _write_one(args):

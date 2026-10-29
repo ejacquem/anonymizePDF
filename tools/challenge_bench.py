@@ -185,6 +185,145 @@ def measure_row(orig, out, clean, ideal, bbox) -> dict:
     return res
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# placement (run P): where the fake went, what is left of the original, its size, the neighbours
+
+PLACE = ("resid", "resid_px", "resid_max", "x0", "x1err", "base", "xh", "nbr", "boxmiss")
+NBR_LEVEL = 40              # a neighbour pixel changed by more than this (grey levels, max channel) is damaged
+
+
+def grow(mask: np.ndarray, r: int) -> np.ndarray:
+    """The mask grown by r pixels (a square of 2r+1)."""
+    from anonymizer import morph
+
+    return morph.square_max(mask.astype(np.uint8), 2 * r + 1) > 0 if r > 0 else mask
+
+
+_LAST: dict = {}            # the masks of the last measure_place (debugging pictures)
+
+
+def components(mask: np.ndarray) -> np.ndarray:
+    """8-connected labels of a small mask (0 = background), by propagating the smallest label (numpy only)."""
+    h, w = mask.shape
+    big = np.int32(h * w + 1)
+    lab = np.where(mask, np.arange(1, h * w + 1, dtype=np.int32).reshape(h, w), big)
+    while True:
+        p = np.pad(lab, 1, constant_values=big)
+        m = lab.copy()
+        for dy in (0, 1, 2):
+            for dx in (0, 1, 2):
+                np.minimum(m, p[dy:dy + h, dx:dx + w], out=m)
+        m = np.where(mask, m, big)
+        if np.array_equal(m, lab):
+            break
+        lab = m
+    lab = np.where(mask, lab, 0)
+    _, inv = np.unique(lab, return_inverse=True)
+    return inv.reshape(h, w).astype(np.int32)
+
+
+def _edges(mask: np.ndarray, min_rows: int = 2):
+    """Left / right ink columns (a column counts with >= min_rows ink pixels), the baseline (median of the bottoms of
+    the columns: descenders are a minority) and the main height (baseline minus the median top of the columns)."""
+    cols = np.nonzero(mask.sum(0) >= min_rows)[0]
+    if cols.size < 2:
+        return None
+    sub = mask[:, cols]
+    has = sub.any(0)
+    bottoms = mask.shape[0] - 1 - np.argmax(sub[::-1], axis=0)
+    tops = np.argmax(sub, axis=0)
+    base = float(np.median(bottoms[has]))
+    return {"x0": int(cols[0]), "x1": int(cols[-1]) + 1, "base": base, "h": base - float(np.median(tops[has])) + 1}
+
+
+def report_box(items: list[dict], ink_box_px, grow_px: float):
+    """The union of the report's boxes (page 1, PDF points -> pixels) that sit on the value's ink box."""
+    x0, y0, x1, y1 = ink_box_px
+    got = None
+    for item in items:
+        for b in item.get("boxes", []):
+            if b.get("page", 1) != 1:
+                continue
+            bx0, by0, bx1, by1 = [v / gen.PT for v in b["box"]]
+            cy = (by0 + by1) / 2
+            if bx1 < x0 - grow_px or bx0 > x1 + grow_px or cy < y0 - grow_px or cy > y1 + grow_px:
+                continue
+            if min(bx1, x1) - max(bx0, x0) <= 0:
+                continue
+            got = [bx0, by0, bx1, by1] if got is None else [min(got[0], bx0), min(got[1], by0), max(got[2], bx1),
+                                                            max(got[3], by1)]
+    return got
+
+
+def measure_place(orig, out, clean, ideal, with0, mask, bbox, items) -> dict:
+    """Placement of one value (run P). with0 = the original page without noise, mask = the value's area (page)."""
+    reg = region(bbox, orig.shape)
+    c = blurred_crops({"x": out, "c": clean, "i": ideal}, reg)
+    cg, xg, ig = grey(c["c"]), grey(c["x"]), grey(c["i"])
+    # the original value's own ink (noiseless truth: clean minus the page with the values, inside its area grown 2 px)
+    area = grow(cut(mask, reg), 2)
+    v_ink = ((grey(cut(clean, reg)) - grey(cut(with0, reg))) > INK) & area
+    ink_i = (cg - ig) > INK
+    diff = cg - xg
+    zone = ~grow(ink_i | v_ink | (diff > INK), 2)
+    if zone.sum() > 50:
+        dz = diff[zone]
+        mz = float(np.median(dz))
+        allow = max(10.0, mz + 4 * 1.4826 * float(np.median(np.abs(dz - mz))))
+    else:
+        allow = INK
+    out_ink = diff > allow
+    # a remnant is a piece of the output's ink that lies (almost) all on the original value's ink: a connected part of
+    # the output's ink with >= 85 % of its pixels on the original's ink grown 1 px. A fake glyph runs off the original's
+    # strokes, so its part is the fake's; the pixels of a remnant part on the ideal's ink (grown 1 px) are explained by it
+    lab = components(out_ink)
+    on = grow(v_ink, 1)
+    resid_m = np.zeros_like(out_ink)
+    if lab.max() > 0:
+        n_all = np.bincount(lab.ravel())
+        n_on = np.bincount(lab[on].ravel(), minlength=n_all.size)
+        rem = (n_on >= 0.85 * n_all)
+        rem[0] = False
+        resid_m = rem[lab] & v_ink & ~grow(ink_i, 1)
+    _LAST["resid_m"] = resid_m
+    n_v = int(v_ink.sum())
+    res = {"resid": float(resid_m.sum() / n_v) if n_v else None, "resid_px": int(resid_m.sum()),
+           "resid_max": float(diff[resid_m].max()) if resid_m.any() else 0.0}
+    fake = out_ink & ~resid_m
+    _LAST["fake"] = fake
+    ef, ei, eo = _edges(fake), _edges(ink_i), _edges(v_ink)
+    res["x0"] = float(ef["x0"] - ei["x0"]) if ef and ei else None
+    res["x1err"] = float(ef["x1"] - eo["x1"]) if ef and eo else None
+    res["base"] = float(ef["base"] - ei["base"]) if ef and ei else None
+    res["xh"] = float(ef["h"] / ei["h"]) if ef and ei and ei["h"] > 2 else None
+    # neighbours: the ink of the clean page (labels, words, rules: no value) within one line height of the value, outside
+    # the value's own area grown 3 px; damaged = changed by more than NBR_LEVEL between the original scan and the output
+    lh = max(bbox[3] - bbox[1], 8)
+    nreg = (max(bbox[0] - lh, 0), max(bbox[1] - lh, 0), min(bbox[2] + lh, orig.shape[1]), min(bbox[3] + lh, orig.shape[0]))
+    cl = grey(cut(clean, nreg))
+    paper = np.percentile(cl, 90)
+    n_ink = ((paper - cl) > 60) & ~grow(cut(mask, nreg), 3)
+    if n_ink.sum() >= 20:
+        ch = np.abs(gen.gblur(cut(out, nreg), 1.0) - gen.gblur(cut(orig, nreg), 1.0)).max(-1)
+        res["nbr"] = float((ch[n_ink] > NBR_LEVEL).mean())
+    else:
+        res["nbr"] = None
+    # the report's box against the original value's ink (pixels): edge errors, + = the box misses ink on that side
+    ys, xs = np.nonzero(v_ink)
+    if xs.size:
+        ib = (reg[0] + int(xs.min()), reg[1] + int(ys.min()), reg[0] + int(xs.max()) + 1, reg[1] + int(ys.max()) + 1)
+        rb = report_box(items, ib, lh / 2)
+        if rb:
+            err = [round(rb[0] - ib[0], 1), round(rb[1] - ib[1], 1), round(ib[2] - rb[2], 1), round(ib[3] - rb[3], 1)]
+            res["boxerr"] = err
+            res["boxmiss"] = float(max(max(err), 0.0))
+        else:
+            res["boxerr"], res["boxmiss"] = None, None
+    else:
+        res["boxerr"], res["boxmiss"] = None, None
+    return res
+
+
 def context_edge(orig, out, bboxes, top: int = 3000) -> float | None:
     """How sharp the rest of the OUTPUT is against the original: the mean of the `top` strongest gradients of the pixels far from
     every value (labels, specks, the other text), output over original. Whatever the output does to the whole page (a 300 dpi
@@ -276,6 +415,8 @@ def run_cases(specs: list[dict], log=lambda *a: None, with_crops: bool = False) 
                        "ideal": ideal_texts[i], "value": row["value"], "error": err}
                 if out is not None and rec["found"]:
                     rec.update(measure_row(orig, out, r_clean["clean"], r_ideal["with"], bboxes[i]))
+                    rec.update(measure_place(orig, out, r_clean["clean"], r_ideal["with"], r_clean["with"],
+                                             r_clean["rows"][i]["mask"], bboxes[i], f.get("items", [])))
                     rec["coll"] = coll
                     rec["edge_ctx"] = ctx
                     rec["edge_rel"] = rec["edge"] / ctx if rec.get("edge") and ctx else None
@@ -299,7 +440,7 @@ def groups_of(r: dict) -> list[str]:
         g.append(f"geom:{r['case'].split('geom_')[-1]}" if r["family"] == "geom" else f"geom:{r['geom']}")
     if r["family"] == "bg":
         g.append(f"bg:{r['bgkind']}")
-    if r["family"] == "doc":
+    if r["family"] in ("doc", "place"):
         g.append(f"case:{r['case']}")
     if r["family"] == "sharp":
         g.append(f"sharp:{r['case'].split('sharp_')[-1]}")
@@ -325,6 +466,13 @@ def summarize(records: list[dict]) -> dict:
         for k in MEASURES:
             vals = [abs(r.get(k)) if k in ("dx", "dy", "dark") and r.get(k) is not None else r.get(k) for r in rs]
             s[k] = med(vals)
+        for k in PLACE:
+            vals = [abs(r.get(k)) if k in ("x0", "base") and r.get(k) is not None else r.get(k) for r in rs]
+            s[k] = med(vals)
+        rv = [r["resid"] for r in rs if r.get("resid") is not None]
+        s["resid90"] = round(float(np.percentile(rv, 90)), 3) if rv else None
+        s["resid_n"] = round(sum(v > 0.02 for v in rv) / len(rv), 3) if rv else None
+        s["x1over"] = round(sum((r.get("x1err") or 0) > 3 for r in rs) / len(rs), 3)
         s["bg_excess"] = med([r["bg"] - r["floor"] for r in rs if r.get("bg") is not None and r.get("floor") is not None])
         s["bg_worst"] = round(max([r["bg"] for r in rs if r.get("bg") is not None] or [0]), 2)
         out[g] = s
@@ -335,10 +483,13 @@ def cell(v, fmt="{:.2f}"):
     return "-" if v is None else fmt.format(v)
 
 
-def print_summary(summary: dict) -> None:
+def print_summary(summary: dict, place: bool = False) -> None:
     cols = (("found", "{:.0%}"), ("det", "{:.0%}"), ("bg_excess", "{:.2f}"), ("bg95", "{:.1f}"), ("bg_worst", "{:.1f}"), ("ink_rel", "{:.2f}"),
             ("mass", "{:.2f}"), ("dark", "{:.1f}"), ("height", "{:.2f}"), ("edge", "{:.2f}"), ("edge_rel", "{:.2f}"), ("dy", "{:.1f}"), ("dx", "{:.1f}"),
             ("coll", "{:.1f}"))
+    if place:
+        cols = (("found", "{:.0%}"), ("resid", "{:.3f}"), ("resid90", "{:.3f}"), ("resid_n", "{:.0%}"), ("resid_max", "{:.0f}"),
+                ("x0", "{:.1f}"), ("x1over", "{:.0%}"), ("base", "{:.1f}"), ("xh", "{:.2f}"), ("nbr", "{:.3f}"), ("boxmiss", "{:.1f}"))
     print(f"{'group':<26}{'n':>4}" + "".join(f"{c:>10}" for c, _ in cols))
     order = sorted(summary, key=lambda s: (s != "ALL", s.split(":")[0] not in ("family", "split"), s))
     for g in order:
@@ -346,8 +497,18 @@ def print_summary(summary: dict) -> None:
         print(f"{g:<26}{s['n']:>4}" + "".join(f"{cell(s.get(c), f):>10}" for c, f in cols))
 
 
-def write_sheet(records: list[dict], crops: dict, path: Path, limit: int = 80) -> None:
+def place_badness(r) -> float:
+    """How badly a value is placed (run P): what is left of the original, the shift, the baseline, the size, the neighbours."""
+    if not r["found"]:
+        return 1e9
+    return (20 * (r.get("resid") or 0) + abs(r.get("x0") or 0) / 4 + abs(r.get("base") or 0) / 2
+            + 3 * abs((r.get("xh") or 1) - 1) + 10 * (r.get("nbr") or 0))
+
+
+def write_sheet(records: list[dict], crops: dict, path: Path, limit: int = 80, by: str = "style") -> None:
     def bad(r):
+        if by == "place":
+            return place_badness(r)
         if not r["found"]:
             return 1e9
         return (r.get("bg") or 0) / 10 + (r.get("ink_rel") or 0) + abs(r.get("dy") or 0) / 10
@@ -358,6 +519,9 @@ def write_sheet(records: list[dict], crops: dict, path: Path, limit: int = 80) -
         head = (f"<b>{r['case']}</b> row {r['row']} [{r['split']}] deco={r['deco']} "
                 f"{'MISSED' if not r['found'] else ''} bg={cell(r.get('bg'))} (floor {cell(r.get('floor'))}) "
                 f"ink_rel={cell(r.get('ink_rel'))} mass={cell(r.get('mass'))} dy={cell(r.get('dy'), '{:.1f}')} "
+                f"<br>resid={cell(r.get('resid'), '{:.3f}')} ({r.get('resid_px', '-')} px, max {cell(r.get('resid_max'), '{:.0f}')}) "
+                f"x0={cell(r.get('x0'), '{:.0f}')} x1err={cell(r.get('x1err'), '{:.0f}')} base={cell(r.get('base'), '{:.1f}')} "
+                f"xh={cell(r.get('xh'))} nbr={cell(r.get('nbr'), '{:.3f}')} boxerr={r.get('boxerr')}"
                 f"<br>{r['value']} &rarr; {r['ideal']}")
         img = crops.get((r["case"], r["row"]))
         parts.append(f"<p>{head}<br>{'<img src=data:image/jpeg;base64,' + img + '>' if img else ''}</p>")
@@ -375,11 +539,13 @@ def cmd_run(args) -> int:
     summary = summarize(res["records"])
     print(f"scan {res['scan_s']}s, anonymize {res['anon_s']}s, total {time.time() - t0:.0f}s")
     print_summary(summary)
+    print()
+    print_summary(summary, place=True)
     Path(args.out).write_text(json.dumps({"label": args.label, "summary": summary, "records": res["records"],
                                           "scan_s": res["scan_s"], "anon_s": res["anon_s"]}, indent=1,
                                          ensure_ascii=False), encoding="utf-8")
     if args.sheet:
-        write_sheet(res["records"], res["crops"], Path(args.sheet))
+        write_sheet(res["records"], res["crops"], Path(args.sheet), by=args.sheet_by)
         print(f"sheet -> {args.sheet}")
     print(f"-> {args.out}")
     return 0
@@ -388,7 +554,8 @@ def cmd_run(args) -> int:
 def cmd_compare(args) -> int:
     a = json.loads(Path(args.before).read_text(encoding="utf-8"))
     b = json.loads(Path(args.after).read_text(encoding="utf-8"))
-    shown = ("found", "bg_excess", "bg95", "ink_rel", "mass", "dark", "height", "dy", "coll")
+    shown = ("found", "bg_excess", "bg95", "ink_rel", "mass", "dark", "height", "dy", "coll",
+             "resid", "resid90", "resid_n", "x0", "x1over", "base", "xh", "nbr", "boxmiss")
     print(f"{'group':<26}{'measure':<11}{'before':>9}{'after':>9}{'change':>9}")
     for g in sorted(set(a["summary"]) & set(b["summary"]), key=lambda s: (s != "ALL", s)):
         for k in shown:
@@ -407,6 +574,8 @@ def main() -> int:
     r.add_argument("--split", choices=["dev", "held"])
     r.add_argument("--label", default="")
     r.add_argument("--sheet", help="write an HTML sheet of the worst values")
+    r.add_argument("--sheet-by", dest="sheet_by", choices=["style", "place"], default="style",
+                   help="which values the sheet shows first: the worst blend (style) or the worst placement (place)")
     c = sub.add_parser("compare")
     c.add_argument("before")
     c.add_argument("after")
