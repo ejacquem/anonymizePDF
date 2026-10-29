@@ -703,7 +703,8 @@ Order must never change a result (`order_tests`): a value written with several s
   scan (`fit_rows`: scale and top that correlate the ink per row), medians over the words; the box of a long value on
   a page turned by 0.8 degree is taller than its letters (fakes were 10-15 % too big). A value whose words cannot be
   measured takes the size of its line's other words. Run P (tight leading): a word's fitted baseline must lie in its OCR
-  box (`BASE_LOW` / `BASE_BELOW`), else the word is left out; a value fitted bigger than its 3 nearest line words
+  box (`BASE_LOW` / `BASE_BELOW`), else the word is left out; a value fitted bigger than its 3 nearest line words (their
+  centre in the value's rows: an OCR can give tight rows one line id)
   (`_near_line_words`, ln > `NEAR_SIZE_LOG` 0.18, bigger only: small print keeps its size) takes their size and
   baseline; a value with no own baseline takes its nearest line words' before the box's bottom. A word glued to a
   bracket on a line at a leading of 1.0 was fitted 70 % too big and written on the next line (`placement_tests`).
