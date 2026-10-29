@@ -325,6 +325,11 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
     foreign &= ~area
     v_ink = ((grey(cut(clean, reg)) - grey(cut(with0, reg))) > INK) & area
     ink_i = ((cg - ig) > INK) & ~foreign
+    # the ideal starts where the original starts (same x, same baseline): ink of the ideal left of that is the end of a
+    # neighbouring value's ideal text, longer than that value's box ('Rue de Fer 22, ' before '5000 Namur')
+    vcols = np.nonzero(v_ink.any(0))[0]
+    if vcols.size:
+        ink_i[:, :max(int(vcols[0]) - 3, 0)] = False
     diff = cg - xg
     zone = ~grow(ink_i | v_ink | (diff > INK), 2)
     if zone.sum() > 50:
