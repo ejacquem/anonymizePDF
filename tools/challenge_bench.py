@@ -255,15 +255,36 @@ def report_box(items: list[dict], ink_box_px, grow_px: float):
     return got
 
 
-def measure_place(orig, out, clean, ideal, with0, mask, bbox, items) -> dict:
-    """Placement of one value (run P). with0 = the original page without noise, mask = the value's area (page)."""
+def page_mask(mask, bbox, shape, reg):
+    """The value's area (a mask cut to its bbox, see _truth) as a mask over `reg`."""
+    full = np.zeros((reg[3] - reg[1], reg[2] - reg[0]), bool)
+    x0, y0 = bbox[0] - reg[0], bbox[1] - reg[1]
+    h, w = mask.shape
+    ya, xa = max(y0, 0), max(x0, 0)
+    yb, xb = min(y0 + h, full.shape[0]), min(x0 + w, full.shape[1])
+    if yb > ya and xb > xa:
+        full[ya:yb, xa:xb] = mask[ya - y0:yb - y0, xa - x0:xb - x0]
+    return full
+
+
+def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) -> dict:
+    """Placement of one value (run P). with0 = the original page without noise, mask = the value's area cut to its bbox,
+    others = the bboxes of the other values of the page: their ink (their own fakes, in the output and in the ideal) is
+    not this value's, so it is left out of the edges, the baseline and the height."""
     reg = region(bbox, orig.shape)
     c = blurred_crops({"x": out, "c": clean, "i": ideal}, reg)
     cg, xg, ig = grey(c["c"]), grey(c["x"]), grey(c["i"])
     # the original value's own ink (noiseless truth: clean minus the page with the values, inside its area grown 2 px)
-    area = grow(cut(mask, reg), 2)
+    own = page_mask(mask, bbox, orig.shape, reg)
+    area = grow(own, 2)
+    foreign = np.zeros_like(area)
+    for ob in others:
+        if ob[2] <= reg[0] or ob[0] >= reg[2] or ob[3] <= reg[1] or ob[1] >= reg[3]:
+            continue
+        foreign[max(ob[1] - 2 - reg[1], 0):max(ob[3] + 2 - reg[1], 0), max(ob[0] - 2 - reg[0], 0):max(ob[2] + 2 - reg[0], 0)] = True
+    foreign &= ~area
     v_ink = ((grey(cut(clean, reg)) - grey(cut(with0, reg))) > INK) & area
-    ink_i = (cg - ig) > INK
+    ink_i = ((cg - ig) > INK) & ~foreign
     diff = cg - xg
     zone = ~grow(ink_i | v_ink | (diff > INK), 2)
     if zone.sum() > 50:
@@ -272,7 +293,7 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items) -> dict:
         allow = max(10.0, mz + 4 * 1.4826 * float(np.median(np.abs(dz - mz))))
     else:
         allow = INK
-    out_ink = diff > allow
+    out_ink = (diff > allow) & ~foreign
     # a remnant is a piece of the output's ink that lies (almost) all on the original value's ink: a connected part of
     # the output's ink with >= 85 % of its pixels on the original's ink grown 1 px. A fake glyph runs off the original's
     # strokes, so its part is the fake's; the pixels of a remnant part on the ideal's ink (grown 1 px) are explained by it
@@ -285,11 +306,14 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items) -> dict:
         rem = (n_on >= 0.85 * n_all)
         rem[0] = False
         resid_m = rem[lab] & v_ink & ~grow(ink_i, 1)
+        remnant_parts = rem[lab] & ~grow(ink_i, 1)            # with their blurred rim: not the fake's ink
+    else:
+        remnant_parts = resid_m
     _LAST["resid_m"] = resid_m
     n_v = int(v_ink.sum())
     res = {"resid": float(resid_m.sum() / n_v) if n_v else None, "resid_px": int(resid_m.sum()),
            "resid_max": float(diff[resid_m].max()) if resid_m.any() else 0.0}
-    fake = out_ink & ~resid_m
+    fake = out_ink & ~remnant_parts
     _LAST["fake"] = fake
     ef, ei, eo = _edges(fake), _edges(ink_i), _edges(v_ink)
     res["x0"] = float(ef["x0"] - ei["x0"]) if ef and ei else None
@@ -302,7 +326,7 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items) -> dict:
     nreg = (max(bbox[0] - lh, 0), max(bbox[1] - lh, 0), min(bbox[2] + lh, orig.shape[1]), min(bbox[3] + lh, orig.shape[0]))
     cl = grey(cut(clean, nreg))
     paper = np.percentile(cl, 90)
-    n_ink = ((paper - cl) > 60) & ~grow(cut(mask, nreg), 3)
+    n_ink = ((paper - cl) > 60) & ~grow(page_mask(mask, bbox, orig.shape, nreg), 3)
     if n_ink.sum() >= 20:
         ch = np.abs(gen.gblur(cut(out, nreg), 1.0) - gen.gblur(cut(orig, nreg), 1.0)).max(-1)
         res["nbr"] = float((ch[n_ink] > NBR_LEVEL).mean())
@@ -359,18 +383,32 @@ def jpeg64(a, q=82) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def sheet_crop(orig, clean, ideal, out, bbox) -> str:
+def sheet_crop(orig, clean, ideal, out, bbox, masks=None) -> str:
     reg = region(bbox, orig.shape)
     parts = [cut(a, reg) for a in (orig, clean, ideal, out)]
     diff = np.clip(np.abs(parts[3] - parts[2]) * 3, 0, 255)
     sep = np.full((3, parts[0].shape[1], 3), 255, np.float32)
-    stack = [x for p in parts + [diff] for x in (p, sep)]
+    extra = []
+    if masks and masks.get("fake") is not None and masks["fake"].shape == parts[3].shape[:2]:
+        vis = parts[3].copy()                                     # run P: the fake's ink blue, what is left of the original red
+        vis[masks["fake"]] = vis[masks["fake"]] * 0.4 + np.array([0, 110, 255], np.float32) * 0.6
+        vis[masks["resid_m"]] = [255, 0, 0]
+        extra = [vis]
+    stack = [x for p in parts + [diff] + extra for x in (p, sep)]
     return jpeg64(np.concatenate(stack, axis=0))
 
 
 def _truth(args):
     spec, texts = args
-    return gen.render_case(spec), gen.render_case(spec, texts=texts)
+    a, b = gen.render_case(spec), gen.render_case(spec, texts=texts)
+    for r in (a["rows"], b["rows"]):
+        for row in r:
+            x0, y0, x1, y1 = row["bbox"]
+            row["mask"] = row["mask"][y0:y1, x0:x1].copy()
+    b.pop("native", None)
+    a.pop("native", None)
+    b.pop("clean", None)
+    return a, b
 
 
 def run_cases(specs: list[dict], log=lambda *a: None, with_crops: bool = False) -> dict:
@@ -416,12 +454,13 @@ def run_cases(specs: list[dict], log=lambda *a: None, with_crops: bool = False) 
                 if out is not None and rec["found"]:
                     rec.update(measure_row(orig, out, r_clean["clean"], r_ideal["with"], bboxes[i]))
                     rec.update(measure_place(orig, out, r_clean["clean"], r_ideal["with"], r_clean["with"],
-                                             r_clean["rows"][i]["mask"], bboxes[i], f.get("items", [])))
+                                             r_clean["rows"][i]["mask"], bboxes[i], f.get("items", []),
+                                             [bb for j, bb in enumerate(bboxes) if j != i]))
                     rec["coll"] = coll
                     rec["edge_ctx"] = ctx
                     rec["edge_rel"] = rec["edge"] / ctx if rec.get("edge") and ctx else None
                     if with_crops:
-                        crops[(name, i)] = sheet_crop(orig, r_clean["clean"], r_ideal["with"], out, bboxes[i])
+                        crops[(name, i)] = sheet_crop(orig, r_clean["clean"], r_ideal["with"], out, bboxes[i], dict(_LAST))
                 records.append(rec)
         return {"records": records, "scan_s": round(scan_s, 1), "anon_s": round(anon_s, 1), "crops": crops,
                 "config_size": len(config)}
@@ -498,9 +537,10 @@ def print_summary(summary: dict, place: bool = False) -> None:
 
 
 def place_badness(r) -> float:
-    """How badly a value is placed (run P): what is left of the original, the shift, the baseline, the size, the neighbours."""
+    """How badly a value is placed (run P): what is left of the original, the shift, the baseline, the size, the neighbours.
+    A value not found has nothing to place: last."""
     if not r["found"]:
-        return 1e9
+        return -1.0
     return (20 * (r.get("resid") or 0) + abs(r.get("x0") or 0) / 4 + abs(r.get("base") or 0) / 2
             + 3 * abs((r.get("xh") or 1) - 1) + 10 * (r.get("nbr") or 0))
 
@@ -514,7 +554,7 @@ def write_sheet(records: list[dict], crops: dict, path: Path, limit: int = 80, b
         return (r.get("bg") or 0) / 10 + (r.get("ink_rel") or 0) + abs(r.get("dy") or 0) / 10
     rows = sorted(records, key=bad, reverse=True)[:limit]
     parts = ["<html><meta charset=utf-8><body style='font:13px sans-serif;background:#eee'>",
-             f"<h3>Worst {len(rows)} values (original / clean / ideal / output / |output - ideal| x3)</h3>"]
+             f"<h3>Worst {len(rows)} values (original / clean / ideal / output / |output - ideal| x3 / output with the fake's ink blue and what is left of the original red)</h3>"]
     for r in rows:
         head = (f"<b>{r['case']}</b> row {r['row']} [{r['split']}] deco={r['deco']} "
                 f"{'MISSED' if not r['found'] else ''} bg={cell(r.get('bg'))} (floor {cell(r.get('floor'))}) "
