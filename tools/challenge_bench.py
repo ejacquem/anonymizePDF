@@ -318,6 +318,10 @@ def measure_place(orig, out, clean, ideal, with0, mask, bbox, items, others=()) 
         band = np.zeros_like(area)
         band[max(rows[0] - int(0.35 * hh), 0):rows[-1] + int(0.35 * hh) + 1] = True
         foreign |= ~band
+    # the other words of the page (labels, the line beside): the scan's letters are not the noiseless truth's, so their
+    # edges differ from `clean` by more than the noise; they are the neighbours' (nbr), never the fake's
+    cl0 = grey(cut(clean, reg))
+    foreign |= grow((np.percentile(cl0, 90) - cl0) > 90, 2)
     foreign &= ~area
     v_ink = ((grey(cut(clean, reg)) - grey(cut(with0, reg))) > INK) & area
     ink_i = ((cg - ig) > INK) & ~foreign
