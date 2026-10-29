@@ -819,7 +819,9 @@ class PageFonts:
         if not own:
             return []
         cx = (box[0] + box[2]) / 2
-        others = [i for i in self.line_words(own) if i not in set(own)]
+        mine = set(own)
+        others = [i for i in self.line_words(own) if i not in mine          # beside the value: its centre in the value's rows
+                  and box[1] <= (self.words[i]["box"][1] + self.words[i]["box"][3]) / 2 <= box[3]]
         return sorted(others, key=lambda i: abs((self.words[i]["box"][0] + self.words[i]["box"][2]) / 2 - cx))[:count]
 
     def _fit_words(self, idx, f: Face, soft: float, baseline: bool = True):

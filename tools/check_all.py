@@ -5200,6 +5200,39 @@ def placement_tests():
           got is not None and got[1] is not None and abs(got[1] - base_of["VIR-7996607)."]) <= 3, (got, base_of["VIR-7996607)."]))
     check("... and its letters are the line's size (within 15 %)", got is not None and abs(got[0] / 30 - 1) <= 0.15
           or got is not None and abs(got[0] / pf.metrics(ws[1]["box"], fontmatch.face("Roboto", False))[0] - 1) <= 0.15, got)
+    # the real case (the challenge page place_tight_verdana9, a leading of 1.0, scanned at 150 dpi): '(réf. VIR-7996607).' was written
+    # 70 % too big on the next line; scan and anonymize the page, measure the fake against the truth (tools/challenge_bench.py)
+    sys.path.insert(0, str(ROOT / "tools"))
+    import challenge_bench as cb
+    from anonymizer import engine
+    from anonymizer.pii import load_ner
+    spec = cb.gen.select(["place_tight_verdana9"])[0]
+    row = [i for i, r in enumerate(spec["rows"]) if r["value"].startswith("VIR-")][0]
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "case"
+        cb.gen.build(folder, [spec], jobs=1)
+        config = engine.scan_folder(folder, folder.name, load_ner(quiet=True), cb.LANG, lambda *a: None)["config"]
+        rep = engine.run_anonymize(folder, folder.name, config, cb.LANG, False, lambda *a: None)
+        reps = cb.replacements_of(config)
+        texts = {i: cb.ideal_text(r["value"], reps) for i, r in enumerate(spec["rows"])}
+        a, b = cb._truth((spec, texts))
+        f = rep["files"][0]
+        orig = cb.render(folder / f"{spec['name']}.pdf", a["clean"].shape)
+        out = cb.render(folder / f["output"], a["clean"].shape)
+        bbs = [r["bbox"] for r in a["rows"]]
+        m = cb.measure_place(orig, out, a["clean"], b["with"], a["with"], a["rows"][row]["mask"], bbs[row], f.get("items", []),
+                             [x for j, x in enumerate(bbs) if j != row])
+    check("a 150 dpi page at a leading of 1.0: the fake of a value glued to a bracket is on its line, in its size "
+          "(baseline within 2 px, height within 15 %)", m.get("base") is not None and abs(m["base"]) <= 2
+          and m.get("xh") is not None and abs(m["xh"] - 1) <= 0.15, m)
+    # the OCR gave all the rows one line id (tight leading): the nearest words of the value's line are then also the next row's,
+    # and only those whose centre is in the value's rows may give its baseline and size
+    shared = [dict(w, line=("l", 0)) for w in ws]
+    pf2 = fontmatch.PageFonts(np.asarray(img), shared, 1.0)
+    got2 = pf2.metrics(vbox, fontmatch.face("Roboto", False))
+    check("... also when the OCR gave all the rows one line id: its baseline is still its row's (not the next rows')",
+          got2 is not None and got2[1] is not None and abs(got2[1] - base_of["VIR-7996607)."]) <= 3
+          and abs(got2[0] / 30 - 1) <= 0.15, (got2, base_of["VIR-7996607)."]))
     # a value whose words fit: its own baseline is kept (the window takes nothing away from a normal word)
     nb = [w["box"] for w in ws if w["text"] == "Hélène"][0]
     got = pf.metrics(nb, fontmatch.face("Roboto", False))
