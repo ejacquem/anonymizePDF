@@ -805,22 +805,39 @@ function centerOn(which, h) {
 async function locateTerm(term) {
   const cur = currentOriginalNode();
   if (!cur || !state.folder) { setStatus("Select a file first", "err"); return; }
+  if (nativeMode()) setViewMode("viewer");
+  const findIn = async (name) => (await api(`/api/find?folder=${encodeURIComponent(state.folder)}&file=${encodeURIComponent(name)}&term=${encodeURIComponent(term)}`)).hits || [];
   const key = cur.name + "|" + term;
   if (termSel.key !== key) {
     try {
-      const r = await api(`/api/find?folder=${encodeURIComponent(state.folder)}&file=${encodeURIComponent(cur.name)}&term=${encodeURIComponent(term)}`);
-      termSel.key = key;
-      termSel.hits = r.hits || [];
+      let hits = await findIn(cur.name), file = cur.name;
+      if (!hits.length) {                                   // not in this file: the first other file of the folder that has it
+        const folder = state.folder;
+        for (const p of originalFiles()) {
+          const name = p.split("/").pop();
+          if (name === cur.name) continue;
+          hits = await findIn(name);
+          if (hits.length) { file = name; break; }
+          if (state.folder !== folder) return;              // the user moved on while searching
+        }
+        if (file !== cur.name) {
+          await openFile((state.folder ? state.folder + "/" : "") + file);
+          await waitFor(() => viewers.orig.pages.length > 0);
+        }
+      }
+      termSel.key = file + "|" + term;
+      termSel.hits = hits;
       termSel.i = -1;
     } catch (e) { setStatus(e.message, "err"); return; }
   }
+  const shown = currentOriginalNode() || cur;
   const n = termSel.hits.length;
-  if (!n) { notify(`“${term}” is not in ${cur.name}`, "err"); return; }
+  if (!n) { notify(`“${term}” is not in ${cur.name} or any other file of the folder`, "err"); return; }
   termSel.i = (termSel.i + 1) % n;
   const h = termSel.hits[termSel.i];
   centerOn("orig", h);
   drawTermFrame(h);
-  setStatus(`“${term}” · place ${termSel.i + 1} of ${n} in ${cur.name} (page ${h.page}), click again for the next one`, "ok");
+  setStatus(`“${term}” · place ${termSel.i + 1} of ${n} in ${shown.name} (page ${h.page}), click again for the next one`, "ok");
 }
 
 function redrawTermFrame() {
