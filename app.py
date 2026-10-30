@@ -6,7 +6,7 @@ Local web app to anonymize PDFs folder by folder.
   then open http://127.0.0.1:5000
 
 Everything stays on your machine: the server only listens on 127.0.0.1 and can only read/write
-inside --root. Original PDFs are never modified; results are written next to them as
+inside --root. Original PDFs are never modified (except by the Rotate buttons); results are written next to them as
 <name>_anonymized.pdf, plus anon_config.yaml and anon_report.json in each folder
 (both contain real personal data - keep them out of git).
 """
@@ -152,6 +152,8 @@ def file_states(d: Path, own: list[dict]) -> None:
             c["status"] = "orange"
         elif cfg_time is not None and (not out.exists() or cfg_time > out.stat().st_mtime):
             c["status"] = "yellow"
+        elif out.exists() and (d / c["name"]).stat().st_mtime > out.stat().st_mtime:
+            c["status"] = "yellow"             # the original changed after the output (rotated): anonymize again
         else:
             c["status"] = None
 
@@ -378,6 +380,89 @@ def find_term():
         return bad(f"Search failed: {e}")
 
 
+def _manual_of(folder: Path, name: str) -> tuple[int, int]:
+    """(black boxes, typed texts) the config of `folder` holds for the file `name`."""
+    cfg = folder / eng.CONFIG_NAME
+    if not cfg.exists():
+        return 0, 0
+    try:
+        c = eng.parse_config(cfg.read_text(encoding="utf-8"))
+    except ValueError:
+        return 0, 0
+    return (sum(1 for b in c["manual_blackouts"] if b["file"] == name),
+            sum(1 for t in c["manual_texts"] if t["file"] == name))
+
+
+@app.post("/api/rotate")
+def rotate_pdf():
+    """Turn every page of an ORIGINAL PDF by 90 / 180 / 270 degrees and save the file in place. This is the one place
+    where an original is modified: the user asked for it, to fix a scan that was saved sideways before anonymizing.
+    The pages keep their content; only the /Rotate entry changes. What was worked out for the old orientation is
+    dropped: the black boxes and typed texts of the file (PDF points of the old page; only with `force`), its review
+    flag and its report entry. The output stays on disk, marked out of date (the original is newer)."""
+    data = request.get_json(force=True)
+    try:
+        folder = folder_arg(data)
+        name = Path(str(data.get("file", ""))).name
+        pdf = folder / name
+        if not pdf.is_file() or pdf.suffix.lower() != ".pdf" or pdf.stem.endswith(eng.SUFFIX):
+            return bad("only an original PDF can be rotated", 400)
+        deg = int(data.get("degrees"))
+        if deg % 90 or deg % 360 == 0:
+            return bad("degrees must be 90, 180 or 270 (or -90)")
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    except (TypeError, ValueError):
+        return bad("bad degrees")
+    if JOB_LOCK.locked():
+        return bad("A scan or anonymization is running: wait for it to end", 409)
+    boxes, texts = _manual_of(folder, name)
+    if (boxes or texts) and not data.get("force"):
+        return jsonify({"error": f"{name} has {boxes} black box(es) and {texts} typed text(s) drawn on its current "
+                                 f"orientation; they would be removed", "manual": {"blackouts": boxes, "texts": texts}}), 409
+    try:
+        with fitz.open(pdf) as doc:
+            if doc.needs_pass:
+                return bad("This PDF is protected by a password")
+            for pg in doc:
+                pg.set_rotation((pg.rotation + deg) % 360)
+            blob = doc.tobytes(garbage=0, deflate=True)
+        tmp = pdf.with_name(pdf.name + ".rotating")
+        tmp.write_bytes(blob)
+        with fitz.open(tmp) as check:                    # the new file must open and keep its pages
+            ok = check.page_count > 0
+        if not ok:
+            tmp.unlink()
+            return bad("The rotated file could not be checked: the original is unchanged", 500)
+        tmp.replace(pdf)
+    except Exception as e:  # noqa: BLE001
+        return bad(f"Rotation failed: {e}", 500)
+    if boxes or texts:
+        cfg = folder / eng.CONFIG_NAME
+        model = configmodel.to_model(cfg.read_text(encoding="utf-8"))
+        man = model.get("manual") or {}
+        man["blackouts"] = [b for b in man.get("blackouts") or [] if b.get("file") != name]
+        man["texts"] = [t for t in man.get("texts") or [] if t.get("file") != name]
+        model["manual"] = man
+        cfg.write_text(configmodel.to_yaml(model, rel_of(folder) or "."), encoding="utf-8")
+    reviews = read_reviews(folder)
+    if reviews.pop(name, None) is not None:
+        (folder / REVIEW_NAME).write_text(json.dumps(reviews, indent=2, ensure_ascii=False), encoding="utf-8")
+    rep = folder / eng.REPORT_NAME
+    if rep.exists():
+        try:
+            report = json.loads(rep.read_text(encoding="utf-8"))
+            kept = [f for f in report.get("files", []) if f.get("file") != name]
+            if len(kept) != len(report.get("files", [])):
+                report["files"] = kept
+                tmp = rep.with_name(rep.name + ".tmp")
+                tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(rep)
+        except (OSError, ValueError):
+            pass
+    return jsonify({"ok": True})
+
+
 @app.get("/api/report")
 def get_report():
     try:
@@ -475,7 +560,8 @@ def folder_status(d: Path) -> dict:
     files = (report or {}).get("files", [])
     reviewed = reviewed_files(d)
     # 'to do' for batch anonymize: no output yet, or the config changed after the last run
-    stale = cfg.exists() and (len(outputs) < len(pdfs) or not rep.exists() or cfg.stat().st_mtime > rep.stat().st_mtime)
+    stale = cfg.exists() and (len(outputs) < len(pdfs) or not rep.exists() or cfg.stat().st_mtime > rep.stat().st_mtime
+                              or any(p.stat().st_mtime > eng.output_of(p).stat().st_mtime for p in outputs))
     return {"path": rel_of(d), "name": d.name or str(d), "pdfs": len(pdfs), "config": cfg.exists(),
             "anonymized": len(outputs), "to_do": bool(stale),
             "leftovers": sum(len(f.get("leftovers", [])) for f in files),

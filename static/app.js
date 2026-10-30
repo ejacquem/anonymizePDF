@@ -1904,6 +1904,8 @@ function updateToolbar() {
   const changes = changedBoxes();
   const nChanges = changes.replaced.length + changes.removed.length;
   btnChanges.disabled = !nChanges;
+  const rotatable = !!cur && !state.running && /\.pdf$/i.test(cur.name);
+  $("#btnRotL").disabled = $("#btnRotR").disabled = !rotatable;
   btnTrace.disabled = !traceBoxes().length;
   btnTrace.title = traceBoxes().length
     ? `Debug: draw the ${traceBoxes().length} area(s) the anonymizer redacted or painted (blue dotted); hover for the rule`
@@ -1916,6 +1918,36 @@ function updateToolbar() {
   $("#btnUndo").disabled = state.running || $("#btnBox").disabled || historyFor(undo.stack) < 0;
   $("#btnRedo").disabled = state.running || $("#btnBox").disabled || historyFor(undo.redo) < 0;
 }
+
+// ---------- rotate the original (the one place where an original file is changed) ----------
+async function rotateOriginal(degrees) {
+  const cur = currentOriginalNode();
+  if (!cur || state.running) return;
+  if (state.dirty && !confirm("The config has unsaved changes. Rotating reloads it: discard them?")) return;
+  const folder = dirname(cur.path);
+  const ask = (force) => post("/api/rotate", { folder, file: cur.name, degrees, force });
+  try {
+    try {
+      await ask(false);
+    } catch (e) {
+      if (!/black box|typed text/.test(e.message)) throw e;
+      if (!confirm(`${e.message}.\n\nRotate anyway and remove them?`)) return;
+      await ask(true);
+    }
+  } catch (e) {
+    notify("Rotation failed: " + e.message, "err");
+    return;
+  }
+  await loadTree();
+  await loadConfig();
+  await loadReport();
+  const path = cur.path;
+  state.file = null;
+  if (state.nodes[path]) await openFile(path);
+  notify(`${cur.name} rotated and saved. Anonymize it again to apply the changes.`);
+}
+$("#btnRotL").onclick = () => rotateOriginal(-90);
+$("#btnRotR").onclick = () => rotateOriginal(90);
 
 // ---------- jobs ----------
 const logLines = [];

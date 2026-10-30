@@ -4507,6 +4507,62 @@ def masked_number_tests():
           and "POSTAL_CITY" not in kinds, kinds)
 
 
+def rotate_tests():
+    """Rotate buttons (app /api/rotate): the one place where an original is changed. Every page turns, the file keeps its
+    pages, the black boxes drawn on the old orientation are removed only after a confirmation (force), the review flag and
+    the report entry of the file go, the output is out of date, an output or a bad angle is refused."""
+    print("\n== rotate: turn an original PDF and save it")
+    import importlib.util
+    import time
+    spec = importlib.util.spec_from_file_location("anon_webapp", ROOT / "app.py")
+    webapp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(webapp)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_rotate_"))
+    saved_root = webapp.STATE["root"]
+    try:
+        d = tmp / "c"
+        d.mkdir()
+        doc = fitz.open()
+        for _ in range(2):
+            doc.new_page(width=400, height=300).insert_text((50, 50), "hello")
+        doc.save(d / "a.pdf")
+        doc.close()
+        (d / "a_anonymized.pdf").write_bytes((d / "a.pdf").read_bytes())
+        (d / "anon_review.json").write_text(json.dumps({"a.pdf": {"at": "x", "sha256": webapp._sha(d / "a_anonymized.pdf")}}))
+        (d / "anon_report.json").write_text(json.dumps({"files": [{"file": "a.pdf"}, {"file": "b.pdf"}]}))
+        time.sleep(0.05)
+        webapp.STATE["root"] = tmp.resolve()
+        client = webapp.app.test_client()
+
+        def rot(deg, **kw):
+            r = client.post("/api/rotate", json={"folder": "c", "file": kw.pop("file", "a.pdf"), "degrees": deg, **kw})
+            return r.status_code, r.get_json()
+
+        def turns():
+            with fitz.open(d / "a.pdf") as x:
+                return [p.rotation for p in x], (x[0].rect.width, x[0].rect.height)
+        check("rotate 90: every page turns, the page is portrait", rot(90)[0] == 200 and turns() == ([90, 90], (300.0, 400.0)), turns())
+        check("rotate -90 brings it back", rot(-90)[0] == 200 and turns()[0] == [0, 0], turns())
+        check("rotate 180 and a bad angle", rot(180)[0] == 200 and turns()[0] == [180, 180] and rot(45)[0] == 400 and rot(0)[0] == 400)
+        check("the review flag and the report entry of the file are gone",
+              "a.pdf" not in json.loads((d / "anon_review.json").read_text())
+              and [f["file"] for f in json.loads((d / "anon_report.json").read_text())["files"]] == ["b.pdf"])
+        tree = client.get("/api/tree").get_json()["children"][0]["children"]
+        check("the output is out of date (yellow dot)", {c["name"]: c.get("status") for c in tree}["a.pdf"] == "yellow", tree)
+        check("an anonymized output is not rotated", rot(90, file="a_anonymized.pdf")[0] == 400)
+        (d / "anon_config.yaml").write_text(
+            'manual_blackouts:\n  - {file: "a.pdf", page: 1, box: [10, 10, 50, 50]}\nreplacements: []\n', encoding="utf-8")
+        before = turns()
+        code, body = rot(90)
+        check("black boxes drawn on the old orientation: asked first, the file is untouched",
+              code == 409 and body["manual"]["blackouts"] == 1 and turns() == before, (code, body))
+        check("with force the boxes are removed and the file turns",
+              rot(90, force=True)[0] == 200 and not engine.parse_config((d / "anon_config.yaml").read_text(encoding="utf-8"))["manual_blackouts"])
+    finally:
+        webapp.STATE["root"] = saved_root
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def export_tests():
     """The ZIP export (app /api/export): only the anonymized outputs, at their folder's path below the selected folder;
     never an original, a config, a report, a review flag or the OCR data. A folder with no output is a message, not an
@@ -5489,7 +5545,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",
