@@ -1679,7 +1679,7 @@ function renderTable() {
   const q = ($("#cfgSearch").value || "").trim().toLowerCase();
   const groups = new Map();
   m.entries.forEach((e, i) => {
-    if (q && !e.find.toLowerCase().includes(q) && !(e.replace || "").toLowerCase().includes(q)) return;
+    if (q && !cfgMatches(e, q)) return;
     if (!groups.has(e.type)) groups.set(e.type, []);
     groups.get(e.type).push(i);
   });
@@ -1720,6 +1720,13 @@ function renderTable() {
   box.querySelectorAll(".gchk").forEach((c) => { c.indeterminate = c.dataset.some === "1"; });
 }
 
+// the search ignores whitespace: "123" finds "1 2 3" (q is already lower case)
+function cfgMatches(e, q) {
+  const flat = (s) => (s || "").toLowerCase().replace(/\s+/g, "");
+  const f = flat(q);
+  return !f || flat(e.find).includes(f) || flat(e.replace).includes(f);
+}
+
 function tableChanged() { setDirty(true); }
 
 // one set of listeners on the container (rows are re-rendered)
@@ -1743,7 +1750,7 @@ $("#cfgTable").addEventListener("change", (ev) => {
   if (t.classList.contains("gchk")) {
     const q = ($("#cfgSearch").value || "").trim().toLowerCase();
     m.entries.forEach((e) => {
-      if (e.removed || e.type !== t.dataset.type || (q && !e.find.toLowerCase().includes(q) && !(e.replace || "").toLowerCase().includes(q))) return;
+      if (e.removed || e.type !== t.dataset.type || (q && !cfgMatches(e, q))) return;
       markOrig(e);
       e.active = t.checked;
     });
