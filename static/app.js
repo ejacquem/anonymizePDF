@@ -1571,7 +1571,7 @@ $("#btnSave").onclick = saveConfig;
 // ---------- review table (edits a model of anon_config.yaml; the YAML file stays the storage) ----------
 const TYPE_LABELS = {
   PERSON: "Names", IBAN: "IBAN", BIC: "BIC", EMAIL: "E-mails", PHONE: "Phones", CREDIT_CARD: "Card numbers",
-  CARD_NUMBER: "Masked card numbers", BE_NATIONAL_NUMBER: "National numbers", BE_VAT: "VAT numbers",
+  CARD_NUMBER: "Masked card numbers", MASKED_NUMBER: "Censored IBAN / account numbers", BE_NATIONAL_NUMBER: "National numbers", BE_VAT: "VAT numbers",
   BE_STRUCTURED_COMM: "Payment references", SEPA_CREDITOR_ID: "Creditor IDs", STREET_ADDRESS: "Streets",
   POSTAL_CITY: "Postcodes / towns", BIRTH_PLACE: "Places of birth", ACCOUNT_NUMBER: "Account numbers",
   BANK_CODE: "Bank codes", DOC_NUMBER: "Document numbers", CONTRACT_REF: "Contract / policy numbers", DATE: "Dates",

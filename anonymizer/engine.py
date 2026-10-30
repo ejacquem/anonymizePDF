@@ -42,7 +42,7 @@ SUFFIX = "_anonymized"
 
 ACTIVE_TYPES = ["IBAN", "EMAIL", "PHONE", "CREDIT_CARD", "BE_NATIONAL_NUMBER", "BE_VAT",
                 "BE_STRUCTURED_COMM", "VAT_NUMBER", "STREET_ADDRESS", "POSTAL_CITY", "ACCOUNT_NUMBER", "BANK_CODE",
-                "CARD_NUMBER", "SEPA_CREDITOR_ID", "CONTRACT_REF", "DOC_NUMBER", "BIRTH_PLACE"]
+                "CARD_NUMBER", "MASKED_NUMBER", "SEPA_CREDITOR_ID", "CONTRACT_REF", "DOC_NUMBER", "BIRTH_PLACE"]
 # their digit groups are also replaced alone (>= 5 digits; >= 4 for the visible ends of a masked card number,
 # which OCR may read without the stars: "6703 **** 4471" or "Carte 6703")
 IBAN_MAX_GAP = 0.2        # the groups of an IBAN written far apart: at most this share of the page width between two groups
@@ -780,6 +780,7 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
     _same_postcode(active)
     _align_contained_numbers(active)
     _align_number_sequences(active)
+    _align_masked_numbers(active)
     # a value already replaced (e.g. a name under a label) is not suggested again as an uncertain NER guess
     active_values = {norm_value(a["value"]) for a in active}
     off = [o for o in off if norm_value(o["value"]) not in active_values]
@@ -1046,6 +1047,54 @@ def _align_number_sequences(active: list[dict]):
                 if piece != c:
                     e["replace"] = _seq_apply(e["value"], piece)
                 break
+
+
+def _mask_compact(v: str) -> str:
+    c = _SEQ_SEP.sub("", v).upper()
+    return c if re.fullmatch(r"[0-9A-Z*•]+", c) else ""
+
+
+def _align_masked_numbers(active: list[dict]):
+    """A censored number ('FR46 XXXX XXXX XXXX XXXX 123', 'N°31 ****/** 21') that fits a known number (every visible
+    character equal, the whole number or, with 4 visible characters or more, a part of a longer one) is written like that
+    number's replacement: the mask and the separators stay, the visible characters become those of the fake at the same
+    places ('FR76 XXXX XXXX XXXX XXXX 321'). The whole-length match comes first, then the longest host, then the
+    alphabetically first, so the order of the list never changes the result. No match: the default fake (the visible
+    digits changed, the mask kept)."""
+    hosts = []
+    for e in active:
+        if e["type"] in _SEQ_HOSTS:
+            c, r = _seq_compact(e["value"]), _seq_compact(e["replace"])
+            if len(c) >= 6 and len(r) == len(c):
+                hosts.append((c, r, e["value"]))
+    for e in active:
+        if e["type"] != "MASKED_NUMBER":
+            continue
+        c = _mask_compact(e["value"])
+        visible = [i for i, ch in enumerate(c) if ch not in "*•X"]
+        if not c or len(visible) < 2:
+            continue
+        best = None
+        for hc, hr, hv in hosts:
+            if len(hc) < len(c) or (len(hc) > len(c) and len(visible) < 4):
+                continue
+            for at in range(len(hc) - len(c) + 1):
+                if all(c[i] == hc[at + i] for i in visible) and all(hr[at + i].isdigit() == hc[at + i].isdigit() for i in visible):
+                    key = (len(hc) != len(c), -len(hc), hv, at)
+                    if best is None or key < best[0]:
+                        best = (key, hr[at:at + len(c)])
+                    break
+        if not best:
+            continue
+        it, out = iter(best[1]), []
+        for ch in e["value"]:
+            if _SEQ_SEP.fullmatch(ch):
+                out.append(ch)
+            else:
+                piece = next(it)
+                out.append(ch if ch in "xX*•" else piece)
+        e["replace"] = "".join(out)
+        e["note"] = "censored number: the visible characters follow the replacement of the number it matches"
 
 
 def _q(s: str) -> str:

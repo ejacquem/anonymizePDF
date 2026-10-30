@@ -4617,6 +4617,67 @@ def number_sequence_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def masked_number_match_tests():
+    """Censored IBANs and accounts (`pii` MASKED_NUMBER, `engine._align_masked_numbers`): found, matched with the known
+    number they hide, written with the same mask and the characters of that number's fake."""
+    print("\n== censored IBAN / account numbers")
+
+    def found(text):
+        return [(m.type, m.value) for m in pii.detect_structured(text)]
+    check("a censored IBAN is found", ("MASKED_NUMBER", "FR46 XXXX XXXX XXXX XXXX 123") in found("IBAN FR46 XXXX XXXX XXXX XXXX 123 ouvert"),
+          found("IBAN FR46 XXXX XXXX XXXX XXXX 123 ouvert"))
+    check("... also with stars", ("MASKED_NUMBER", "BE68 **** **** 7034") in found("BE68 **** **** 7034"), found("BE68 **** **** 7034"))
+    check("a censored account after N° is found", ("MASKED_NUMBER", "31 ****/** 21") in found("N°31 ****/** 21 du client"),
+          found("N°31 ****/** 21 du client"))
+    check("a real IBAN is still an IBAN", ("IBAN", "FR76 3000 6000 0112 3456 7890 189") in found("FR76 3000 6000 0112 3456 7890 189"))
+    check("a masked card is still a card", all(t != "MASKED_NUMBER" for t, _ in found("6703 **** **** 4471")), found("6703 **** **** 4471"))
+    check("a word in capitals is no censored number", not any(t == "MASKED_NUMBER" for t, _ in found("AB12 XXXXXX rapport")))
+
+    def ent(value, replace, typ):
+        return {"type": typ, "value": value, "replace": replace}
+    iban = ent("FR46 1111 2222 3333 4444 123", "FR76 9999 8888 7777 6666 321", "IBAN")
+    m = ent("FR46 XXXX XXXX XXXX XXXX 123", "x", "MASKED_NUMBER")
+    engine._align_masked_numbers([m, iban])
+    check("a censored IBAN keeps its mask and takes the fake's visible characters", m["replace"] == "FR76 XXXX XXXX XXXX XXXX 321", m["replace"])
+    acc = ent("31 4444 55 21", "62 1234 98 54", "ACCOUNT_NUMBER")
+    a = ent("31 ****/** 21", "x", "MASKED_NUMBER")
+    engine._align_masked_numbers([acc, a])
+    check("a censored account matches the account it hides", a["replace"] == "62 ****/** 54", a["replace"])
+    other = ent("31 4444 55 22", "11 1111 11 11", "ACCOUNT_NUMBER")
+    b = ent("31 ****/** 21", "x", "MASKED_NUMBER")
+    engine._align_masked_numbers([other, b])
+    check("no known number fits: the default fake is left alone", b["replace"] == "x", b["replace"])
+    d = ent("FR46 XXXX XXXX XXXX XXXX 123", "x", "MASKED_NUMBER")
+    engine._align_masked_numbers([d, iban])
+    check("whatever the order of the list, the result is the same", d["replace"] == m["replace"], d["replace"])
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        folder = tmp / "client"
+        folder.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 100), "IBAN : FR46 1111 2222 3333 4444 123", fontsize=11)
+        page.insert_text((72, 130), "Ancien compte : FR46 XXXX XXXX XXXX XXXX 123", fontsize=11)
+        page.insert_text((72, 160), "Pour le client Henri Duval", fontsize=11)
+        doc.save(folder / "m.pdf")
+        doc.close()
+        res = engine.scan_folder(folder, "client", [], "fra+eng", lambda msg: None)
+        terms = engine.parse_config(res["config"])["terms"]
+        full = next((r for t, r in terms.items() if t.startswith("FR46 1111")), None)
+        mask = next((r for t, r in terms.items() if t.startswith("FR46 XXXX")), None)
+        check("scan: both the IBAN and the censored one are in the config", full is not None and mask is not None, sorted(terms))
+        if full and mask:
+            check("scan: the censored fake is the IBAN's fake with the middle masked",
+                  mask == full[:4] + " XXXX XXXX XXXX XXXX " + full[-3:], (mask, full))
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda msg: None)
+        text = " ".join(fitz.open(folder / "m_anonymized.pdf")[0].get_text().split())
+        check("anonymized: the visible '123' and '46' of the censored IBAN are gone", "FR46" not in text and not re.search(r"XXXX\s*123", text), text)
+        check("anonymized: the censored IBAN stays censored", text.count("XXXX") >= 4, text)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def ocr_mode_tests():
     """'As OCR' button (app /api/ocrmode): a digital PDF the user marks is processed as a scan, page by page, whatever its
     text layer says; the flag is kept per file in anon_ocrmode.json, resets the file's review flag and report entry, makes its
@@ -5710,7 +5771,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

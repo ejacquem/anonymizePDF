@@ -21,7 +21,7 @@ SETTINGS_DEFAULT = {
     "font_match": True, "quality_match": True,
     "photos": True, "photos_only_on_id_documents": False, "signatures": True, "qr_codes": True, "mrz": "regenerate",
 }
-TYPE_ORDER = ["PERSON", "IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "CARD_NUMBER", "BE_NATIONAL_NUMBER", "BE_VAT", "VAT_NUMBER",
+TYPE_ORDER = ["PERSON", "IBAN", "BIC", "EMAIL", "PHONE", "CREDIT_CARD", "CARD_NUMBER", "MASKED_NUMBER", "BE_NATIONAL_NUMBER", "BE_VAT", "VAT_NUMBER",
               "BE_STRUCTURED_COMM", "SEPA_CREDITOR_ID", "STREET_ADDRESS", "POSTAL_CITY", "BIRTH_PLACE", "ACCOUNT_NUMBER",
               "BANK_CODE", "DOC_NUMBER", "CONTRACT_REF", "DATE", "TERM", "ORG", "LOCATION"]
 _ENTRY = re.compile(r"^\s*(?P<c>#\s*)?-\s*(?P<map>\{.*\})(?:\s*#\s?(?P<info>.*))?\s*$")

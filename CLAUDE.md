@@ -506,6 +506,13 @@ Order must never change a result (`order_tests`): a value written with several s
   A bare 'N°' (or 'Nr') followed by groups of digits that may hold one or two capitals ('N° 01 A 123 45 B', 6 digits at least; not a
   date, not a phone in pairs) is an ACCOUNT_NUMBER (`pii._v_number_label`). Limit: each spelling must be detected to be listed; a
   spelling the detectors miss is not added to the config.
+- Censored numbers (type MASKED_NUMBER, `pii.masked_ok`, `engine._align_masked_numbers`, test `masked_number_match_tests`): an IBAN
+  or account already masked ('FR46 XXXX XXXX XXXX XXXX 123', 'BE68 **** **** 7034', 'N°31 ****/** 21' after N° / compte / RIB /
+  numéro) is detected (3 mask characters at least, 2 visible digits; an IBAN shape with a country code, 12 characters or more). At
+  the end of the scan it is matched with the known IBAN / account / bank code / reference whose visible characters are all equal
+  (the whole length first, else a part of a longer number with 4 visible characters or more; longest host, then alphabetical) and
+  written with the same mask and separators and the characters of that number's fake at the same places ('FR76 XXXX XXXX XXXX XXXX
+  321'). No match: the default fake (`digit_groups`: visible digits changed, mask kept). A masked card keeps CARD_NUMBER.
 - Words far apart on a line are not one number (`pii.FAR_GAP`, `_far_apart`, in `words_to_text`): a gap of more than 2 word heights
   between two words of a line is a line break in the page text, so a policy number is not joined to the price at the other end of the
   row. The IBAN written with each group in its own box is read on the rows of the page (`engine._detect_words`, `layout.rows(max_width=)`)

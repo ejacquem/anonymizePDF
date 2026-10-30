@@ -859,7 +859,7 @@ class Faker:
             return self.credit_card(value)
         if typ == "CONTRACT_REF" and re.search(r"[^\W\d_]", re.sub(r"[xX*•]{4,}", "", value)):
             return self.reference(value)             # letters and digits: the letters change too
-        if typ in ("ACCOUNT_NUMBER", "BANK_CODE", "CARD_NUMBER", "CONTRACT_REF"):
+        if typ in ("ACCOUNT_NUMBER", "BANK_CODE", "CARD_NUMBER", "CONTRACT_REF", "MASKED_NUMBER"):
             return self.digit_groups(value)          # masks ('****', 'x') and separators are kept
         if typ == "SEPA_CREDITOR_ID":
             return self.sepa_creditor(value)

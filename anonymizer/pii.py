@@ -148,6 +148,30 @@ def _v_group1(m):
     return m.start(1), m.end(1)
 
 
+MASK_CHARS = "xX*•"
+
+
+def masked_ok(v: str, country: bool) -> bool:
+    """A censored number: a run of at least 3 mask characters next to visible digits (an IBAN: a country code, 12
+    characters or more, at least 2 of them visible digits after the check digits; an account: 6 characters or more,
+    2 visible digits)."""
+    c = re.sub(r"[ \t.\-/]", "", v)
+    masks = sum(ch in MASK_CHARS for ch in c)
+    digits = sum(ch.isdigit() for ch in (c[4:] if country else c))
+    return masks >= 3 and digits >= 2 and len(c) >= (12 if country else 6)
+
+
+def _v_masked(m):
+    return (m.start(), m.end()) if masked_ok(m.group(), True) else None
+
+
+def _v_masked_group1(m):
+    v = m.group(1)
+    if _DATE_LIKE.fullmatch(v) or not masked_ok(v, False):
+        return None
+    return m.start(1), m.end(1)
+
+
 def _v_labeled(m):
     """Value after a label (group 1): at least 5 digits, not a placeholder."""
     d = re.sub(r"\D", "", m.group(1))
@@ -419,6 +443,12 @@ DETECTORS = [
     ("CARD_NUMBER", re.compile(r"(?<![\w*])\d{4}(?:[ \-]{0,3}[\dOo]{0,2}[xX*•]{2,}[\dOo]{0,2}){1,3}[ \-]{0,3}\d{4}(?!\d)"), None),
     ("CARD_NUMBER", re.compile(r"(?i:carte|card|kaart)(?:\s*n[°o]\.?)?\s*[:\-]?\s*((?:[xX*•]{1,12}[ ]?)\d{4})(?!\d)"),
      _v_group1),
+    # an IBAN or an account already censored ('FR46 XXXX XXXX XXXX XXXX 123', 'N°31 ****/** 21'): the mask is kept in the
+    # fake, and the engine gives the visible characters those of the fake of the known number it matches
+    ("MASKED_NUMBER", re.compile(r"(?<![A-Za-z0-9*•])[A-Z]{2}[\dXx*•]{2}(?:[ \t]{0,3}[\dXx*•]{1,4}){3,8}(?![A-Za-z0-9*•])"),
+     _v_masked),
+    ("MASKED_NUMBER", re.compile(r"(?<![\w*•])(?i:n[°o]|nr|compte|account|rib|num[ée]ro)\.?[ \t]*[:\-]?[ \t]*"
+                                 r"([\dXx*•][\dXx*•]?(?:[ .\-/]{0,2}[\dXx*•]{1,6}){1,8})(?![\w*•])"), _v_masked_group1),
     # a reference with letters and digits after its label: 'REF : 5483651240000XA3'
     ("CONTRACT_REF", re.compile(r"(?<!\w)(?i:r[ée]f(?:[ée]rence)?|ref)\.?\s*(?:n[°o]\.?\s*)?[:\-]?\s*"
                                 r"([A-Z0-9][A-Z0-9\-/]{5,}[A-Z0-9])(?![\w])"), _v_reference),
