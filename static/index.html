@@ -61,7 +61,8 @@
         <button id="btnOcr" class="mini" disabled title="Treat this PDF as a scan: every page is read by OCR and rebuilt as an image, whatever its text layer says. For a digital PDF whose replaced text lands at the wrong place. Click again to go back. Then anonymize again.">As OCR</button>
         <button id="btnRotL" class="mini" disabled aria-label="Rotate left" title="Rotate the original PDF 90° counter-clockwise and SAVE it (the original file is changed). Then anonymize again.">⟲</button>
         <button id="btnRotR" class="mini" disabled aria-label="Rotate right" title="Rotate the original PDF 90° clockwise and SAVE it (the original file is changed). Then anonymize again.">⟳</button>
-        <button id="btnTrace" class="mini" disabled>Trace</button>
+        <button id="btnTrace" class="mini" style="display:none" disabled>Trace</button> <!-- hidden, not removed: delete the style to show it again -->
+
         <button id="btnChanges" class="mini" disabled title="Frame each replaced field (orange) and each removed area (purple, dashed), in both panes">Changes</button>
         <div class="seg viewmode" title="Viewer: the pages as images, both PDFs zoom and scroll together.&#10;PDF: the browser's own PDF viewer (text can be selected, copied, searched).">
           <button id="modeViewer" data-mode="viewer" class="on">Viewer</button><button id="modePdf" data-mode="pdf">PDF</button>
