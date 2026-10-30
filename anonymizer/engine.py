@@ -45,6 +45,7 @@ ACTIVE_TYPES = ["IBAN", "EMAIL", "PHONE", "CREDIT_CARD", "BE_NATIONAL_NUMBER", "
                 "CARD_NUMBER", "SEPA_CREDITOR_ID", "CONTRACT_REF", "DOC_NUMBER", "BIRTH_PLACE"]
 # their digit groups are also replaced alone (>= 5 digits; >= 4 for the visible ends of a masked card number,
 # which OCR may read without the stars: "6703 **** 4471" or "Carte 6703")
+IBAN_MAX_GAP = 0.2        # the groups of an IBAN written far apart: at most this share of the page width between two groups
 SPLIT_TYPES = {"ACCOUNT_NUMBER": 5, "BANK_CODE": 5, "CARD_NUMBER": 4}
 TYPE_ORDER = ["PERSON"] + ACTIVE_TYPES + ["DATE", "ORG", "LOCATION"]
 
@@ -417,7 +418,10 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
     # an IBAN whose groups sit on one row, but whose words the page text puts on several lines (a table cell, an OCR
     # that cut the row): each row is read on its own, and the IBANs it has that the page text did not give are added
     known = {norm_value(m.value) for m in matches if m.type == "IBAN"}
-    for row in layout.rows(words, max_gap=None):          # the whole row: each group of an IBAN may be in its own box
+    # the whole row: each group of an IBAN may be in its own box, but no further apart than IBAN_MAX_GAP of the page width
+    # (a number at the left is not joined to one at the right, even in the same row)
+    page_w = max((w["box"][2] for w in words), default=0) - min((w["box"][0] for w in words), default=0)
+    for row in layout.rows(words, max_gap=None, max_width=IBAN_MAX_GAP * page_w):
         row_text = " ".join(words[i]["text"] for i in row["idx"])
         if ocr_page:
             row_text = ocr.fix_digits(row_text)
@@ -775,6 +779,7 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
                        "pages": f["pages"], "replace": fake.group(), "note": f"postcode of '{f['value']}'"})
     _same_postcode(active)
     _align_contained_numbers(active)
+    _align_number_sequences(active)
     # a value already replaced (e.g. a name under a label) is not suggested again as an uncertain NER guess
     active_values = {norm_value(a["value"]) for a in active}
     off = [o for o in off if norm_value(o["value"]) not in active_values]
@@ -996,6 +1001,51 @@ def _align_contained_numbers(active: list[dict]):
         piece = h["replace"][i:i + len(e["value"])]
         if piece != e["value"]:
             e["replace"] = piece
+
+
+_SEQ_SEP = re.compile(r"[ .\-/'’°]")
+_SEQ_HOSTS = {"IBAN", "ACCOUNT_NUMBER", "BANK_CODE", "CONTRACT_REF"}
+_SEQ_PARTS = {"ACCOUNT_NUMBER", "BANK_CODE", "CONTRACT_REF"}      # types with no check digits of their own
+
+
+def _seq_compact(v: str) -> str:
+    """The letters and digits of a number, without its separators: '34 456 79 99' -> '344567999'."""
+    c = _SEQ_SEP.sub("", v).upper()
+    return c if re.fullmatch(r"[0-9A-Z]+", c) and not re.search(r"X{3,}", c) else ""
+
+
+def _seq_apply(shape: str, piece: str) -> str:
+    """`piece` written with the separators of `shape` ('34 456 79 99' and '3445679xx' -> '34 456 79 xx')."""
+    it = iter(piece)
+    return "".join(next(it) if ch.isalnum() else ch for ch in shape)
+
+
+def _align_number_sequences(active: list[dict]):
+    """A number that is the same digits as, or a part of, another number takes the matching part of that number's
+    replacement, whatever its spacing: an account '34 456 79 99' that ends the IBAN 'FR76 1234 4567 1234 4567 999',
+    'N° 0123 45 67' and 'contrat : 01234567'. Letters count ('01 A 123 45 B'). Longest first, so a host is settled before
+    what it holds; of two spellings of the same digits the alphabetically first one is the host. Only numbers of at
+    least 6 characters with 5 digits (a shorter run is too often a coincidence), and only types with no check digits
+    of their own take a part (an IBAN, a card or a national number keeps its valid replacement)."""
+    cands = []
+    for e in active:
+        c = _seq_compact(e["value"]) if e["type"] in _SEQ_HOSTS else ""
+        r = _seq_compact(e["replace"])
+        if len(c) >= 6 and sum(ch.isdigit() for ch in c) >= 5 and len(r) == len(c):
+            cands.append((c, e))
+    cands.sort(key=lambda t: (-len(t[0]), t[1]["value"]))
+    for i, (c, e) in enumerate(cands):
+        if e["type"] not in _SEQ_PARTS:
+            continue
+        for hc, h in cands[:i]:
+            at = hc.find(c)
+            if at < 0 or h["value"] == e["value"]:
+                continue
+            piece = _seq_compact(h["replace"])[at:at + len(c)]
+            if len(piece) == len(c) and all(a.isdigit() == b.isdigit() for a, b in zip(c, piece)):
+                if piece != c:
+                    e["replace"] = _seq_apply(e["value"], piece)
+                break
 
 
 def _q(s: str) -> str:

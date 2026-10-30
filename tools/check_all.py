@@ -4507,6 +4507,116 @@ def masked_number_tests():
           and "POSTAL_CITY" not in kinds, kinds)
 
 
+def number_sequence_tests():
+    """Numbers that share digits agree (`engine._align_number_sequences`, the 'N°' detector): an account that ends an IBAN
+    takes the IBAN's digits, an account with letters inside is found, the same digits spaced differently get the same
+    replacement; short runs, phones and dates are left alone."""
+    print("\n== numbers that share a sequence of digits")
+
+    def found(text):
+        return [(m.type, m.value) for m in pii.detect_structured(text)]
+    check("'N° 01 A 123 45 B' (letters inside) is found whole", ("ACCOUNT_NUMBER", "01 A 123 45 B") in found("Compte N° 01 A 123 45 B ouvert"),
+          found("Compte N° 01 A 123 45 B ouvert"))
+    check("'N° 0123 45 67' is found", ("ACCOUNT_NUMBER", "0123 45 67") in found("Contrat N° 0123 45 67 du client"))
+    check("'N° 34 456 79 99' is found", ("ACCOUNT_NUMBER", "34 456 79 99") in found("n° 34 456 79 99"))
+    check("a street number after N° is no account", not any(t == "ACCOUNT_NUMBER" for t, _ in found("N° 12 AVENUE FOCH")))
+    check("a phone written in pairs after N° is no account", not any(t == "ACCOUNT_NUMBER" for t, _ in found("Tel N° 01 23 45 67 89")))
+    check("a date after N° is no account", not any(t == "ACCOUNT_NUMBER" for t, _ in found("N° 12 05 2024")))
+    check("the words of the sentence are not taken with the number",
+          ("ACCOUNT_NUMBER", "0123 45 67") in found("N° 0123 45 67 AVENUE du Centre"), found("N° 0123 45 67 AVENUE du Centre"))
+
+    def row(items, line=0, y=100.0):
+        return [{"text": t, "box": [x, y, x + 6.0 * len(t), y + 10.0], "line": line} for t, x in items]
+
+    def kinds(words, ocr_page=False):
+        found = {}
+        engine._detect_words(found, {}, {}, words, ocr_page, None, "f.pdf", 1)
+        return sorted((e["type"], e["value"]) for e in found.values())
+    page = row([("Contrat", 40), ("45.118.902", 100)]) + row([("Prix", 480), ("123,45", 520)]) + row([("x", 590)], line=5, y=700.0)
+    got = kinds(page)
+    check("a policy number is not joined to the digits of a price at the other end of the row",
+          not any("123" in v for t, v in got) and any(v == "45.118.902" for t, v in got), got)
+    near = row([("Contrat", 40), ("45.118.902", 100), ("123", 165)])
+    check("... but the same digits next to it (a space) are still one number",
+          any(v == "45.118.902 123" for t, v in kinds(near)), kinds(near))
+    far = row([("N°", 40), ("0123", 80), ("45", 480), ("67", 520)]) + row([("x", 590)], line=5, y=700.0)
+    check("two groups of an account at the far ends of a row are two numbers", not any("0123 45" in v for t, v in kinds(far)), kinds(far))
+    def iban_row(groups, step):
+        return row([(g, 40 + i * step) for i, g in enumerate(groups)]) + row([("x", 1000)], line=5, y=700.0)
+    fr = ["FR76", "3000", "6000", "0112", "3456", "7890", "189"]
+    be = ["BE68", "5390", "0754", "7034"]
+    check("an IBAN with each group in its own box, spread over the row, is found",
+          any(t == "IBAN" for t, _ in kinds(iban_row(fr, 70))), kinds(iban_row(fr, 70)))
+    check("... also when the groups are 15 % of the page apart", any(t == "IBAN" for t, _ in kinds(iban_row(be, 150))), kinds(iban_row(be, 150)))
+    check("... but not when the groups are further apart than a fifth of the page", not any(t == "IBAN" for t, _ in kinds(iban_row(be, 250))),
+          kinds(iban_row(be, 250)))
+    check("the gap between two words of a line far apart is a line break in the page text, a space is not",
+          pii.words_to_text(row([("a", 0), ("b", 200)]))[0] == "a\nb" and pii.words_to_text(row([("a", 0), ("b", 8)]))[0] == "a b")
+
+    def ent(value, replace, typ="ACCOUNT_NUMBER"):
+        return {"type": typ, "value": value, "replace": replace}
+    iban = ent("FR76 1234 4567 1234 4567 999", "FR21 9876 5432 1098 7654 321", "IBAN")
+    acc = ent("34 456 79 99", "00 000 00 00")
+    engine._align_number_sequences([acc, iban])
+    check("an account that ends the IBAN takes the IBAN's digits",
+          re.sub(r"\D", "", acc["replace"]) == re.sub(r"\D", "", iban["replace"])[-9:], (acc["replace"], iban["replace"]))
+    check("... and keeps the spacing of the original", re.fullmatch(r"\d\d \d{3} \d\d \d\d", acc["replace"]) is not None, acc["replace"])
+    check("the IBAN is untouched", iban["replace"] == "FR21 9876 5432 1098 7654 321")
+    a, b = ent("0123 45 67", "1111 11 11"), ent("01234567", "9999 9999", "CONTRACT_REF")
+    engine._align_number_sequences([b, a])
+    check("the same digits spaced differently get the same digits (whatever the order of the list)",
+          re.sub(r"\D", "", a["replace"]) == re.sub(r"\D", "", b["replace"]) and a["replace"][4] == " ", (a["replace"], b["replace"]))
+    a2, b2 = ent("0123 45 67", "1111 11 11"), ent("01234567", "9999 9999", "CONTRACT_REF")
+    engine._align_number_sequences([a2, b2])
+    check("... and the order of the list does not change the result", (a["replace"], b["replace"]) == (a2["replace"], b2["replace"]))
+    x, y = ent("01 A 123 45 B", "55 K 678 90 Z"), ent("01A12345B", "00A00000B")
+    engine._align_number_sequences([y, x])
+    check("letters count: '01 A 123 45 B' and '01A12345B' agree", y["replace"] == "55K67890Z", y["replace"])
+    short, host = ent("12345", "99999"), ent("0012345678", "7777777777")
+    engine._align_number_sequences([short, host])
+    check("a run of 5 digits is left alone", short["replace"] == "99999")
+    card = ent("4970 1234 5678 9012", "4970 0000 1111 2222", "CREDIT_CARD")
+    part = ent("5678 9012", "0000 0000")
+    engine._align_number_sequences([card, part])
+    check("only account, bank-code and reference types take a part", part["replace"] == "0000 0000")
+    other = ent("987 654 321", "111 111 111")
+    z = ent("34 456 79 99", "22 222 22 22")
+    engine._align_number_sequences([iban, other, z])
+    check("a number that is in no other keeps its replacement", other["replace"] == "111 111 111")
+    tmp = Path(tempfile.mkdtemp(prefix="anon_seq_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        folder = tmp / "client"
+        folder.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 90), "IBAN FR76 1234 4567 1234 4567 999", fontsize=11)
+        page.insert_text((72, 120), "Compte n° 34 456 79 99 ouvert", fontsize=11)
+        page.insert_text((72, 150), "Contrat N° 0123 45 67 et contrat : 01234567", fontsize=11)
+        page.insert_text((72, 180), "Dossier N° 01 A 123 45 B", fontsize=11)
+        doc.save(folder / "l.pdf")
+        doc.close()
+        res = engine.scan_folder(folder, "client", [], "fra+eng", lambda m: None)
+        terms = engine.parse_config(res["config"])["terms"]
+        dig = lambda v: re.sub(r"\D", "", v)
+        ib = next((r for t, r in terms.items() if t.startswith("FR") and dig(t) == "76123445671234456799 9".replace(" ", "")), None)
+        ac = next((r for t, r in terms.items() if t.replace(" ", "") == "344567999"), None)
+        check("scan: the IBAN and the account are both in the config", ib is not None and ac is not None, sorted(terms))
+        if ib and ac:
+            check("scan: the account is the end of the IBAN's replacement", dig(ac) == dig(ib)[-9:], (ac, ib))
+        s1 = next((r for t, r in terms.items() if t.replace(" ", "") == "01234567" and " " in t), None)
+        s2 = next((r for t, r in terms.items() if t.replace(" ", "") == "01234567" and " " not in t), None)
+        check("scan: '0123 45 67' and '01234567' have the same digits", s1 is not None and s2 is not None and dig(s1) == dig(s2),
+              sorted(terms))
+        check("scan: the account with letters inside is found", any(t.replace(" ", "") == "01A12345B" for t in terms), sorted(terms))
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        engine.run_anonymize(folder, "client", res["config"], "fra+eng", False, lambda m: None)
+        text = " ".join(fitz.open(folder / "l_anonymized.pdf")[0].get_text().split())
+        check("anonymized: no original number is left", not any(x in text.replace(" ", "") for x in ("344567999", "01234567", "01A12345B")), text)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def rotate_tests():
     """Rotate buttons (app /api/rotate): the one place where an original is changed. Every page turns, the file keeps its
     pages, the black boxes drawn on the old orientation are removed only after a confirmation (force), the review flag and
@@ -5545,7 +5655,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "number_sequence_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

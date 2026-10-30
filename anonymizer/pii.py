@@ -213,6 +213,18 @@ def _v_id_labeled(m):
     return m.start(1), m.end(1)
 
 
+def _v_number_label(m):
+    """A number after 'N°' (group 1): 6 digits or more, not a date, not a placeholder, not a phone number written in
+    pairs ('N° 01 23 45 67 89')."""
+    v = m.group(1)
+    d = re.sub(r"\D", "", v)
+    if len(d) < 6 or d.count("0") >= len(d) - 1 or _DATE_LIKE.fullmatch(v):
+        return None
+    if re.fullmatch(r"0\d(?:[ .\-]\d{2}){4}", v) or re.fullmatch(r"\d{1,2}[ .\-/]\d{1,2}[ .\-/]\d{2,4}", v):
+        return None
+    return m.start(1), m.end(1)
+
+
 def _v_account_labeled(m):
     """An account number after its label, but not a date written after it ('Numéro de compte 07/09/2024')."""
     if _DATE_LIKE.fullmatch(m.group(1)):
@@ -516,6 +528,11 @@ DETECTORS = [
     # in groups ('REF.MANDAT: 123456789CFEECFTE123456789', 'identifiant client 12 1234 5678', 'LIBELLE: 1234567890123')
     ("CONTRACT_REF", re.compile(_ID_LABEL + r"[ \t]*[:\-]?[ \t]*((?=[0-9A-Z]*\d)[0-9A-Z]+(?:[ ./\-][0-9A-Z]+){0,5})(?![\w,])"),
      _v_id_labeled),
+    # a number after a bare 'N°', in groups that may hold letters: 'N° 01 A 123 45 B', 'N° 0123 45 67' (6 digits or more; a
+    # group of letters is one or two capitals, so a word of the sentence is not taken)
+    ("ACCOUNT_NUMBER", re.compile(r"(?<![\w])(?i:n[°o]|nr\.?)[ \t]*[:\-]?[ \t]*"
+                                  r"(\d+[A-Z]{0,2}(?:[ .\-/](?:\d+[A-Z]{0,2}|[A-Z]{1,2}(?![A-Za-z]))){1,7})(?![\w,])"),
+     _v_number_label),
     # an account number with a check letter, without label: '0012345Y', '12345 Y' (five digits or more, one capital)
     # glued to its letter ('000012345Y'): a word of the sentence may follow ('N° 000012345Y du client'); with a space
     # ('12345 Y') the capital must not start a word of the sentence ('12345 Y compris')
@@ -967,15 +984,27 @@ def _cut_words(words: list[dict]) -> set[int]:
     return out
 
 
+FAR_GAP = 2.0       # a gap of more than this many word heights between two words of a line: another cell, not a space
+
+
+def _far_apart(a: dict, b: dict) -> bool:
+    """Two words of one line with a wide gap between them (two columns of a table, a label and a price at the other
+    end of the row). Their numbers are not one number: the text puts a line break between them."""
+    h = max(a["box"][3] - a["box"][1], b["box"][3] - b["box"][1], 1.0)
+    return b["box"][0] - a["box"][2] > FAR_GAP * h
+
+
 def words_to_text(words: list[dict]):
-    """Join words into one string (space inside a line, newline between lines)
-    and remember each word's character span. Unicode dashes are written as '-'.
-    A word cut across two lines is written joined (see _cut_words): one word for the detectors."""
+    """Join words into one string (space inside a line, newline between lines or between two words far apart on a
+    line) and remember each word's character span. Unicode dashes are written as '-'.
+    A word cut across two lines is written joined (see _cut_words): one word for the detectors. An IBAN written with
+    its groups far apart is found by `engine._detect_words` on the rows of the page, with a limit on the distance."""
     cut = _cut_words(words)
     parts, spans, pos, prev = [], [], 0, None
     for i, w in enumerate(words):
         if prev is not None:
-            sep = "" if (i - 1) in cut else (" " if w["line"] == prev else "\n")
+            sep = "" if (i - 1) in cut else (
+                ("\n" if _far_apart(words[i - 1], w) else " ") if w["line"] == prev else "\n")
             parts.append(sep)
             pos += len(sep)
         parts.append(w["text"].translate(_DASHES))

@@ -491,6 +491,19 @@ Order must never change a result (`order_tests`): a value written with several s
   `words_to_text`) only when the joined word (6 letters or more, letters only) is written whole elsewhere on the same page
   ('JACQUEMIN LUCAS'). Without that evidence the lines stay apart. Tests: `split_word_tests`. A real
   PDF used U+2010 inside a national number and hid it from every detector.
+- Numbers that share a sequence (`engine._align_number_sequences`, after `_align_contained_numbers`, test `number_sequence_tests`): a
+  number whose letters and digits (separators dropped: `_seq_compact`) are the same as, or a part of, another number's takes that
+  number's replacement for the same positions, written with its own spacing. Hosts: IBAN, ACCOUNT_NUMBER, BANK_CODE, CONTRACT_REF;
+  only ACCOUNT_NUMBER / BANK_CODE / CONTRACT_REF take a part (no check digits to break); 6 characters and 5 digits at least; longest
+  first, equal digits: the alphabetically first spelling is the host (the order of the list never changes the result). So the
+  account '34 456 79 99' that ends 'FR76 1234 4567 1234 4567 999' ends its fake IBAN too, and '0123 45 67' / '01234567' agree.
+  A bare 'N°' (or 'Nr') followed by groups of digits that may hold one or two capitals ('N° 01 A 123 45 B', 6 digits at least; not a
+  date, not a phone in pairs) is an ACCOUNT_NUMBER (`pii._v_number_label`). Limit: each spelling must be detected to be listed; a
+  spelling the detectors miss is not added to the config.
+- Words far apart on a line are not one number (`pii.FAR_GAP`, `_far_apart`, in `words_to_text`): a gap of more than 2 word heights
+  between two words of a line is a line break in the page text, so a policy number is not joined to the price at the other end of the
+  row. The IBAN written with each group in its own box is read on the rows of the page (`engine._detect_words`, `layout.rows(max_width=)`)
+  with at most `engine.IBAN_MAX_GAP` (20 %) of the page width between two groups. Tests: `number_sequence_tests`.
 - Split types: groups of ≥ 5 digits of ACCOUNT_NUMBER / BANK_CODE and ≥ 4 digits of masked CARD_NUMBER are also
   separate entries (OCR may drop the stars); digit groups get the same fake everywhere (`Faker.digit_groups`; leading zeros stay and do not count: `000012345Y` and `12345 Y` get the same digits, an account glued to its letter is found also in a sentence).
 - Dates are active only for birth dates (`_BIRTH_RX` within 35 chars before / 8 after, or a birth-date label).

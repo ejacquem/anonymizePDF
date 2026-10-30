@@ -59,11 +59,31 @@ def _segments(words: list[dict], max_gap: float = GAP_SPLIT) -> list[dict]:
     return segments
 
 
-def rows(words: list[dict], max_gap: float | None = GAP_SPLIT) -> list[dict]:
+def rows(words: list[dict], max_gap: float | None = GAP_SPLIT, max_width: float | None = None) -> list[dict]:
     """The rows of the page, whatever line each word was given: {"idx": [word indices, left to right], "box", "h"}.
     A row is cut where the gap between two words is over `max_gap` word heights (two columns); None: never cut (the
-    words of one row, whatever the gaps: the groups of an IBAN written each in its own box)."""
-    return _segments(words, max_gap if max_gap is not None else float("inf"))
+    words of one row, whatever the gaps: the groups of an IBAN written each in its own box). `max_width` (page units)
+    cuts a row wherever a gap is wider, with or without `max_gap`."""
+    segs = _segments(words, max_gap if max_gap is not None else float("inf"))
+    if max_width is None:
+        return segs
+    out = []
+    for s in segs:
+        part = [s["idx"][0]]
+        for a, b in zip(s["idx"], s["idx"][1:]):
+            if words[b]["box"][0] - words[a]["box"][2] > max_width:
+                out.append(_segment(words, part))
+                part = []
+            part.append(b)
+        out.append(_segment(words, part))
+    return out
+
+
+def _segment(words: list[dict], part: list[int]) -> dict:
+    boxes = [words[i]["box"] for i in part]
+    return {"idx": part, "box": [min(b[0] for b in boxes), min(b[1] for b in boxes),
+                                 max(b[2] for b in boxes), max(b[3] for b in boxes)],
+            "h": statistics.median(_h(b) for b in boxes)}
 
 
 def _joins(prev: dict, line: dict) -> bool:
