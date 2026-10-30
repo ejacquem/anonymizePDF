@@ -25,7 +25,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from anonymizer import engine as eng
-from anonymizer import configmodel, ocr, ocrdata, secret, verify
+from anonymizer import configmodel, ocr, ocrdata, ocrview, secret, verify
 from anonymizer.pii import fitz, load_ner
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -382,6 +382,37 @@ def find_term():
         return jsonify({"hits": hits})
     except Exception as e:  # noqa: BLE001
         return bad(f"Search failed: {e}")
+
+
+@app.get("/api/ocrview")
+def ocr_view():
+    """What the OCR returned for one page of an original (OCR viewer): {source, initial, final} with the words and their
+    boxes in PDF points. The final words are the saved ones (anon_ocr.json) when they are there, else they are read and saved."""
+    try:
+        folder = folder_arg(request.args)
+        pdf = folder / Path(request.args.get("file", "")).name
+        if not pdf.is_file():
+            return bad("file not found", 404)
+        pno = int(request.args.get("page", "1"))
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    except ValueError:
+        return bad("bad page")
+    try:
+        lang, engine_id = STATE["ocr_lang"], str(ocr.engine())
+        sha, saved = ocrdata.lookup(folder, pdf, engine_id, lang)
+        doc = fitz.open(pdf)
+        try:
+            if not 1 <= pno <= len(doc):
+                return bad("no such page", 404)
+            view, read = ocrview.page_view(doc[pno - 1], lang, saved.get(pno))
+        finally:
+            doc.close()
+        if read is not None:
+            ocrdata.store(folder, pdf.name, sha, engine_id, lang, {pno: read})
+        return jsonify(view)
+    except Exception as e:  # noqa: BLE001
+        return bad(f"OCR view failed: {e}")
 
 
 def _manual_of(folder: Path, name: str) -> tuple[int, int]:

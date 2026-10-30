@@ -4858,6 +4858,60 @@ def export_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def ocr_view_tests():
+    """The OCR viewer (`ocrview`, app /api/ocrview): the first pass and the final reading are compared place by place
+    (same / changed / added / dropped, boxes in PDF points); a page with a text layer gives its words; a scanned page
+    gives both readings and its final words are saved for the next call; a bad page or a path outside --root is refused."""
+    print("\n== OCR viewer")
+    import importlib.util
+    from anonymizer import ocrview
+    w = lambda t, x: {"text": t, "box": (x, 100.0, x + 50.0, 130.0)}
+    ini, fin = ocrview.tag_words([w("tran5fert", 0), w("Marie", 100), w("zz", 400)], [w("transfert", 0), w("MARIE", 100), w("sur", 200)])
+    check("a word read differently is 'changed' in both readings, and says what it was",
+          fin[0]["tag"] == "changed" and fin[0]["was"] == "tran5fert" and ini[0]["tag"] == "changed" and ini[0]["now"] == "transfert", (ini, fin))
+    check("the same text in another case is the same word", fin[1]["tag"] == "same" and ini[1]["tag"] == "same", (ini, fin))
+    check("a word only the final reading has is 'added', one only the first pass has is 'dropped'",
+          fin[2]["tag"] == "added" and ini[2]["tag"] == "dropped", (ini, fin))
+    check("boxes are in PDF points (300 dpi pixels x 72 / 300)", fin[0]["box"] == [0.0, 24.0, 12.0, 31.2], fin[0]["box"])
+    spec = importlib.util.spec_from_file_location("anon_webapp_ocrview", ROOT / "app.py")
+    webapp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(webapp)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_ocrview_"))
+    saved_root = webapp.STATE["root"]
+    try:
+        (tmp / "c").mkdir()
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 100), "Relevé de compte Thomas Marchand IBAN FR76 3000 6000 0112 3456 7890 189", fontsize=11)
+        doc.save(tmp / "c" / "d.pdf")
+        doc.close()
+        webapp.STATE["root"] = tmp.resolve()
+        client = webapp.app.test_client()
+        got = client.get("/api/ocrview?folder=c&file=d.pdf&page=1").get_json()
+        check("a page with a text layer gives its words, one reading", got.get("source") == "text layer" and any(x["text"] == "Thomas" for x in got["final"]), got)
+        check("a page that does not exist is refused", client.get("/api/ocrview?folder=c&file=d.pdf&page=9").status_code == 404)
+        check("a path outside --root is refused", client.get("/api/ocrview?folder=../x&file=d.pdf&page=1").status_code in (403, 404))
+        if ocr.available():
+            page = fitz.open()
+            pg = page.new_page()
+            pg.insert_text((72, 100), "Relevé de compte Thomas Marchand", fontsize=14)
+            pix = pg.get_pixmap(dpi=200)
+            scan = fitz.open()
+            sp = scan.new_page(width=pg.rect.width, height=pg.rect.height)
+            sp.insert_image(sp.rect, pixmap=pix)
+            scan.save(tmp / "c" / "s.pdf")
+            scan.close()
+            page.close()
+            got = client.get("/api/ocrview?folder=c&file=s.pdf&page=1").get_json()
+            check("a scanned page gives both readings", got.get("source") == "ocr" and got["initial"] and got["final"], got)
+            check("... every final word has a tag and a box in points", all(x["tag"] in ("same", "changed", "added") and len(x["box"]) == 4 for x in got["final"]))
+            check("... the final words are saved for the next call", (tmp / "c" / "anon_ocr.json").exists())
+            again = client.get("/api/ocrview?folder=c&file=s.pdf&page=1").get_json()
+            check("... and the next call gives the same words", [x["text"] for x in again["final"]] == [x["text"] for x in got["final"]])
+    finally:
+        webapp.STATE["root"] = saved_root
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def ocr_data_tests():
     """Click-to-find reads the OCR saved by the scan (anon_ocr.json, anonymizer/ocrdata.py): the hits are the same as a
     fresh reading, a changed file or another OCR engine is read again, and the saved data is never used for them."""
@@ -5771,7 +5825,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

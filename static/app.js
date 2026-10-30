@@ -311,7 +311,7 @@ function sizePages(which) {
     el.style.height = v.pages[i].h * k + "px";
   });
   if (which === "anon") drawBoxes();
-  if (which === "orig") redrawTermFrame();          // the frames are placed in page points: they follow the zoom
+  if (which === "orig") { redrawTermFrame(); drawOcrView(); }   // the frames are placed in page points: they follow the zoom
   drawChanges(which);
 }
 
@@ -366,6 +366,7 @@ async function setViewer(which, path) {
   if (zoom.fit) applyFit(); else sizePages(which);
   if (which === "anon") drawBoxes();
   drawChanges(which);
+  if (which === "orig") loadOcrView();               // the OCR viewer follows the file that is open
   syncScroll(other(which));
 }
 
@@ -435,6 +436,84 @@ btnChanges.onclick = () => {
   VIEWERS.forEach(drawChanges);
 };
 try { if (localStorage.getItem(CHANGES_KEY) === "1") btnChanges.classList.add("on"); } catch (e) { /* no storage */ }
+
+// ----- OCR viewer: a frame around every word the OCR read on the original, hover for its text -----
+// Initial = the first pass alone; Final = the words the app works with (the first pass repaired by the other readings);
+// Differences = what the two do not agree on (orange: other text, green: added, red dashed: dropped).
+const OCRVIEW_KEY = "anonymizePDF.ocrview", OCRLAYER_KEY = "anonymizePDF.ocrlayer";
+const btnOcrView = $("#btnOcrView"), ocrLayer = $("#ocrLayer");
+const ocrView = { path: null, pages: {}, token: 0 };
+
+function ocrViewOn() { return btnOcrView.classList.contains("on"); }
+
+function ocrWordTitle(w, mode, source) {
+  if (source === "text layer") return `${w.text}\n(text layer, no OCR on this page)`;
+  if (w.tag === "changed") return mode === "initial" ? `${w.text}\n(final reading: ${w.now})` : `${w.text}\n(first pass: ${w.was})`;
+  if (w.tag === "added") return `${w.text}\n(not read by the first pass, added by the other readings)`;
+  if (w.tag === "dropped") return `${w.text}\n(first pass only: the final reading does not have it)`;
+  return w.text;
+}
+
+function drawOcrView() {
+  const v = viewers.orig, k = pageScale(), mode = ocrLayer.value;
+  const live = ocrViewOn() && ocrView.path === v.path;
+  [...v.list.children].forEach((el, i) => {
+    el.querySelectorAll(".ocrbox").forEach((n) => n.remove());
+    const d = live ? ocrView.pages[i + 1] : null;
+    if (!d) return;
+    const words = mode === "initial" ? d.initial
+      : mode === "diff" ? [...d.final.filter((w) => w.tag !== "same"), ...d.initial.filter((w) => w.tag === "dropped")]
+      : d.final;
+    words.forEach((w) => {
+      const n = document.createElement("div");
+      n.className = "ocrbox" + (w.tag && w.tag !== "same" ? " " + w.tag : "");
+      n.title = ocrWordTitle(w, mode, d.source);
+      n.style.left = w.box[0] * k + "px";
+      n.style.top = w.box[1] * k + "px";
+      n.style.width = (w.box[2] - w.box[0]) * k + "px";
+      n.style.height = (w.box[3] - w.box[1]) * k + "px";
+      el.appendChild(n);
+    });
+  });
+}
+
+async function loadOcrView() {
+  const v = viewers.orig, path = v.path;
+  if (!ocrViewOn() || !path) return;
+  if (ocrView.path !== path) { ocrView.path = path; ocrView.pages = {}; }
+  const token = ++ocrView.token, folder = dirname(path), file = baseName(path);
+  for (let p = 1; p <= v.pages.length; p++) {
+    if (ocrView.pages[p]) continue;
+    setStatus(`Reading the OCR of page ${p}/${v.pages.length}…`);
+    try {
+      const d = await api(`/api/ocrview?folder=${encodeURIComponent(folder)}&file=${encodeURIComponent(file)}&page=${p}`);
+      if (token !== ocrView.token || !ocrViewOn() || v.path !== path) return;
+      ocrView.pages[p] = d;
+    } catch (e) {
+      if (token === ocrView.token) { setStatus(""); notify("OCR view: " + e.message, "err"); }
+      return;
+    }
+    drawOcrView();
+  }
+  setStatus("");
+}
+
+btnOcrView.onclick = () => {
+  btnOcrView.classList.toggle("on");
+  ocrLayer.hidden = !ocrViewOn();
+  try { localStorage.setItem(OCRVIEW_KEY, ocrViewOn() ? "1" : "0"); } catch (e) { /* no storage */ }
+  if (ocrViewOn()) { ocrView.pages = {}; loadOcrView(); } else { ocrView.token++; drawOcrView(); setStatus(""); }
+};
+ocrLayer.onchange = () => {
+  try { localStorage.setItem(OCRLAYER_KEY, ocrLayer.value); } catch (e) { /* no storage */ }
+  drawOcrView();
+};
+try {
+  const saved = localStorage.getItem(OCRLAYER_KEY);
+  if (saved && [...ocrLayer.options].some((o) => o.value === saved)) ocrLayer.value = saved;
+} catch (e) { /* no storage */ }
+
+try { if (localStorage.getItem(OCRVIEW_KEY) === "1") { btnOcrView.classList.add("on"); ocrLayer.hidden = false; } } catch (e) { /* no storage */ }
 
 // ----- zoom (always shared by both viewers) -----
 function updateZoomLabel() {
@@ -1914,6 +1993,7 @@ function updateToolbar() {
   const rotatable = !!cur && !state.running && /\.pdf$/i.test(cur.name);
   $("#btnRotL").disabled = $("#btnRotR").disabled = !rotatable;
   $("#btnOcr").disabled = !rotatable;
+  btnOcrView.disabled = !rotatable;
   $("#btnOcr").classList.toggle("on", !!cur && !!cur.force_ocr);
   btnTrace.disabled = !traceBoxes().length;
   btnTrace.title = traceBoxes().length

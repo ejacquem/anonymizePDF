@@ -61,6 +61,10 @@
         <button id="btnOcr" class="mini" disabled title="Treat this PDF as a scan: every page is read by OCR and rebuilt as an image, whatever its text layer says. For a digital PDF whose replaced text lands at the wrong place. Click again to go back. Then anonymize again.">As OCR</button>
         <button id="btnRotL" class="mini" disabled aria-label="Rotate left" title="Rotate the original PDF 90° counter-clockwise and SAVE it (the original file is changed). Then anonymize again.">⟲</button>
         <button id="btnRotR" class="mini" disabled aria-label="Rotate right" title="Rotate the original PDF 90° clockwise and SAVE it (the original file is changed). Then anonymize again.">⟳</button>
+        <button id="btnOcrView" class="mini" disabled title="OCR viewer: frame every word the OCR read on the original pages; hover a frame for its text">OCR view</button>
+        <select id="ocrLayer" class="mini" hidden title="Final: the words the app works with (the first reading repaired with the other readings). Initial: the first pass alone. Differences: only what the two readings do not agree on.">
+          <option value="final">Final</option><option value="initial">Initial</option><option value="diff">Differences</option>
+        </select>
         <button id="btnTrace" class="mini" style="display:none" disabled>Trace</button> <!-- hidden, not removed: delete the style to show it again -->
 
         <button id="btnChanges" class="mini" disabled title="Frame each replaced field (orange) and each removed area (purple, dashed), in both panes">Changes</button>

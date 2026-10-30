@@ -273,6 +273,14 @@ details.grp[open] > summary::before { content: "▾"; }
   background: color-mix(in srgb, var(--warn) 12%, transparent); }
 /* debug trace (Trace button): every redacted or painted area, blue dotted, hover for the rule */
 .chg.trace { border: 1px dotted #1f78d1; background: color-mix(in srgb, #1f78d1 8%, transparent); pointer-events: auto; }
+/* OCR viewer: a frame per word the OCR read, hover for its text. same = both readings agree, changed / added / dropped = they do not */
+.ocrbox { position: absolute; box-sizing: border-box; z-index: 3; border: 1px solid color-mix(in srgb, #1f78d1 70%, transparent);
+  background: color-mix(in srgb, #1f78d1 7%, transparent); }
+.ocrbox:hover { background: color-mix(in srgb, #1f78d1 30%, transparent); }
+.ocrbox.changed { border: 2px solid var(--warn); background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.ocrbox.added { border: 2px solid #2e9e4f; background: color-mix(in srgb, #2e9e4f 18%, transparent); }
+.ocrbox.dropped { border: 2px dashed #e53935; background: color-mix(in srgb, #e53935 12%, transparent); }
+#ocrLayer { font: inherit; font-size: 12px; }
 /* removed without replacement: dashed purple, so it never looks like a replaced value */
 .chg.removed { border: var(--chg-w, 2px) dashed var(--removed); background: color-mix(in srgb, var(--removed) 14%, transparent); }
 button.mdel { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; line-height: 1; }

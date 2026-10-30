@@ -54,6 +54,7 @@ anonymizer/
                        term_regex (OCR-tolerant mode), apply_config, words_to_text, match_boxes, plan_page
   ocr.py               OCR engines (Tesseract / Windows winrt), engine(), ocr_words(), fix_digits(), render_page()
   ocrpage.py           a page read more than once: page_words() = the 300 dpi reading repaired with the page rescaled and, on a poor page, with thick / native / smooth variants (section 9)
+  ocrview.py           what the OCR returned for a page, first pass and final reading compared, for the OCR view (section 4)
   ocrdata.py           anon_ocr.json per folder: the full-page OCR words the scan read, with the sha256 of the file, the OCR
                        engine and the language; click-to-find reads them back (section 5, 11b)
   fake.py              Faker: deterministic fake values (HMAC with the secret key), name memory, all value types
@@ -176,6 +177,15 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   already used for a corrupted text layer: render, OCR, new image per page. Switching it drops the file's review flag and report
   entry and marks its output out of date (yellow dot, `tree[].force_ocr`); refused for an output or while a job runs. The user then
   anonymizes again (scanning again is not needed; it also reads the file by OCR). Test: `ocr_mode_tests`.
+- OCR view (Original pane head, `#btnOcrView` + the layer select `#ocrLayer`, remembered in localStorage `anonymizePDF.ocrview` /
+  `anonymizePDF.ocrlayer`): frames every word the OCR read on the original, hover (`title`) for its text. `GET /api/ocrview?folder=&file=&page=`
+  (`anonymizer/ocrview.py`, `page_view`) returns {source, initial, final}, boxes in PDF points: `initial` = the first pass alone (one
+  `ocr.ocr_words` run on the 300 dpi render), `final` = the words the app works with (`ocrpage.page_words`; the saved words of
+  `anon_ocr.json` when the scan read the page, else read now and saved with `ocrdata.store`). `tag_words` compares them place by
+  place: `same`, `changed` (`was` / `now` say the other reading's text), `added` (final only), `dropped` (initial only). Layers: Final,
+  Initial, Differences (orange changed, green added, red dashed dropped). A page with a text layer has one reading, its words
+  (`source` 'text layer'). The boxes are those of the scan as shown: the straightening of a turned page happens at anonymization, on a
+  copy, and is not shown. The pages are fetched one after the other on opening a file (the status line says which). Test: `ocr_view_tests`.
 - Status bar (footer, bottom): the message on the left (`setStatus`), on the right the progress of the running job:
   bar, % and files done / total, time left (`showProgress`, `fmtDuration`). The job reports `progress`
   (`done`, `total`, `current`) through the `progress` callback of `scan_folder` / `run_anonymize` (one step per
