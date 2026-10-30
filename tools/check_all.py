@@ -4617,6 +4617,61 @@ def number_sequence_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def ocr_mode_tests():
+    """'As OCR' button (app /api/ocrmode): a digital PDF the user marks is processed as a scan, page by page, whatever its
+    text layer says; the flag is kept per file in anon_ocrmode.json, resets the file's review flag and report entry, makes its
+    output out of date, and is refused for an output or while a job runs."""
+    print("\n== as OCR: treat a digital PDF as a scan")
+    import importlib.util
+    import time
+    spec = importlib.util.spec_from_file_location("anon_webapp", ROOT / "app.py")
+    webapp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(webapp)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_ocrmode_"))
+    saved_root = webapp.STATE["root"]
+    try:
+        use_key(tmp / "key" / "secret.key")
+        d = tmp / "c"
+        d.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        for i, line in enumerate(("Monsieur Jean DUPONT", "IBAN FR76 3000 6000 0112 3456 7890 189", "Contrat N° 0123 45 67 du client")):
+            page.insert_text((72, 90 + 30 * i), line, fontsize=12)
+        doc.save(d / "a.pdf")
+        doc.close()
+        lay = lambda: engine.page_layout(fitz.open(d / "a.pdf")[0])
+        check("a digital page is digital by default", lay()["kind"] == "digital" and not lay()["forced"])
+        (d / "a_anonymized.pdf").write_bytes((d / "a.pdf").read_bytes())
+        (d / "anon_review.json").write_text(json.dumps({"a.pdf": {"at": "x", "sha256": webapp._sha(d / "a_anonymized.pdf")}}))
+        (d / "anon_report.json").write_text(json.dumps({"files": [{"file": "a.pdf"}]}))
+        time.sleep(0.05)
+        webapp.STATE["root"] = tmp.resolve()
+        client = webapp.app.test_client()
+
+        def mode(on, file="a.pdf"):
+            r = client.post("/api/ocrmode", json={"folder": "c", "file": file, "on": on})
+            return r.status_code, r.get_json()
+        check("switching it on is accepted", mode(True)[0] == 200)
+        check("the page is then a scan, and says it was asked for", lay()["kind"] == "scan" and lay()["forced"], lay()["kind"])
+        check("the flag is in the tree, the review flag and the report entry are gone, the output is out of date",
+              (lambda t: t["force_ocr"] and t["status"] == "yellow")(
+                  {c["name"]: c for c in client.get("/api/tree").get_json()["children"][0]["children"]}["a.pdf"])
+              and "a.pdf" not in json.loads((d / "anon_review.json").read_text())
+              and json.loads((d / "anon_report.json").read_text())["files"] == [])
+        check("an anonymized output is refused", mode(True, "a_anonymized.pdf")[0] == 400)
+        if ocr.available():
+            res = engine.scan_folder(d, "c", [], "fra+eng", lambda m: None)
+            (d / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+            engine.run_anonymize(d, "c", res["config"], "fra+eng", False, lambda m: None)
+            out = fitz.open(d / "a_anonymized.pdf")
+            check("the output is an image page with no text layer (processed as a scan)",
+                  not out[0].get_text().strip() and len(out[0].get_images()) >= 1, out[0].get_text()[:80])
+        check("switching it off gives the text layer back", mode(False)[0] == 200 and lay()["kind"] == "digital")
+    finally:
+        webapp.STATE["root"] = saved_root
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def rotate_tests():
     """Rotate buttons (app /api/rotate): the one place where an original is changed. Every page turns, the file keeps its
     pages, the black boxes drawn on the old orientation are removed only after a confirmation (force), the review flag and
@@ -5655,7 +5710,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "number_sequence_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

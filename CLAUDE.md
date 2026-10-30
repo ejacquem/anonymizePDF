@@ -170,6 +170,12 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   the batch overview), so the user rotates, then anonymizes. Black boxes / typed texts drawn on the old orientation are PDF
   points of the old page: the server answers 409 and the client asks; with `force` they are removed from the config. Refused
   while a job runs, for an image, an anonymized output or a password-protected PDF. Test: `rotate_tests`.
+- As OCR (Original pane head, `#btnOcr`, a toggle): treats the selected PDF as a scan whatever its text layer says (a digital PDF
+  whose replaced text lands at the wrong place). `POST /api/ocrmode {folder, file, on}` writes `anon_ocrmode.json` of the folder
+  ({name: {on, at}}, git-ignored); `engine.page_layout` makes every page of a flagged file a `scan` (`layout['forced']`), the path
+  already used for a corrupted text layer: render, OCR, new image per page. Switching it drops the file's review flag and report
+  entry and marks its output out of date (yellow dot, `tree[].force_ocr`); refused for an output or while a job runs. The user then
+  anonymizes again (scanning again is not needed; it also reads the file by OCR). Test: `ocr_mode_tests`.
 - Status bar (footer, bottom): the message on the left (`setStatus`), on the right the progress of the running job:
   bar, % and files done / total, time left (`showProgress`, `fmtDuration`). The job reports `progress`
   (`done`, `total`, `current`) through the `progress` callback of `scan_folder` / `run_anonymize` (one step per

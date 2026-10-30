@@ -100,7 +100,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .pane-tools button { height: 22px; box-sizing: border-box; line-height: 18px; padding-top: 0; padding-bottom: 0; }
 .pane-tools .seg { height: 22px; }
 .pane-tools .seg button { height: 100%; padding: 0 9px; font-size: 12px; line-height: 18px; }
-#btnBox.on, #btnChanges.on, #btnTrace.on, #btnText.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+#btnBox.on, #btnChanges.on, #btnTrace.on, #btnText.on, #btnOcr.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
 .pane-body { flex: 1; min-height: 0; overflow: auto; }
 .viewer { position: relative; overflow: auto; background: var(--viewer-bg); }
 .pages { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px; width: max-content;

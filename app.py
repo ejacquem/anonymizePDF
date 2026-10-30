@@ -139,6 +139,7 @@ def file_states(d: Path, own: list[dict]) -> None:
             files = {}
     cfg = d / eng.CONFIG_NAME
     cfg_time = cfg.stat().st_mtime if cfg.exists() else None
+    modes = eng.ocr_modes(d)
     for c in own:
         if c["anonymized"]:
             continue
@@ -152,7 +153,8 @@ def file_states(d: Path, own: list[dict]) -> None:
             c["status"] = "orange"
         elif cfg_time is not None and (not out.exists() or cfg_time > out.stat().st_mtime):
             c["status"] = "yellow"
-        elif out.exists() and (d / c["name"]).stat().st_mtime > out.stat().st_mtime:
+        elif out.exists() and ((d / c["name"]).stat().st_mtime > out.stat().st_mtime
+                               or (modes.get(c["name"]) or {}).get("at", 0) > out.stat().st_mtime):
             c["status"] = "yellow"             # the original changed after the output (rotated): anonymize again
         else:
             c["status"] = None
@@ -178,7 +180,9 @@ def build_tree(d: Path) -> dict | None:
             })
     own_pdfs = [c for c in children if c["type"] == "file"]
     reviewed = reviewed_files(d) if (d / REVIEW_NAME).exists() else {}
+    modes = eng.ocr_modes(d)
     for c in own_pdfs:
+        c["force_ocr"] = bool((modes.get(c["name"]) or {}).get("on"))
         c["reviewed"] = not c["anonymized"] and c["name"] in reviewed
         if c["anonymized"] and c["original"]:
             c["reviewed"] = Path(c["original"]).name in reviewed
@@ -445,6 +449,12 @@ def rotate_pdf():
         man["texts"] = [t for t in man.get("texts") or [] if t.get("file") != name]
         model["manual"] = man
         cfg.write_text(configmodel.to_yaml(model, rel_of(folder) or "."), encoding="utf-8")
+    _forget_results(folder, name)
+    return jsonify({"ok": True})
+
+
+def _forget_results(folder: Path, name: str) -> None:
+    """The review flag and the report entry of a file whose original or processing changed: what they describe is gone."""
     reviews = read_reviews(folder)
     if reviews.pop(name, None) is not None:
         (folder / REVIEW_NAME).write_text(json.dumps(reviews, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -460,7 +470,34 @@ def rotate_pdf():
                 tmp.replace(rep)
         except (OSError, ValueError):
             pass
-    return jsonify({"ok": True})
+
+
+@app.post("/api/ocrmode")
+def set_ocr_mode():
+    """Treat a PDF as a scan (OCR, new image of every page) whatever its text layer says: a digital PDF whose text is
+    placed wrongly. Kept in `anon_ocrmode.json` of the folder. The file's output is then out of date (yellow dot)."""
+    data = request.get_json(force=True)
+    try:
+        folder = folder_arg(data)
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    name = Path(str(data.get("file", ""))).name
+    pdf = folder / name
+    if not name or not pdf.is_file() or pdf.suffix.lower() != ".pdf" or pdf.stem.endswith(eng.SUFFIX):
+        return bad("only an original PDF can be treated as OCR", 400)
+    if JOB_LOCK.locked():
+        return bad("A scan or anonymization is running: wait for it to end", 409)
+    modes = dict(eng.ocr_modes(folder))
+    on = bool(data.get("on"))
+    if on == bool((modes.get(name) or {}).get("on")):
+        return jsonify({"ok": True, "on": on})
+    modes[name] = {"on": on, "at": time.time()}
+    f = folder / eng.OCRMODE_NAME
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps(modes, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(f)
+    _forget_results(folder, name)
+    return jsonify({"ok": True, "on": on})
 
 
 @app.get("/api/report")

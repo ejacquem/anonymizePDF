@@ -2,6 +2,8 @@
 anon_config.yaml
 anon_report.json
 anon_review.json
+anon_ocrmode.json
+anon_ocrmode.json.tmp
 anon_ocr.json
 anon_ocr.json.tmp
 start_root.txt

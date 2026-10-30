@@ -1122,6 +1122,36 @@ def render_config(rel: str, pdfs: list[Path], active: list[dict], off: list[dict
 # ---------------------------------------------------------------------------
 
 
+OCRMODE_NAME = "anon_ocrmode.json"      # per folder: {original file name: {"on": bool, "at": epoch seconds}}
+_OCRMODE_CACHE: dict = {}
+
+
+def ocr_modes(folder: Path) -> dict:
+    """The 'treat as OCR' flags of a folder (`OCRMODE_NAME`), read again when the file changes."""
+    f = folder / OCRMODE_NAME
+    try:
+        stamp = f.stat().st_mtime_ns
+    except OSError:
+        return {}
+    hit = _OCRMODE_CACHE.get(f)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        data = data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        data = {}
+    _OCRMODE_CACHE[f] = (stamp, data)
+    return data
+
+
+def forced_ocr(path) -> bool:
+    """The file is to be read as a scan whatever its text layer says (a digital PDF whose text sits at the wrong place)."""
+    p = Path(path)
+    rec = ocr_modes(p.parent).get(p.name)
+    return bool(isinstance(rec, dict) and rec.get("on"))
+
+
 def page_layout(page) -> dict:
     """How a page has to be processed, decided per page:
     - 'scan': fewer than 3 VISIBLE words. A searchable scan (image + invisible OCR text) is a scan: its text layer
@@ -1144,8 +1174,10 @@ def page_layout(page) -> dict:
     raw = page.get_text("text")
     garbled = len(GARBLED.findall(raw))
     corrupt = garbled >= 3 and garbled >= 0.02 * max(len(raw.replace(" ", "").replace("\n", "")), 1)
-    kind = "digital" if len(visible) >= 3 and not corrupt else "scan"
-    return {"kind": kind, "words": words, "visible": visible, "hidden": hidden, "garbled": garbled,
+    name = getattr(page.parent, "name", None)
+    forced = bool(name) and forced_ocr(name)             # the user asked for this file to be treated as OCR
+    kind = "digital" if len(visible) >= 3 and not corrupt and not forced else "scan"
+    return {"kind": kind, "words": words, "visible": visible, "hidden": hidden, "garbled": garbled, "forced": forced,
             "pixels": kind == "digital" and img_area / area >= PIXEL_MIN_AREA}
 
 

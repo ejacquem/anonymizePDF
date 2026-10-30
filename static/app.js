@@ -1906,6 +1906,8 @@ function updateToolbar() {
   btnChanges.disabled = !nChanges;
   const rotatable = !!cur && !state.running && /\.pdf$/i.test(cur.name);
   $("#btnRotL").disabled = $("#btnRotR").disabled = !rotatable;
+  $("#btnOcr").disabled = !rotatable;
+  $("#btnOcr").classList.toggle("on", !!cur && !!cur.force_ocr);
   btnTrace.disabled = !traceBoxes().length;
   btnTrace.title = traceBoxes().length
     ? `Debug: draw the ${traceBoxes().length} area(s) the anonymizer redacted or painted (blue dotted); hover for the rule`
@@ -1946,6 +1948,23 @@ async function rotateOriginal(degrees) {
   if (state.nodes[path]) await openFile(path);
   notify(`${cur.name} rotated and saved. Anonymize it again to apply the changes.`);
 }
+$("#btnOcr").onclick = async () => {
+  const cur = currentOriginalNode();
+  if (!cur || state.running) return;
+  const on = !cur.force_ocr, path = cur.path;
+  try {
+    await post("/api/ocrmode", { folder: dirname(path), file: cur.name, on });
+  } catch (e) {
+    notify("Could not change the mode: " + e.message, "err");
+    return;
+  }
+  await loadTree();
+  await loadReport();
+  state.file = null;
+  if (state.nodes[path]) await openFile(path);
+  notify(on ? `${cur.name} will be read by OCR. Anonymize it again to apply the change.`
+            : `${cur.name} goes back to its text layer. Anonymize it again to apply the change.`);
+};
 $("#btnRotL").onclick = () => rotateOriginal(-90);
 $("#btnRotR").onclick = () => rotateOriginal(90);
 
