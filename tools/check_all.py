@@ -1260,6 +1260,20 @@ def suspect_suggestion_tests():
         engine.run_anonymize(tmp, "lettre", ticked, "fra+eng", False, lambda m: None)
         out = fitz.open(tmp / "lettre_anonymized.pdf")[0].get_text()
         check("ticked and anonymized again, the value is gone", "5390" not in out and "7034" not in out, repr(out))
+        # a value the user left unchecked is not reported again; one the second check itself offered still is
+        model = configmodel.to_model(cfg)
+        model["entries"].append({"find": "BE68 5390 0754 7034", "replace": "BE12 3456 7890 1234", "type": "IBAN", "active": False,
+                                 "info": "scan suggestion: left unchecked by the user"})
+        unchecked = configmodel.to_yaml(model, "lettre")
+        check("ignored_values lists the unchecked values", configmodel.ignored_values(unchecked) == ["BE68 5390 0754 7034"], str(configmodel.ignored_values(unchecked)))
+        rep2 = engine.run_anonymize(tmp, "lettre", unchecked, "fra+eng", False, lambda m: None)
+        check("a value left unchecked in the config is not reported by the second check", rep2["files"][0].get("suspects") == [], str(rep2["files"][0].get("suspects")))
+        model["entries"][-1]["info"] = "second check: still readable in lettre.pdf p.1 - check it, tick it to replace it"
+        offered = configmodel.to_yaml(model, "lettre")
+        check("a value the second check offered is not ignored", configmodel.ignored_values(offered) == [])
+        rep3 = engine.run_anonymize(tmp, "lettre", offered, "fra+eng", False, lambda m: None)
+        check("... and is still reported until the user ticks or removes it", [x["value"] for x in rep3["files"][0].get("suspects", [])] == ["BE68 5390 0754 7034"],
+              str(rep3["files"][0].get("suspects")))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

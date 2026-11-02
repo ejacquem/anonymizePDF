@@ -435,6 +435,9 @@ console running `app.py` and the last 12 lines in the job log.
      more like a replacement (>= 0.65) than like any original value (`_read_back`: a long fake identifier with half its
      digits misread). Test: `check_all`
      reports the second check of every output (`suspects`).
+     It does not report the values the user left unchecked or removed in the config (`configmodel.ignored_values`, `ignored=` of `leak_suspects`: the same text, a part of such a value, or the same text
+     read back with a few OCR errors, ratio >= 0.9): they stay in the file by choice. The values it offered itself ('second check: ...' in their info) are not ignored: they are reported until
+     the user ticks or removes them. Test: `suspect_suggestion_tests`.
      The values it finds are also offered as commented suggestions in the folder's `anon_config.yaml`
      (`engine.suspect_suggestions`, `_offer_suspects`, at the end of `run_anonymize`): a fake from the key, the info
      says 'second check: still readable in <file> p.N'. The review step stays: the user ticks them (Config tab,

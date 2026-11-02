@@ -1785,6 +1785,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
     (> 0), see quality.adjust; kept in the report."""
     t_all = time.time()
     cfg = parse_config(config_text)
+    ignored = configmodel.ignored_values(config_text)        # left unchecked on purpose: the second check does not report them
     quality_offset = max(-quality.OFFSET_RANGE, min(quality.OFFSET_RANGE, float(quality_offset or 0.0)))
     cfg["style"]["quality_offset"] = quality_offset
     session = _session_removed(removed)
@@ -1871,7 +1872,7 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
             if entry["leftovers"]:
                 log(f"   WARNING: {len(entry['leftovers'])} original value(s) still found in the output")
             with timing.stage("check"):
-                entry["suspects"] = verify.leak_suspects(read, cfg)
+                entry["suspects"] = verify.leak_suspects(read, cfg, ignored=ignored)
             if entry["suspects"]:
                 # one line per value in the Recap (each one clickable, see report 'suspects'): not a warning text here
                 shown = ", ".join(f"{s['type']} '{s['value']}' p.{s['page']}" for s in entry["suspects"][:8])

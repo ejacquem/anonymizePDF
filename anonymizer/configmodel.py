@@ -111,6 +111,17 @@ def to_model(text: str) -> dict:
             "manual": {"replacements": manual_repl, "blackouts": manual_boxes, "texts": manual_texts}}
 
 
+def ignored_values(text: str) -> list[str]:
+    """The values the user decided not to replace: the unchecked entries of the config (the scan's suggestions left unticked,
+    values unchecked or removed by hand). The second check (verify.leak_suspects) does not warn about them again. The values the
+    second check itself offered ('second check: ...' in their info) are NOT here: ticking or removing them is the answer."""
+    try:
+        entries = to_model(text)["entries"]
+    except ValueError:
+        return []
+    return [e["find"] for e in entries if not e["active"] and not str(e.get("info") or "").startswith("second check")]
+
+
 def auto_flag(e: dict) -> str:
     """'removed' | 'hidden' (unchecked) | 'edited' (its replacement changed, or it was switched on), '' when the value is
     as the scan wrote it. Uses the original value kept in e['orig']."""

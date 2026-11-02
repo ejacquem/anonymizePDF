@@ -252,14 +252,17 @@ def _read_back(value: str, replacements_folded: list, originals_folded: list, or
     return (best >= 0.65 and best > other + 0.2) or (len(folded) >= 8 and best >= 0.5 and best > other + 0.1)
 
 
-def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
+def leak_suspects(read: OutputRead, cfg: dict, ignored=()) -> list[dict]:
     """Values that the detectors still read in the file and that are not replacements. On identity documents the
-    dates, the values found by their shape and the values under their labels are checked too."""
+    dates, the values found by their shape and the values under their labels are checked too. `ignored`: the values the user
+    left unchecked or removed in the config (configmodel.ignored_values): they stay in the file by choice, so they are not
+    reported (the same text, a part of such a value, or the same text read back with a few OCR errors)."""
     from .engine import is_label_word          # engine imports this module: the import is made when it is needed
     from .fake import is_town_name
     replacements = {norm_value(v) for v in cfg["terms"].values() if v}
     replacements_folded = [(r, _fold(r)) for r in replacements]
     originals_folded = [_fold(f) for f in cfg["terms"] if len(f) >= 3]
+    ignored_folded = [g for g in (_fold(norm_value(v)) for v in ignored) if len(g) >= 3]
     original_groups = tuple(g for f in cfg["terms"] for g in re.findall(r"\d{4,8}", f))     # the numbers of the originals
     # the fake values as written (longest first): taken out of the text before the detectors run, so that a fake
     # street and the fake town written on the same line are not read as one address
@@ -289,6 +292,9 @@ def leak_suspects(read: OutputRead, cfg: dict) -> list[dict]:
                 continue
             key = norm_value(value)
             # a replacement read back by the OCR with a few errors ('Irnier' for a fake name) is a replacement too
+            kf = _fold(key)
+            if any(kf in g or difflib.SequenceMatcher(None, kf, g).ratio() >= 0.9 for g in ignored_folded):
+                continue                                          # left unchecked in the config on purpose
             if len(key) < 3 or key in seen or any(
                     key in r or difflib.SequenceMatcher(None, _fold(key), rf).ratio() >= 0.8
                     for r, rf in replacements_folded) or _read_back(key, replacements_folded, originals_folded, original_groups):
