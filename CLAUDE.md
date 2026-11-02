@@ -157,10 +157,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   with `#btnRotL` / `#btnRotR` and a note that the original file is changed: the one destructive action takes two clicks), **As OCR** and
   **OCR view ▾** (`#btnOcrView` toggles; the caret `#btnOcrMenu` opens `#ocrMenu` to choose the layer Final / Initial / Differences / Raw engine, which sets the
   hidden `#ocrLayer`; the button reads 'OCR: <layer>' while on), then, at the right end of the row behind a `|` separator, **Scan file** / **Anonymize file**
-  (the Anonymized pane ends its row the same way with **Mark as reviewed**). **Raw view**: Space with the mouse over a page (`setRawView`, class `raw-view` on `main`,
-  the hint `#rawHint` in the View row also toggles it) hides every layer drawn over the pages (`.chg`, `.lbox`, `.tlbox`, `.ocrbox`, `.bbox` with its typed
-  texts, `.btextinput`) so the pages show as they are, e.g. the text the output really holds under a typed-text box; Space again brings them back; not
-  while typing in a field. The pane-head menus are generic (`[data-menu]`, `closePaneMenus`). Where the text
+  (the Anonymized pane ends its row the same way with **Mark as reviewed**). **Raw view**: HOLD Space with the mouse over a page (`setRawView`, class `raw-view` on `main`; no button, only the shortcut) to hide every layer drawn
+  over the pages (`.chg`, `.lbox`, `.tlbox`, `.ocrbox`, `.bbox` with its typed texts, `.btextinput`) so the pages show as they are, e.g. the text the output
+  really holds under a typed-text box; released (or the window loses focus), they come back; not while typing in a field. The pane-head menus are generic (`[data-menu]`, `closePaneMenus`). Where the text
   below says 'Original pane head' for zoom, Changes or Viewer / PDF, it is now the View row.
 - Viewer: pages are rendered server-side to PNG (`/api/page`, PyMuPDF), shown in a scrollable column, lazily loaded
   (IntersectionObserver). Zoom shared by both panes (−/+, Fit; mouse wheel zooms, trackpad pinch (Ctrl) zooms, two-finger scroll and Shift+wheel scroll; input kind from `inputKind`), scroll synced page by page,

@@ -1595,22 +1595,26 @@ document.addEventListener("keydown", (e) => {
   if (key === "f") { e.preventDefault(); return focusConfigSearch(); }
 });
 
-// Space with the mouse over a viewer: hide every layer drawn over the pages (Changes frames, black boxes, typed texts, OCR boxes,
-// leftovers, found values) and show the pages as they are; again to bring them back. A button focused by a click must not also fire.
+// Space HELD with the mouse over a viewer: every layer drawn over the pages (Changes frames, black boxes, typed texts, OCR boxes, leftovers,
+// found values) is hidden and the pages show as they are; released, the layers are back. A button focused by a click must not also fire.
+let rawHeld = false;
 function setRawView(on) {
+  rawHeld = on;
   $("main").classList.toggle("raw-view", on);
-  $("#rawHint").classList.toggle("on", on);
-  $("#rawHint").textContent = on ? "␣ layers hidden" : "␣ raw view";
 }
-const rawKeyOk = (e) => e.code === "Space" && overViewer && !e.ctrlKey && !e.metaKey && !e.altKey
+const rawKeyOk = (e) => e.code === "Space" && !e.ctrlKey && !e.metaKey && !e.altKey
   && !(e.target && e.target.closest && e.target.closest("input, textarea, select, [contenteditable]"));
 document.addEventListener("keydown", (e) => {
-  if (!rawKeyOk(e)) return;
+  if (!rawKeyOk(e) || !(overViewer || rawHeld)) return;
   e.preventDefault();
-  if (!e.repeat) setRawView(!$("main").classList.contains("raw-view"));
+  if (!e.repeat) setRawView(true);
 });
-document.addEventListener("keyup", (e) => { if (rawKeyOk(e)) e.preventDefault(); });
-$("#rawHint").onclick = () => setRawView(!$("main").classList.contains("raw-view"));
+document.addEventListener("keyup", (e) => {
+  if (e.code !== "Space" || !rawHeld) return;
+  e.preventDefault();
+  setRawView(false);
+});
+window.addEventListener("blur", () => { if (rawHeld) setRawView(false); });          // the key was released in another window
 
 // ---------- manual review flag ----------
 function currentOriginalNode() {

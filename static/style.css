@@ -362,9 +362,6 @@ td.num { text-align: right; white-space: nowrap; }
 #btnOcrView.on + .caret { border-color: var(--accent); }
 #ocrLayer { display: none !important; }
 .file-actions .vsep { width: 1px; height: 16px; background: var(--line); margin-right: 4px; }
-.rawhint { font-size: 12px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; padding: 1px 8px; cursor: pointer; user-select: none; }
-.rawhint:hover { border-color: var(--accent); }
-.rawhint.on { color: var(--accent-text); background: var(--accent); border-color: var(--accent); border-style: solid; }
-/* raw view (Space over a page): every layer drawn over the pages is hidden, the pages show as they are */
+/* raw view (Space held over a page): every layer drawn over the pages is hidden, the pages show as they are */
 main.raw-view .chg, main.raw-view .lbox, main.raw-view .tlbox, main.raw-view .ocrbox, main.raw-view .bbox, main.raw-view .btextinput {
   visibility: hidden !important; pointer-events: none !important; }
