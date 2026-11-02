@@ -184,11 +184,14 @@ button.sfind { font: inherit; font-size: 12px; text-align: left; padding: 1px 4p
 .row .badges { display: flex; gap: 3px; overflow: hidden; flex: 0 100 auto; min-width: 0; }
 .row .badge { flex: none; }
 .row .caret { width: 8px; flex: none; color: var(--muted); font-size: 10px; transform: scale(1.8); }
-/* the dot at the left of a file: red = leak / error, orange = warning, yellow = config changed, green = reviewed */
+/* the dot at the left of a file: gray (slow fade) = a job changed it and it was not opened yet, green = reviewed, red = leak / error */
 .row .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-right: 2px; }
 .row .dot.red { background: #e5484d; }
-.row .dot.orange { background: #f08c00; }
-.row .dot.yellow { background: #f5d90a; }
+.row .dot.gray { background: var(--dot-a); animation: dotfade 4s ease-in-out infinite; }
+:root { --dot-a: #868b96; --dot-b: #cdd0d6; }
+@media (prefers-color-scheme: dark) { :root { --dot-a: #707889; --dot-b: #b8bfcc; } }
+@keyframes dotfade { 0%, 100% { background: var(--dot-a); } 50% { background: var(--dot-b); } }
+@media (prefers-reduced-motion: reduce) { .row .dot.gray { animation: none; } }
 .row .dot.green { background: var(--ok); }
 .row .fico { flex: none; }
 .badge { font-size: 10px; padding: 0 4px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }

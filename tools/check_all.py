@@ -4732,7 +4732,7 @@ def ocr_mode_tests():
         check("switching it on is accepted", mode(True)[0] == 200)
         check("the page is then a scan, and says it was asked for", lay()["kind"] == "scan" and lay()["forced"], lay()["kind"])
         check("the flag is in the tree, the review flag and the report entry are gone, the output is out of date",
-              (lambda t: t["force_ocr"] and t["status"] == "yellow")(
+              (lambda t: t["force_ocr"] and t["outdated"])(
                   {c["name"]: c for c in client.get("/api/tree").get_json()["children"][0]["children"]}["a.pdf"])
               and "a.pdf" not in json.loads((d / "anon_review.json").read_text())
               and json.loads((d / "anon_report.json").read_text())["files"] == [])
@@ -4791,7 +4791,7 @@ def rotate_tests():
               "a.pdf" not in json.loads((d / "anon_review.json").read_text())
               and [f["file"] for f in json.loads((d / "anon_report.json").read_text())["files"]] == ["b.pdf"])
         tree = client.get("/api/tree").get_json()["children"][0]["children"]
-        check("the output is out of date (yellow dot)", {c["name"]: c.get("status") for c in tree}["a.pdf"] == "yellow", tree)
+        check("the output is out of date", {c["name"]: c.get("outdated") for c in tree}["a.pdf"] is True, tree)
         check("an anonymized output is not rotated", rot(90, file="a_anonymized.pdf")[0] == 400)
         (d / "anon_config.yaml").write_text(
             'manual_blackouts:\n  - {file: "a.pdf", page: 1, box: [10, 10, 50, 50]}\nreplacements: []\n', encoding="utf-8")
@@ -5359,6 +5359,86 @@ def queue_tests():
             gate.set()
             webapp.eng.scan_folder, webapp.eng.run_anonymize = real_scan, real_run
             webapp.eng.reset_cancel()
+            webapp.STATE["root"] = saved_root
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def file_flag_tests():
+    """The dot of each file in the tree (app `file_states`): gray (a job changed the file and it was not opened since) beats green
+    (reviewed), which beats red (an error or a leftover); orange and yellow are gone; a finished scan / anonymization marks its files
+    BEFORE it shows as finished; opening the file (/api/seen) puts the gray dot out."""
+    print("\n== the dots of the tree")
+    import importlib.util
+    tmp = Path(tempfile.mkdtemp(prefix="anon_flags_"))
+    try:
+        d = tmp / "c"
+        d.mkdir()
+        for n in "abcdef":
+            doc = fitz.open()
+            doc.new_page().insert_text((72, 100), f"Titulaire : Thomas Marchand {n}", fontsize=10)
+            doc.save(d / f"{n}.pdf")
+            doc.save(d / f"{n}_anonymized.pdf")
+            doc.close()
+        spec = importlib.util.spec_from_file_location("anon_webapp_flags", ROOT / "app.py")
+        webapp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(webapp)
+        saved_root = webapp.STATE["root"]
+        webapp.STATE["root"] = tmp.resolve()
+        client = webapp.app.test_client()
+        leak = {"find": "Thomas", "hits": []}
+        (d / "anon_report.json").write_text(json.dumps({"files": [
+            {"file": "a.pdf", "leftovers": [leak]}, {"file": "b.pdf", "leftovers": [leak]}, {"file": "c.pdf", "leftovers": [leak]},
+            {"file": "d.pdf", "leftovers": [], "error": "boom"}, {"file": "e.pdf", "leftovers": [], "warnings": ["w"], "suspects": [{"value": "x"}]},
+            {"file": "f.pdf", "leftovers": []}]}), encoding="utf-8")
+        flags = {n + ".pdf": {"at": "2026-11-02 10:00", "sha256": webapp._sha(d / f"{n}_anonymized.pdf")} for n in "ab"}
+        (d / "anon_review.json").write_text(json.dumps(flags), encoding="utf-8")
+        webapp.mark_unseen(d, ["a.pdf", "f.pdf"], "anon_file")
+
+        def dots():
+            tree = client.get("/api/tree").get_json()["children"][0]["children"]
+            return {c["name"]: c["status"] for c in tree if not c["anonymized"]}
+        got = dots()
+        check("a file a job changed and nobody opened is gray, even reviewed and with a leftover", got["a.pdf"] == "gray" and got["f.pdf"] == "gray", got)
+        check("a reviewed file is green, even with a leftover", got["b.pdf"] == "green", got)
+        check("a leftover or an error is red when the file is not reviewed", got["c.pdf"] == "red" and got["d.pdf"] == "red", got)
+        check("warnings and second-check suspects alone give no dot (no orange)", got["e.pdf"] is None, got)
+        check("no dot is yellow or orange", not {"yellow", "orange"} & set(got.values()), got)
+        client.post("/api/seen", json={"folder": "c", "file": "a.pdf"})
+        client.post("/api/seen", json={"folder": "c", "file": "f.pdf"})
+        got = dots()
+        check("opening a gray file puts the gray dot out: the next flag shows (green, none)", got["a.pdf"] == "green" and got["f.pdf"] is None, got)
+        check("the file of the gray flags is gone when nothing is left", not (d / "anon_unseen.json").exists())
+        check("a path outside --root is refused", client.post("/api/seen", json={"folder": "../", "file": "a.pdf"}).status_code in (403, 404))
+
+        # a finished item marks its files before it shows as finished
+        res0 = engine.scan_folder(d, "c", [], "fra+eng", lambda m: None)
+        real_scan, real_run = webapp.eng.scan_folder, webapp.eng.run_anonymize
+        webapp.eng.scan_folder = lambda *a, **k: res0
+        webapp.eng.run_anonymize = lambda *a, **k: {"files": [], "total_seconds": 0}
+        try:
+            def run(url, body):
+                job = client.post(url, json=body).get_json()["job"]
+                end = time.time() + 20
+                while time.time() < end:
+                    s = client.get(f"/api/job/{job}?since=0").get_json()
+                    if s["status"] not in ("queued", "running"):
+                        return s
+                    time.sleep(0.02)
+            s = run("/api/scan", {"folder": "c", "file": "e.pdf"})
+            got = dots()
+            check("a scanned file is gray as soon as the scan shows as done", s["status"] == "done" and got["e.pdf"] == "gray" and got["d.pdf"] == "red", (s["status"], got))
+            client.post("/api/seen", json={"folder": "c", "file": "e.pdf"})
+            s = run("/api/scan", {"folder": "c"})
+            got = dots()
+            check("a scan of the folder marks every file", all(got[n + ".pdf"] == "gray" for n in "abcdef"), got)
+            for n in "abcdef":
+                client.post("/api/seen", json={"folder": "c", "file": n + ".pdf"})
+            s = run("/api/anonymize", {"folder": "c", "file": "c.pdf"})
+            got = dots()
+            check("an anonymized file is gray, the others are not", got["c.pdf"] == "gray" and got["d.pdf"] == "red" and got["b.pdf"] == "green", got)
+        finally:
+            webapp.eng.scan_folder, webapp.eng.run_anonymize = real_scan, real_run
             webapp.STATE["root"] = saved_root
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -6277,7 +6357,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "review_page_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "cancel_tests", "queue_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "review_page_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "cancel_tests", "queue_tests", "file_flag_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

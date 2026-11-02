@@ -182,10 +182,9 @@ function unfoldAbove(path) {
 }
 
 const DOT_TITLE = {
-  red: "An error, or an original value still readable in the output: see the Recap",
-  orange: "Warning or value to check from the last anonymization: see the Recap",
-  yellow: "Config changed since the last anonymization: anonymize again",
+  gray: "A scan or an anonymization changed this file and you have not opened it since",
   green: "Reviewed by hand",
+  red: "An error, or an original value still readable in the output: see the Recap",
 };
 function renderTree() {
   const box = $("#tree");
@@ -783,6 +782,14 @@ if ("ResizeObserver" in window) {
   VIEWERS.forEach((w) => ro.observe(viewers[w].box));
 }
 
+// opening a file a job changed puts its gray dot out (the server forgets it, the tree is read again)
+async function markSeen(node) {
+  const o = node && (node.anonymized ? state.nodes[node.original] : node);
+  if (!o || !o.unseen) return;
+  o.unseen = false;                                         // at once: a second call does nothing
+  try { await post("/api/seen", { folder: dirname(o.path), file: o.name }); await loadTree(); } catch (e) { /* the dot stays until the next look */ }
+}
+
 async function openFile(path) {
   const node = state.nodes[path];
   if (!node) return;
@@ -793,6 +800,7 @@ async function openFile(path) {
   }
   state.file = path;
   unfoldAbove(dirname(path));
+  markSeen(node);
   renderTree();
   scheduleSave();
   const orig = node.anonymized ? node.original : node.path;
@@ -2296,6 +2304,7 @@ async function onItemFinished(q) {
   const sameFolder = q.folder === state.folder, cur = currentOriginalNode();
   const mine = sameFolder && (q.file === null || (!!cur && cur.name === q.file));      // the item is about what the user has open
   await loadTree();
+  if (mine && cur && state.nodes[cur.path]) await markSeen(state.nodes[cur.path]);      // they are looking at it: no gray dot
   if (state.status) loadStatus().catch(() => {});                                       // the batch overview
   if (q.status === "done") {
     if (q.kind.startsWith("scan")) {

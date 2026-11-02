@@ -128,11 +128,53 @@ def save_settings():
     return info()
 
 
+# files changed by a job and not looked at yet (the gray dot): anon_unseen.json of the folder, {original file name: {at, kind}}
+UNSEEN_NAME = "anon_unseen.json"
+UNSEEN_LOCK = threading.Lock()
+
+
+def read_unseen(folder: Path) -> dict[str, dict]:
+    f = folder / UNSEEN_NAME
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_unseen(folder: Path, data: dict) -> None:
+    f = folder / UNSEEN_NAME
+    if not data:
+        f.unlink(missing_ok=True)
+        return
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(f)
+
+
+def mark_unseen(folder: Path, names: list[str], kind: str) -> None:
+    """These files were changed by a job (a scan or an anonymization): the tree shows them gray until the user opens them."""
+    if not names:
+        return
+    with UNSEEN_LOCK:
+        data = read_unseen(folder)
+        for n in names:
+            data[n] = {"at": time.strftime("%Y-%m-%d %H:%M"), "kind": kind}
+        _write_unseen(folder, data)
+
+
+def clear_unseen(folder: Path, name: str) -> None:
+    with UNSEEN_LOCK:
+        data = read_unseen(folder)
+        if data.pop(name, None) is not None:
+            _write_unseen(folder, data)
+
+
 def file_states(d: Path, own: list[dict]) -> None:
-    """The dot of each original in the tree (`status`): 'red' = an error, or an original value still found in the output
-    (a leftover); 'green' = reviewed by hand (the review is of the current output, so it wins over what follows);
-    'orange' = a warning of the last run or a value the second check still reads (offered as a suggestion);
-    'yellow' = the config was saved after the output (or there is no output yet): anonymize; None = nothing to say."""
+    """The dot of each original in the tree (`status`), the first that applies:
+    'gray' = a job changed the file (scan / anonymization) and it was not opened since (anon_unseen.json): it fades slowly;
+    'green' = reviewed by hand (the review is of the current output);
+    'red' = an error, or an original value still found in the output (a leftover);
+    None = nothing to say. `outdated` (not a dot) says the output is older than the config, the original or the OCR mode."""
     files = {}
     rep = d / eng.REPORT_NAME
     if rep.exists():
@@ -143,24 +185,37 @@ def file_states(d: Path, own: list[dict]) -> None:
     cfg = d / eng.CONFIG_NAME
     cfg_time = cfg.stat().st_mtime if cfg.exists() else None
     modes = eng.ocr_modes(d)
+    unseen = read_unseen(d)
     for c in own:
         if c["anonymized"]:
             continue
         f = files.get(c["name"]) or {}
         out = eng.output_of(d / c["name"])
-        if f.get("error") or f.get("leftovers"):
-            c["status"] = "red"
+        c["unseen"] = c["name"] in unseen
+        c["outdated"] = bool(
+            (cfg_time is not None and (not out.exists() or cfg_time > out.stat().st_mtime))
+            or (out.exists() and ((d / c["name"]).stat().st_mtime > out.stat().st_mtime
+                                  or (modes.get(c["name"]) or {}).get("at", 0) > out.stat().st_mtime)))
+        if c["unseen"]:
+            c["status"] = "gray"
         elif c["reviewed"]:
             c["status"] = "green"
-        elif f.get("warnings") or f.get("suspects"):
-            c["status"] = "orange"
-        elif cfg_time is not None and (not out.exists() or cfg_time > out.stat().st_mtime):
-            c["status"] = "yellow"
-        elif out.exists() and ((d / c["name"]).stat().st_mtime > out.stat().st_mtime
-                               or (modes.get(c["name"]) or {}).get("at", 0) > out.stat().st_mtime):
-            c["status"] = "yellow"             # the original changed after the output (rotated): anonymize again
+        elif f.get("error") or f.get("leftovers"):
+            c["status"] = "red"
         else:
             c["status"] = None
+
+
+@app.post("/api/seen")
+def mark_seen():
+    """The user opened a file that a job changed: its gray dot goes."""
+    data = request.get_json(force=True)
+    try:
+        folder = folder_arg(data)
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    clear_unseen(folder, Path(str(data.get("file", ""))).name)
+    return jsonify({"ok": True})
 
 
 def build_tree(d: Path) -> dict | None:
@@ -849,6 +904,21 @@ def _worker_loop() -> None:
             QUEUE_CV.notify_all()
 
 
+def _touched(item: dict, status: str) -> list[str]:
+    """The files a finished item changed (they get the gray dot): a scan of a folder / a file read when it is done; an
+    anonymization of a file when it is done or failed; of a folder, the files whose output was written since it started."""
+    d = safe(item["folder"])
+    sources = [p for p in eng.list_sources(d)]
+    if item["kind"] == "scan_folder":
+        return [p.name for p in sources] if status == "done" else []
+    if item["kind"] == "scan_file":
+        return [item["file"]] if status == "done" else []
+    if item["kind"] == "anon_file":
+        return [item["file"]] if status in ("done", "error") else []
+    since = (item["started"] or 0) - 1
+    return [p.name for p in sources if eng.output_of(p).exists() and eng.output_of(p).stat().st_mtime >= since]
+
+
 def _run_item(item: dict) -> None:
     def log(msg: str):
         item["log"].append(f"{time.strftime('%H:%M:%S')}  {msg}")
@@ -856,23 +926,27 @@ def _run_item(item: dict) -> None:
     def progress(done: int, total: int, current: str = ""):
         item["progress"] = {"done": done, "total": total, "current": current}
 
+    status = "done"
     try:
         item["result"] = item["fn"](log, progress)
-        item["status"] = "done"
     except eng.Cancelled:
-        item["status"] = "cancelled"
+        status = "cancelled"
         log("Cancelled: what was finished before is kept (a scan leaves the config as it was).")
     except Exception as e:  # noqa: BLE001
         item["error"] = str(e)
-        item["status"] = "error"
+        status = "error"
         log(f"ERROR: {e}")
         # the full traceback goes to the console where the app runs; the log shows its last frames
         tb = traceback.format_exc()
         print(tb, file=sys.stderr, flush=True)
         for line in tb.splitlines()[-12:]:
             log(f"  {line}")
-    finally:
-        item["ended"] = time.time()
+    try:
+        mark_unseen(safe(item["folder"]), _touched(item, status), item["kind"])
+    except Exception as e:  # noqa: BLE001  (a flag that cannot be written must not fail the item)
+        print(f"gray flag not written: {e}", file=sys.stderr, flush=True)
+    item["ended"] = time.time()
+    item["status"] = status
 
 
 def job_progress(job) -> dict:
