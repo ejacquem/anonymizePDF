@@ -314,7 +314,7 @@ function sizePages(which) {
     el.style.height = v.pages[i].h * k + "px";
   });
   if (which === "anon") drawBoxes();
-  if (which === "orig") { redrawTermFrame(); drawOcrView(); }   // the frames are placed in page points: they follow the zoom
+  if (which === "orig") { redrawTermFrame(); drawOcrView(); scheduleOcrLoad(); }   // the frames are placed in page points: they follow the zoom
   drawChanges(which);
 }
 
@@ -486,63 +486,75 @@ function drawOcrView() {
   });
 }
 
+// The pages whose OCR is read: the ones on screen first (top to bottom), then the page below and the one above them, so a scroll
+// of one page finds its words already there. The other pages are read when they come near the screen.
+function ocrWantedPages() {
+  const v = viewers.orig, n = v.pages.length, vb = v.box.getBoundingClientRect();
+  const on = [...v.list.children].map((el) => { const r = el.getBoundingClientRect(); return r.bottom >= vb.top && r.top <= vb.bottom; });
+  let first = on.indexOf(true), last = on.lastIndexOf(true);
+  if (first < 0) first = last = 0;                           // not laid out yet: the first page
+  const out = [];
+  for (let i = first; i <= last; i++) out.push(i + 1);
+  if (last + 2 <= n) out.push(last + 2);                     // the page below
+  if (first >= 1) out.push(first);                           // the page above
+  return out;
+}
+
+const ocrRead = new Set();                                   // "page" / "page raw" requests on their way (a new look does not ask twice)
 async function loadOcrView() {
   const v = viewers.orig, path = v.path;
   if (!ocrViewOn() || !path) return;
   if (curBusyItem()) { setStatus("OCR view: this file is queued or being processed; it is available when it ends"); return; }
-  if (ocrView.path !== path) { ocrView.path = path; ocrView.pages = {}; }
+  if (ocrView.path !== path) { ocrView.path = path; ocrView.pages = {}; ocrRead.clear(); }
   const token = ++ocrView.token, folder = dirname(path), file = baseName(path);
-  for (let p = 1; p <= v.pages.length; p++) {
-    if (ocrView.pages[p]) continue;
-    setStatus(`Reading the OCR of page ${p}/${v.pages.length}…`);
+  const url = (p, raw) => `/api/ocrview?folder=${encodeURIComponent(folder)}&file=${encodeURIComponent(file)}&page=${p}${raw ? "&raw=1" : ""}`;
+  for (;;) {
+    if (token !== ocrView.token || !ocrViewOn() || v.path !== path) return;     // another look (a scroll, a zoom) took over
+    // one request at a time: the next page that is wanted and not read (nor being read), its raw layer when that layer is chosen
+    const raw = ocrLayer.value === "raw";
+    let todo = null;
+    for (const p of ocrWantedPages()) {
+      const d = ocrView.pages[p];
+      if (!d && !ocrRead.has(String(p))) { todo = { p, raw: false }; break; }
+      if (d && raw && !d.raw && !ocrRead.has(p + " raw")) { todo = { p, raw: true }; break; }
+    }
+    if (!todo) break;
+    const key = todo.raw ? todo.p + " raw" : String(todo.p);
+    ocrRead.add(key);
+    setStatus(`Reading the OCR of page ${todo.p}/${v.pages.length}…`);
     try {
-      const d = await api(`/api/ocrview?folder=${encodeURIComponent(folder)}&file=${encodeURIComponent(file)}&page=${p}`);
-      if (token !== ocrView.token || !ocrViewOn() || v.path !== path) return;
-      ocrView.pages[p] = d;
-      if (ocrLayer.value === "raw") { await loadOcrRaw(p); if (token !== ocrView.token) return; }
+      const d = await api(url(todo.p, todo.raw));
+      if (v.path !== path || ocrView.path !== path) return;                      // the answer is for a file that is no longer open
+      if (todo.raw) { const pg = ocrView.pages[todo.p]; if (pg) { pg.raw = d.raw; pg.meta = d.meta; } }
+      else ocrView.pages[todo.p] = d;                                            // kept even when a new look took over meanwhile
     } catch (e) {
+      ocrRead.delete(key);
       if (token === ocrView.token) { setStatus(""); notify("OCR view: " + e.message, "err"); }
       return;
     }
+    ocrRead.delete(key);
     drawOcrView();
   }
-  setStatus("");
+  if (token === ocrView.token) setStatus("");
 }
-
-// the engine's own words of a page (the Raw engine layer): read when the layer is chosen, kept with the page
-async function loadOcrRaw(only) {
-  const v = viewers.orig, path = v.path, token = ocrView.token;
-  if (!ocrViewOn() || !path) return;
-  const folder = dirname(path), file = baseName(path);
-  for (let p = only || 1; p <= (only || v.pages.length); p++) {
-    const d = ocrView.pages[p];
-    if (!d || d.raw) continue;
-    setStatus(`Reading what the OCR engine returns for page ${p}/${v.pages.length}…`);
-    try {
-      const r = await api(`/api/ocrview?folder=${encodeURIComponent(folder)}&file=${encodeURIComponent(file)}&page=${p}&raw=1`);
-      if (token !== ocrView.token || v.path !== path) return;
-      d.raw = r.raw;
-      d.meta = r.meta;
-    } catch (e) {
-      setStatus("");
-      notify("OCR view: " + e.message, "err");
-      return;
-    }
-    drawOcrView();
-  }
-  setStatus("");
+var ocrLoadTimer = null;
+function scheduleOcrLoad() {
+  if (!ocrViewOn()) return;
+  clearTimeout(ocrLoadTimer);
+  ocrLoadTimer = setTimeout(loadOcrView, 150);
 }
+viewers.orig.box.addEventListener("scroll", scheduleOcrLoad, { passive: true });
 
 btnOcrView.onclick = () => {
   btnOcrView.classList.toggle("on");
   ocrLayer.hidden = !ocrViewOn();
   try { localStorage.setItem(OCRVIEW_KEY, ocrViewOn() ? "1" : "0"); } catch (e) { /* no storage */ }
-  if (ocrViewOn()) { ocrView.pages = {}; loadOcrView(); } else { ocrView.token++; drawOcrView(); setStatus(""); }
+  if (ocrViewOn()) { ocrView.pages = {}; ocrRead.clear(); loadOcrView(); } else { ocrView.token++; drawOcrView(); setStatus(""); }
 };
 ocrLayer.onchange = () => {
   try { localStorage.setItem(OCRLAYER_KEY, ocrLayer.value); } catch (e) { /* no storage */ }
   drawOcrView();
-  if (ocrLayer.value === "raw") loadOcrRaw();
+  loadOcrView();                                             // the raw layer of the pages near the screen
 };
 try {
   const saved = localStorage.getItem(OCRLAYER_KEY);
