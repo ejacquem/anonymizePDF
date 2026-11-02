@@ -323,8 +323,8 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   text quality allowed (`qualityFloor`, default -0.5, -1 = no limit): the value sent is the slider not below it
   (`sentQuality()`). The tree (directory): each original has a dot at its left (`file_states` in app.py), the first that applies:
   **gray** (fades slowly between two grays, `dotfade`) = a scan / anonymization changed the file and it was not opened since; **green** = reviewed by
-  hand; **red** = an error or a leftover (an original value still found in the output); no dot otherwise (no orange, no yellow: warnings and second-check
-  suspects are in the Recap; `outdated` in the tree node says the output is older than the config / original / OCR mode, with no dot). The gray flags are
+  hand; **red** = the last run failed on the file (`error` in the report; leftovers, warnings and second-check suspects give no dot, they are in the Recap);
+  no dot otherwise (no orange, no yellow; `outdated` in the tree node says the output is older than the config / original / OCR mode, with no dot). The gray flags are
   `anon_unseen.json` of the folder ({file: {at, kind}}, git-ignored, `mark_unseen` / `clear_unseen`): an item marks its files (`_touched`: the file of a file
   item, every file of a scanned folder, the files whose output was written for an anonymized folder; a cancelled scan marks nothing) BEFORE it shows as
   finished, opening a file (`openFile` -> `markSeen` -> `POST /api/seen`) or an item that ends on the file the user has open clears it. Test: `file_flag_tests`. The icon is a file, or a lock once an

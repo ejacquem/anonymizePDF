@@ -184,7 +184,7 @@ function unfoldAbove(path) {
 const DOT_TITLE = {
   gray: "A scan or an anonymization changed this file and you have not opened it since",
   green: "Reviewed by hand",
-  red: "An error, or an original value still readable in the output: see the Recap",
+  red: "The last anonymization failed on this file: see the Recap",
 };
 function renderTree() {
   const box = $("#tree");
@@ -2756,17 +2756,16 @@ function renderRecap() {
     (f.warnings || []).forEach((w) => { h += `<div class="note warn">⚠ ${esc(w)}</div>`; });
     // one line per value the second check still reads: clickable, it shows the value in the anonymized file
     (f.suspects || []).forEach((s, si) => {
-      const where = s.hits && s.hits.length ? "click to find it" : "no position: anonymize the file again";
+      const noPos = s.hits && s.hits.length ? "" : ` <span class="muted small">(no position: anonymize the file again)</span>`;
       h += `<div class="note warn">⚠ <button class="sfind" data-sfile="${esc(f.file)}" data-si="${si}"${s.hits && s.hits.length ? "" : " disabled"}
-        title="Show it in the anonymized file (click again for the next place)">${esc(s.type)} “${esc(s.value)}” · p.${s.page}</button>
-        still readable in the output, not replaced <span class="muted small">(${where}; a suggestion in the Config)</span></div>`;
+        title="Show it in the anonymized file (click again for the next place)">${esc(s.type)} “${esc(s.value)}” · p.${s.page}</button>${noPos}</div>`;
     });
     if ((f.suggested || []).length) {
       h += `<div class="note warn">${f.suggested.length} value(s) offered as suggestions in the Config (not active):
         <button class="mini" data-config="1">open the Config</button></div>`;
     }
     if (f.leftovers.length) {
-      h += `<div class="note bad"><b>Original text still found in the output:</b> <span class="muted small">click to find it</span><br>` +
+      h += `<div class="note bad"><b>Original text still found in the output:</b><br>` +
         f.leftovers.map((l, li) => `<button class="lfind" data-lfile="${esc(f.file)}" data-li="${li}" title="Show it in the anonymized file (click again for the next place)">${esc(l.where)}: “${esc(l.find)}” ×${l.count}</button>`).join("<br>") + `</div>`;
     }
     if (f.items.length) {

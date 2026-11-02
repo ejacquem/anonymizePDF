@@ -5366,7 +5366,7 @@ def queue_tests():
 
 def file_flag_tests():
     """The dot of each file in the tree (app `file_states`): gray (a job changed the file and it was not opened since) beats green
-    (reviewed), which beats red (an error or a leftover); orange and yellow are gone; a finished scan / anonymization marks its files
+    (reviewed), which beats red (an error; a leftover gives no dot); orange and yellow are gone; a finished scan / anonymization marks its files
     BEFORE it shows as finished; opening the file (/api/seen) puts the gray dot out."""
     print("\n== the dots of the tree")
     import importlib.util
@@ -5401,7 +5401,8 @@ def file_flag_tests():
         got = dots()
         check("a file a job changed and nobody opened is gray, even reviewed and with a leftover", got["a.pdf"] == "gray" and got["f.pdf"] == "gray", got)
         check("a reviewed file is green, even with a leftover", got["b.pdf"] == "green", got)
-        check("a leftover or an error is red when the file is not reviewed", got["c.pdf"] == "red" and got["d.pdf"] == "red", got)
+        check("only an error is red, and only when the file is not reviewed: a leftover alone gives no dot",
+              got["d.pdf"] == "red" and got["c.pdf"] is None, got)
         check("warnings and second-check suspects alone give no dot (no orange)", got["e.pdf"] is None, got)
         check("no dot is yellow or orange", not {"yellow", "orange"} & set(got.values()), got)
         client.post("/api/seen", json={"folder": "c", "file": "a.pdf"})

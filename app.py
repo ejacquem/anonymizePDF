@@ -173,7 +173,7 @@ def file_states(d: Path, own: list[dict]) -> None:
     """The dot of each original in the tree (`status`), the first that applies:
     'gray' = a job changed the file (scan / anonymization) and it was not opened since (anon_unseen.json): it fades slowly;
     'green' = reviewed by hand (the review is of the current output);
-    'red' = an error, or an original value still found in the output (a leftover);
+    'red' = the last run failed on the file (an error; leftovers and warnings give no dot, the Recap lists them);
     None = nothing to say. `outdated` (not a dot) says the output is older than the config, the original or the OCR mode."""
     files = {}
     rep = d / eng.REPORT_NAME
@@ -200,7 +200,7 @@ def file_states(d: Path, own: list[dict]) -> None:
             c["status"] = "gray"
         elif c["reviewed"]:
             c["status"] = "green"
-        elif f.get("error") or f.get("leftovers"):
+        elif f.get("error"):
             c["status"] = "red"
         else:
             c["status"] = None
