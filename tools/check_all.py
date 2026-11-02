@@ -5366,7 +5366,7 @@ def queue_tests():
 
 def file_flag_tests():
     """The dot of each file in the tree (app `file_states`): gray (a job changed the file and it was not opened since) beats green
-    (reviewed), which beats red (an error; a leftover gives no dot); orange and yellow are gone; a finished scan / anonymization marks its files
+    (reviewed), which beats red (an error; a leftover gives no dot), which beats yellow (the output is out of date); no orange; a finished scan / anonymization marks its files
     BEFORE it shows as finished; opening the file (/api/seen) puts the gray dot out."""
     print("\n== the dots of the tree")
     import importlib.util
@@ -5404,12 +5404,17 @@ def file_flag_tests():
         check("only an error is red, and only when the file is not reviewed: a leftover alone gives no dot",
               got["d.pdf"] == "red" and got["c.pdf"] is None, got)
         check("warnings and second-check suspects alone give no dot (no orange)", got["e.pdf"] is None, got)
-        check("no dot is yellow or orange", not {"yellow", "orange"} & set(got.values()), got)
+        check("no dot is orange, and none is yellow while nothing is out of date", not {"yellow", "orange"} & set(got.values()), got)
         client.post("/api/seen", json={"folder": "c", "file": "a.pdf"})
         client.post("/api/seen", json={"folder": "c", "file": "f.pdf"})
         got = dots()
         check("opening a gray file puts the gray dot out: the next flag shows (green, none)", got["a.pdf"] == "green" and got["f.pdf"] is None, got)
         check("the file of the gray flags is gone when nothing is left", not (d / "anon_unseen.json").exists())
+        (d / "anon_config.yaml").write_text("replacements: []\n", encoding="utf-8")        # saved after the outputs: they are out of date
+        got = dots()
+        check("a config saved after the output gives a yellow dot (not over green or red)",
+              got["e.pdf"] == "yellow" and got["f.pdf"] == "yellow" and got["c.pdf"] == "yellow" and got["a.pdf"] == "green"
+              and got["b.pdf"] == "green" and got["d.pdf"] == "red", got)
         check("a path outside --root is refused", client.post("/api/seen", json={"folder": "../", "file": "a.pdf"}).status_code in (403, 404))
 
         # a finished item marks its files before it shows as finished

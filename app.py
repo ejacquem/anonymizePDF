@@ -174,7 +174,8 @@ def file_states(d: Path, own: list[dict]) -> None:
     'gray' = a job changed the file (scan / anonymization) and it was not opened since (anon_unseen.json): it fades slowly;
     'green' = reviewed by hand (the review is of the current output);
     'red' = the last run failed on the file (an error; leftovers and warnings give no dot, the Recap lists them);
-    None = nothing to say. `outdated` (not a dot) says the output is older than the config, the original or the OCR mode."""
+    'yellow' = `outdated`: the config was saved after the output (or there is no output yet), or the original / its OCR mode changed
+    after it: anonymize again; None = nothing to say."""
     files = {}
     rep = d / eng.REPORT_NAME
     if rep.exists():
@@ -202,6 +203,8 @@ def file_states(d: Path, own: list[dict]) -> None:
             c["status"] = "green"
         elif f.get("error"):
             c["status"] = "red"
+        elif c["outdated"]:
+            c["status"] = "yellow"
         else:
             c["status"] = None
 

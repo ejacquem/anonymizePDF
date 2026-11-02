@@ -184,9 +184,10 @@ button.sfind { font: inherit; font-size: 12px; text-align: left; padding: 1px 4p
 .row .badges { display: flex; gap: 3px; overflow: hidden; flex: 0 100 auto; min-width: 0; }
 .row .badge { flex: none; }
 .row .caret { width: 8px; flex: none; color: var(--muted); font-size: 10px; transform: scale(1.8); }
-/* the dot at the left of a file: gray (slow fade) = a job changed it and it was not opened yet, green = reviewed, red = leak / error */
+/* the dot at the left of a file: gray (slow fade) = a job changed it and it was not opened yet, green = reviewed, red = error, yellow = config changed: anonymize again */
 .row .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-right: 2px; }
 .row .dot.red { background: #e5484d; }
+.row .dot.yellow { background: #f5d90a; }
 .row .dot.gray { background: var(--dot-a); animation: dotfade 4s ease-in-out infinite; }
 :root { --dot-a: #868b96; --dot-b: #cdd0d6; }
 @media (prefers-color-scheme: dark) { :root { --dot-a: #707889; --dot-b: #b8bfcc; } }

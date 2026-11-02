@@ -185,6 +185,7 @@ const DOT_TITLE = {
   gray: "A scan or an anonymization changed this file and you have not opened it since",
   green: "Reviewed by hand",
   red: "The last anonymization failed on this file: see the Recap",
+  yellow: "The config (or the original) changed since the last anonymization: anonymize again",
 };
 function renderTree() {
   const box = $("#tree");
