@@ -4919,6 +4919,30 @@ def ocr_view_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def ocr_blank_tests():
+    """Tesseract words over blank paper (`ocr.drop_blank`): a word whose box holds no ink and a mark that floats alone are
+    dropped; a word with ink, and a ':' or '-' beside a word of its line, stay."""
+    print("\n== Tesseract: boxes with no ink")
+    from PIL import Image, ImageDraw
+    img = Image.new("L", (800, 300), 255)
+    d = ImageDraw.Draw(img)
+    d.rectangle([50, 100, 200, 140], fill=0)                 # 'Nom'
+    d.rectangle([212, 112, 218, 128], fill=0)                # ':' (a small mark beside it)
+    d.rectangle([240, 100, 400, 140], fill=0)                # 'Dupont'
+    d.rectangle([600, 40, 606, 46], fill=0)                  # a speck far from any word
+    box = lambda x0, y0, x1, y1: (x0, y0, x1, y1)
+    words = [{"text": "Nom", "box": box(50, 100, 200, 140)}, {"text": ":", "box": box(210, 110, 220, 130)},
+             {"text": "Dupont", "box": box(240, 100, 400, 140)}, {"text": ".", "box": box(598, 38, 608, 48)},
+             {"text": "Co", "box": box(450, 200, 520, 240)}, {"text": "|", "box": box(700, 150, 704, 250)}]
+    kept = [w["text"] for w in ocr.drop_blank(img, words)]
+    check("a word with ink stays", "Nom" in kept and "Dupont" in kept, kept)
+    check("a ':' beside a word of its line stays", ":" in kept, kept)
+    check("a speck that floats alone is dropped", "." not in kept, kept)
+    check("a word over blank paper is dropped", "Co" not in kept, kept)
+    check("a mark over blank paper is dropped", "|" not in kept, kept)
+    check("a page with no contrast is left alone", ocr.drop_blank(Image.new("L", (100, 100), 255), words[:2]) == words[:2])
+
+
 def scan_file_tests():
     """Scan one file (`configmodel.add_scan`, app /api/scan with `file`): only that file is read, its values are added to the
     folder's config, and everything the config already has (replacements, ticks, edits, manual data) stays as it was."""
@@ -5891,7 +5915,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

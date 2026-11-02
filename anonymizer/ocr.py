@@ -298,7 +298,52 @@ def _tess_words(img, lang, psm, min_conf, tag):
         x, y, w, h = d["left"][i], d["top"][i], d["width"][i], d["height"][i]
         words.append({"text": t, "box": (x, y, x + w, y + h), "conf": conf,
                       "line": (tag, d["block_num"][i], d["par_num"][i], d["line_num"][i])})
-    return words
+    return drop_blank(img, words)
+
+
+BLANK_INK = 0.01          # a word whose box holds less ink than this is not on the page (a speck, a smudge, a hallucination)
+BLANK_INK_SYMBOL = 0.05   # ... and a box of marks with no letter or digit ('|', ';', '-', '.') needs a few percent of ink: a real mark fills its tight box
+
+
+def drop_blank(img, words: list[dict]) -> list[dict]:
+    """The words whose box holds (almost) no ink: Tesseract reads specks and rules of a coarse copy as marks and short words
+    ('|', ';', 'Co', '1'), boxes over blank paper that the OCR view shows and that the matching never wanted. Ink = darker than
+    the middle of the page's paper and darkest ink levels. A word with letters or digits goes below 1 % of ink, a box of
+    marks only below 5 % (a real ':' or '-' fills most of its tight box)."""
+    import numpy as np
+
+    if not words:
+        return words
+    g = np.asarray(img.convert("L"))
+    lo, hi = float(np.percentile(g, 1)), float(np.percentile(g, 80))
+    if hi - lo < 60:                                   # no contrast to measure ink with (a blank or a flat page)
+        return words
+    dark = g < (lo + hi) / 2
+    letters = [w for w in words if re.search(r"[^\W_]", w["text"])]
+    heights = sorted(w["box"][3] - w["box"][1] for w in letters)
+    reach = heights[len(heights) // 2] if heights else 0.0      # a mark belongs to a word at most one text height away
+    out = []
+    for w in words:
+        x0, y0, x1, y1 = (max(int(round(v)), 0) for v in w["box"])
+        region = dark[y0:y1, x0:x1]
+        share = float(region.mean()) if region.size else 0.0
+        if re.search(r"[^\W_]", w["text"]):
+            if share >= BLANK_INK:
+                out.append(w)
+        elif share >= BLANK_INK_SYMBOL and _beside_word(w["box"], letters, reach):
+            out.append(w)
+    return out
+
+
+def _beside_word(box, letters: list[dict], reach: float) -> bool:
+    """Is a mark (a box with no letter or digit) next to a word of its line? A ':' after a label or a '-' between two words
+    is; a speck or a ruled line on its own is not."""
+    cy = (box[1] + box[3]) / 2
+    for w in letters:
+        b = w["box"]
+        if b[1] <= cy <= b[3] and (b[0] - reach <= box[2] and box[0] <= b[2] + reach):
+            return True
+    return False
 
 
 def tesseract_words(img, lang: str = "eng", min_conf: float = 0, second_pass: bool = True) -> list[dict]:

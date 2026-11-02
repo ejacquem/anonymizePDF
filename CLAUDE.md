@@ -638,7 +638,13 @@ Order must never change a result (`order_tests`): a value written with several s
 - Windows OCR quirks: ~1 s/page, reads some `0` as `O` (handled by `fix_digits` + tolerant matching), drops isolated
   letters (the `F` of Sexe) and sometimes whole labels, reads only part of a passport MRZ line 1 and none of an ID
   card MRZ, even on cropped / enlarged lines.
-- Tesseract: two passes (`--psm 3`, then `--psm 6` split at column gaps), best reading kept per line.
+- Tesseract: two passes (`--psm 3`, then `--psm 6` split at column gaps), best reading kept per line (when the two disagree both
+  readings stay, so a detector can match on either: the page text can hold a line twice). Boxes with no ink are dropped
+  (`ocr.drop_blank`, test `ocr_blank_tests`): on a coarse copy Tesseract reads specks, smudges and ruled lines as marks and short words
+  ('|', ';', 'Co', '1'); a word with letters or digits needs 1 % of dark pixels in its box (dark = below the middle of the page's
+  paper and ink levels), a box of marks only needs 5 % and a word of its line within a text height (a ':' after a label or a '-'
+  between words stays, a speck does not). Measured on four generated scans: the mark-only boxes of the 150 dpi statement went 35 -> 5,
+  of `doc_vieux_bad` 49 -> 3, with no value word lost.
 - **A page is read more than once** (`ocrpage.page_words`, used by the scan, the anonymization of a scan page, the pixel
   pass and the checks of the output; `ocr.ocr_words` stays the reading of one image, and of the small crops). On a coarse
   scan (100 dpi, black and white, thick copier strokes) the 300 dpi reading misses words ('Clément'), garbles numbers
