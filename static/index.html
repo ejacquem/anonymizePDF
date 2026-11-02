@@ -53,6 +53,20 @@
 
   <div class="splitter" data-split="tree" title="Drag to resize · double-click to reset"></div>
 
+  <div id="viewArea">
+    <div class="viewbar pane-tools">
+      <span class="muted small">View</span>
+      <div class="zoom">
+        <button id="zoomOut" class="mini" title="Zoom out (wheel; Shift + wheel scrolls)">−</button>
+        <button id="zoomFit" class="mini zoom-label" title="Fit page width">Fit</button>
+        <button id="zoomIn" class="mini" title="Zoom in (wheel; Shift + wheel scrolls)">+</button>
+      </div>
+      <button id="btnChanges" class="mini" disabled title="Frame each replaced field (orange) and each removed area (purple, dashed), in both panes">Changes</button>
+      <div class="seg viewmode" title="Viewer: the pages as images, both PDFs zoom and scroll together.&#10;PDF: the browser's own PDF viewer (text can be selected, copied, searched).">
+        <button id="modeViewer" data-mode="viewer" class="on">Viewer</button><button id="modePdf" data-mode="pdf">PDF</button>
+      </div>
+    </div>
+    <div id="viewPanes">
   <section id="origPane" class="pane">
     <div class="pane-head tools">
       <div class="phead-title"><span>Original</span> <span id="origName" class="muted"></span>
@@ -61,24 +75,28 @@
           <button id="btnRunFile" class="mini" disabled title="Anonymize only this file (&#8593; &#8595; in the tree switch file)">Anonymize file</button>
         </span></div>
       <div class="pane-tools">
-        <div class="zoom">
-          <button id="zoomOut" class="mini" title="Zoom out (wheel; Shift + wheel scrolls)">−</button>
-          <button id="zoomFit" class="mini zoom-label" title="Fit page width">Fit</button>
-          <button id="zoomIn" class="mini" title="Zoom in (wheel; Shift + wheel scrolls)">+</button>
-        </div>
+        <span class="menuwrap">
+          <button id="btnRotate" class="mini" disabled data-menu="rotMenu" aria-haspopup="menu" title="Rotate the original PDF 90° (the original file is changed and saved)">Rotate &#9662;</button>
+          <div id="rotMenu" class="dropmenu" role="menu" hidden>
+            <button id="btnRotL" role="menuitem" disabled title="Rotate the original PDF 90° counter-clockwise and SAVE it (the original file is changed). Then anonymize again.">&#8634; Rotate left 90°</button>
+            <button id="btnRotR" role="menuitem" disabled title="Rotate the original PDF 90° clockwise and SAVE it (the original file is changed). Then anonymize again.">&#8635; Rotate right 90°</button>
+            <div class="menunote">Saves the rotated PDF over the original. Anonymize again afterwards.</div>
+          </div>
+        </span>
         <button id="btnOcr" class="mini" disabled title="Treat this PDF as a scan: every page is read by OCR and rebuilt as an image, whatever its text layer says. For a digital PDF whose replaced text lands at the wrong place. Click again to go back. Then anonymize again.">As OCR</button>
-        <button id="btnRotL" class="mini" disabled aria-label="Rotate left" title="Rotate the original PDF 90° counter-clockwise and SAVE it (the original file is changed). Then anonymize again.">⟲</button>
-        <button id="btnRotR" class="mini" disabled aria-label="Rotate right" title="Rotate the original PDF 90° clockwise and SAVE it (the original file is changed). Then anonymize again.">⟳</button>
-        <button id="btnOcrView" class="mini" disabled title="OCR viewer: frame every word the OCR read on the original pages; hover a frame for its text">OCR view</button>
+        <span class="split">
+          <button id="btnOcrView" class="mini" disabled title="OCR viewer: frame every word the OCR read on the original pages; hover a frame for its text">OCR view</button><button id="btnOcrMenu" class="mini caret" disabled data-menu="ocrMenu" aria-haspopup="menu" aria-label="OCR view layers" title="Which reading to show">&#9662;</button>
+          <div id="ocrMenu" class="dropmenu" role="menu" hidden>
+            <button data-layer="final" role="menuitem" title="The words the app works with (the first reading repaired with the other readings)">Final</button>
+            <button data-layer="initial" role="menuitem" title="The first pass alone">Initial</button>
+            <button data-layer="diff" role="menuitem" title="Only what the two readings do not agree on">Differences</button>
+            <button data-layer="raw" role="menuitem" title="Exactly what the OCR engine returned, nothing filtered or corrected">Raw engine</button>
+          </div>
+        </span>
         <select id="ocrLayer" class="mini" hidden title="Final: the words the app works with (the first reading repaired with the other readings). Initial: the first pass alone. Differences: only what the two readings do not agree on. Raw engine: exactly what the OCR engine returned, nothing filtered or corrected.">
           <option value="final">Final</option><option value="initial">Initial</option><option value="diff">Differences</option><option value="raw">Raw engine</option>
         </select>
         <button id="btnTrace" class="mini" style="display:none" disabled>Trace</button> <!-- hidden, not removed: delete the style to show it again -->
-
-        <button id="btnChanges" class="mini" disabled title="Frame each replaced field (orange) and each removed area (purple, dashed), in both panes">Changes</button>
-        <div class="seg viewmode" title="Viewer: the pages as images, both PDFs zoom and scroll together.&#10;PDF: the browser's own PDF viewer (text can be selected, copied, searched).">
-          <button id="modeViewer" data-mode="viewer" class="on">Viewer</button><button id="modePdf" data-mode="pdf">PDF</button>
-        </div>
       </div>
     </div>
     <div id="origView" class="pane-body viewer">
@@ -87,7 +105,6 @@
       <div id="origEmpty" class="empty">No file selected</div>
     </div>
   </section>
-
 
   <section id="anonPane" class="pane">
     <div class="pane-head tools">
@@ -98,8 +115,9 @@
       <div class="pane-tools">
         <button id="btnBox" class="mini" disabled title="Black box tool: draw on the page. Drag a box to move it, its handles to resize, Delete to remove it. Boxes are saved in the config (Manual data).">▭ Black box</button>
         <button id="btnText" class="mini" disabled title="Text tool: draw a box on the page and type the text: it is written in the box, stretched to its size. Texts are saved in the config (Typed texts).">▤ Text</button>
-        <button id="btnUndo" class="mini" disabled aria-label="Undo" title="Undo the last change of the black boxes / typed texts of this file (Ctrl+Z)">↶</button>
-        <button id="btnRedo" class="mini" disabled aria-label="Redo" title="Redo what was undone (Ctrl+Y or Ctrl+Shift+Z)">↷</button>
+        <span class="seg">
+          <button id="btnUndo" class="mini" disabled aria-label="Undo" title="Undo the last change of the black boxes / typed texts of this file (Ctrl+Z)">↶</button><button id="btnRedo" class="mini" disabled aria-label="Redo" title="Redo what was undone (Ctrl+Y or Ctrl+Shift+Z)">↷</button>
+        </span>
       </div>
     </div>
     <div id="anonView" class="pane-body viewer">
@@ -108,6 +126,8 @@
       <div id="anonEmpty" class="empty">Not generated yet</div>
     </div>
   </section>
+    </div>
+  </div>
 
   <div class="splitter" data-split="side" title="Drag to resize · double-click to reset"></div>
 

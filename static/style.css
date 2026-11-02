@@ -346,3 +346,18 @@ td.num { text-align: right; white-space: nowrap; }
 .exfolders .exinfo { margin-left: auto; color: var(--muted); font-size: 12px; }
 .exbtns { display: flex; justify-content: flex-end; gap: 8px; }
 .exdlg input[type=password] { font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+
+/* one row above both panes for what they share (zoom, Changes, Viewer / PDF); the pane heads keep what belongs to one file */
+#viewArea { flex: 1 1 0; min-width: 400px; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+#viewPanes { flex: 1; min-height: 0; display: flex; gap: 4px; }
+.viewbar { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; gap: 10px; }
+.pane-head.tools { overflow: visible; }
+.menuwrap { position: relative; display: inline-flex; }
+.menunote { padding: 6px 8px 2px; margin-top: 4px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); white-space: normal; max-width: 210px; }
+.pane-tools .split > .caret { padding: 0 6px; margin-left: -1px; }
+.pane-tools .split > button:first-child { border-radius: 6px 0 0 6px; }
+.pane-tools .dropmenu button { height: 24px; }
+.dropmenu button.checked::before { content: "✓ "; }
+.dropmenu button:not(.checked)::before { content: "\00a0\00a0\00a0"; }
+#btnOcrView.on + .caret { border-color: var(--accent); }
+#ocrLayer { display: none !important; }

@@ -151,6 +151,13 @@ parallel processes: 1 = never, default = the cores minus one, at most 6, fewer w
 
 Directory tree | Original | Anonymized | right panel with tabs **Config / Recap / Log**.
 - The 3 bars between panes are draggable (pointer events, double-click resets), widths in localStorage.
+- Viewer toolbars (layout; the buttons keep their ids): one **View** row (`.viewbar`, in `#viewArea`) above both panes holds what they share:
+  zoom (`#zoomOut` / `#zoomFit` / `#zoomIn`), **Changes** (`#btnChanges`) and the **Viewer | PDF** switch (`.viewmode`). Below it `#viewPanes` holds the two
+  panes. The Original pane head keeps the file's own buttons: Scan file / Anonymize file (title row), then **Rotate ▾** (`#btnRotate`, menu `#rotMenu`
+  with `#btnRotL` / `#btnRotR` and a note that the original file is changed: the one destructive action takes two clicks), **As OCR** and
+  **OCR view ▾** (`#btnOcrView` toggles; the caret `#btnOcrMenu` opens `#ocrMenu` to choose the layer Final / Initial / Differences / Raw engine, which sets the
+  hidden `#ocrLayer`; the button reads 'OCR: <layer>' while on). The pane-head menus are generic (`[data-menu]`, `closePaneMenus`). Where the text
+  below says 'Original pane head' for zoom, Changes or Viewer / PDF, it is now the View row.
 - Viewer: pages are rendered server-side to PNG (`/api/page`, PyMuPDF), shown in a scrollable column, lazily loaded
   (IntersectionObserver). Zoom shared by both panes (−/+, Fit; mouse wheel zooms, trackpad pinch (Ctrl) zooms, two-finger scroll and Shift+wheel scroll; input kind from `inputKind`), scroll synced page by page,
   click + drag pans both panes. Sync state uses "programmatic scroll" tracking (`setScroll` / `isProgrammatic`),

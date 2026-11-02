@@ -547,6 +547,31 @@ try {
 
 try { if (localStorage.getItem(OCRVIEW_KEY) === "1") { btnOcrView.classList.add("on"); ocrLayer.hidden = false; } } catch (e) { /* no storage */ }
 
+// small menus of the pane heads (Rotate, the OCR view layers): the caret / menu button opens its menu, a click outside or Escape closes it
+function closePaneMenus() { document.querySelectorAll("[data-menu]").forEach((b) => { $("#" + b.dataset.menu).hidden = true; }); }
+document.querySelectorAll("[data-menu]").forEach((b) => {
+  const menu = $("#" + b.dataset.menu);
+  b.addEventListener("click", () => { const open = menu.hidden; closePaneMenus(); menu.hidden = !open; });
+  menu.addEventListener("click", closePaneMenus);
+});
+document.addEventListener("pointerdown", (e) => { if (!e.target.closest(".menuwrap, .split")) closePaneMenus(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePaneMenus(); });
+// the OCR view menu: choosing a layer sets the (hidden) layer select, and switches the view on when it is off
+const OCR_LAYER_NAMES = { final: "Final", initial: "Initial", diff: "Differences", raw: "Raw engine" };
+function syncOcrMenu() {
+  document.querySelectorAll("#ocrMenu [data-layer]").forEach((b) => b.classList.toggle("checked", ocrViewOn() && b.dataset.layer === ocrLayer.value));
+  btnOcrView.textContent = ocrViewOn() ? "OCR: " + OCR_LAYER_NAMES[ocrLayer.value] : "OCR view";
+}
+document.querySelectorAll("#ocrMenu [data-layer]").forEach((b) => {
+  b.addEventListener("click", () => {
+    ocrLayer.value = b.dataset.layer;
+    if (ocrViewOn()) ocrLayer.onchange(); else btnOcrView.click();
+    syncOcrMenu();
+  });
+});
+btnOcrView.addEventListener("click", syncOcrMenu);
+syncOcrMenu();
+
 // ----- zoom (always shared by both viewers) -----
 function updateZoomLabel() {
   const pct = Math.round(zoom.scale * 100) + "%";
@@ -2046,7 +2071,8 @@ function updateToolbar() {
   const nChanges = changes.replaced.length + changes.removed.length;
   btnChanges.disabled = !nChanges;
   const rotatable = !!cur && !state.running && /\.pdf$/i.test(cur.name);
-  $("#btnRotL").disabled = $("#btnRotR").disabled = !rotatable;
+  $("#btnRotL").disabled = $("#btnRotR").disabled = $("#btnRotate").disabled = !rotatable;
+  $("#btnOcrMenu").disabled = !rotatable;
   $("#btnOcr").disabled = !rotatable;
   btnOcrView.disabled = !rotatable;
   $("#btnOcr").classList.toggle("on", !!cur && !!cur.force_ocr);
