@@ -537,7 +537,7 @@ Order must never change a result (`order_tests`): a value written with several s
   the end of the scan it is matched with the known IBAN / account / bank code / reference whose visible characters are all equal
   (the whole length first, else a part of a longer number with 4 visible characters or more; longest host, then alphabetical) and
   written with the same mask and separators and the characters of that number's fake at the same places ('FR76 XXXX XXXX XXXX XXXX
-  321'). No match: the default fake (`digit_groups`: visible digits changed, mask kept). A masked card keeps CARD_NUMBER.
+  321'). No match: if the censored number ends with 4 visible digits or more, the visible end takes the end of the fake of the known number that ends with the same digits, even a shorter one (`engine._align_masked_tail`: the account '100001 01148 0002002123456 78' is the end of the IBAN 'FR16 XXXX XXXX XXXX XXXX 1234 5678', so both end with the same fake digits; the country and check digits stay the default fake's); else the default fake (`digit_groups`: visible digits changed, mask kept). A masked card keeps CARD_NUMBER.
 - Words far apart on a line are not one number (`pii.FAR_GAP`, `_far_apart`, in `words_to_text`): a gap of more than 2 word heights
   between two words of a line is a line break in the page text, so a policy number is not joined to the price at the other end of the
   row. The IBAN written with each group in its own box is read on the rows of the page (`engine._detect_words`, `layout.rows(max_width=)`)

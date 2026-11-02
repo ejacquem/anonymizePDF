@@ -1122,6 +1122,7 @@ def _align_masked_numbers(active: list[dict]):
                         best = (key, hr[at:at + len(c)])
                     break
         if not best:
+            _align_masked_tail(e, c, hosts)
             continue
         it, out = iter(best[1]), []
         for ch in e["value"]:
@@ -1132,6 +1133,32 @@ def _align_masked_numbers(active: list[dict]):
                 out.append(ch if ch in "xX*•" else piece)
         e["replace"] = "".join(out)
         e["note"] = "censored number: the visible characters follow the replacement of the number it matches"
+
+
+def _align_masked_tail(e: dict, c: str, hosts: list) -> None:
+    """A censored number that ends with 4 visible digits or more ('FR16 XXXX XXXX XXXX XXXX 1234 5678') and that no known number
+    fits as a whole: the account it hides is a part of it (an IBAN holds the bank, branch and account number), so it is shorter
+    than the censored text and ends with the same digits ('100001 01148 0002002123456 78'). The visible tail takes the fake of that
+    number's tail, so both are replaced by the same digits; the rest of the replacement (the mask, the country and check digits) stays
+    as the default fake made it. Of several numbers that end like it, the longest one, then the alphabetically first."""
+    n = 0
+    while n < len(c) and c[len(c) - 1 - n] not in "*•X":
+        n += 1
+    if n < 4 or not c[-n:].isdigit():
+        return
+    tail = c[-n:]
+    fits = [(len(hc), hv, hr[-n:]) for hc, hr, hv in hosts if len(hc) >= n and hc.endswith(tail) and hr[-n:].isdigit()]
+    if not fits:
+        return
+    piece = min(fits, key=lambda f: (-f[0], f[1]))[2]
+    spots = [i for i, ch in enumerate(e["replace"]) if not _SEQ_SEP.fullmatch(ch)]
+    if len(spots) != len(c):                                   # the default fake has another shape: leave it
+        return
+    out = list(e["replace"])
+    for i, ch in zip(spots[-n:], piece):
+        out[i] = ch
+    e["replace"] = "".join(out)
+    e["note"] = "censored number: its visible end follows the replacement of the number that ends with it"
 
 
 def _q(s: str) -> str:
