@@ -365,3 +365,30 @@ td.num { text-align: right; white-space: nowrap; }
 /* raw view (Space held over a page): every layer drawn over the pages is hidden, the pages show as they are */
 main.raw-view .chg, main.raw-view .lbox, main.raw-view .tlbox, main.raw-view .ocrbox, main.raw-view .bbox, main.raw-view .btextinput {
   visibility: hidden !important; pointer-events: none !important; }
+
+/* the queue: Queue tab, marks in the tree, the locked config */
+.qbadge { display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 3px; border-radius: 8px; background: var(--accent); color: var(--accent-text); font-size: 11px; line-height: 16px; text-align: center; }
+.qbar { display: flex; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+#tab-queue { overflow: auto; }
+.qempty { padding: 14px 12px; }
+.qrow { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.qdot { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: var(--muted); }
+.qrow.running .qdot { background: var(--accent); animation: qpulse 1.2s ease-in-out infinite; }
+.qrow.done .qdot { background: var(--ok); }
+.qrow.error .qdot { background: var(--bad); }
+.qrow.cancelled .qdot { background: transparent; border: 1px solid var(--muted); }
+@keyframes qpulse { 50% { opacity: .35; } }
+.qmain { flex: 1; min-width: 0; }
+.qgo { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qgo:hover b { text-decoration: underline; }
+.qstate { color: var(--muted); }
+.qrow.error .qstate { color: var(--bad); }
+.qbar2 { height: 4px; margin-top: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.qbar2 > div { height: 100%; background: var(--accent); transition: width .4s ease; }
+.qacts { display: flex; gap: 4px; flex: none; }
+.qlog { margin: 6px 0 0; padding: 6px 8px; max-height: 220px; overflow: auto; font-size: 11px; white-space: pre-wrap; background: var(--code-bg); border: 1px solid var(--line); border-radius: 4px; }
+.qmark { margin-left: auto; padding-left: 6px; font-size: 11px; color: var(--accent); flex: none; }
+.qmark.running { animation: qpulse 1.2s ease-in-out infinite; }
+.qmark.queued { color: var(--muted); }
+.cfglock { margin: 6px 8px 0; padding: 6px 10px; border: 1px solid var(--warn); border-radius: 6px; font-size: 12px; background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.cfgtable[inert], #configText[readonly] { opacity: .55; }

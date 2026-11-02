@@ -1375,19 +1375,21 @@ def scan_anonymize_batch_tests():
         r = client.post("/api/batch", json={"folder": "", "action": "scan_anonymize", "redo": False,
                                             "ocr_verify": False})
         check("the batch starts", r.status_code == 200, r.get_data(as_text=True)[:200])
-        job = r.get_json()["job"]
-        status, log = "running", []
-        for _ in range(600):
-            j = client.get(f"/api/job/{job}?since=0").get_json()
-            status, log = j["status"], j["log"]
-            if status != "running":
+        jobs = r.get_json()["jobs"]
+        check("the batch is four items: scan A, anonymize A, scan B, anonymize B (folder by folder)", len(jobs) == 4, jobs)
+        got = []
+        for _ in range(1200):
+            got = [client.get(f"/api/job/{j}?since=0").get_json() for j in jobs]
+            if all(g["status"] not in ("queued", "running") for g in got):
                 break
             time.sleep(0.5)
-        text = "\n".join(log)
-        check("the batch finishes", status == "done", f"{status}: {text[-300:]}")
-        order = [text.find(f"{f}: {ph} ") for f in ("A", "B") for ph in ("scan", "anonymize")]
-        check("the log is A scan, A anonymize, B scan, B anonymize (folder by folder)",
-              all(x >= 0 for x in order) and order == sorted(order), f"positions {order}")
+        text = "\n".join("\n".join(g["log"]) for g in got)
+        check("the batch finishes", all(g["status"] == "done" for g in got), f"{[g['status'] for g in got]}: {text[-300:]}")
+        queue = client.get("/api/queue").get_json()["items"]
+        order = [(q["label"], q["started"]) for q in queue if q["id"] in jobs]
+        check("the items ran in the order A scan, A anonymize, B scan, B anonymize",
+              [o[0] for o in order] == ["Scan folder A", "Anonymize folder A", "Scan folder B", "Anonymize folder B"]
+              and [o[1] for o in order] == sorted(o[1] for o in order), order)
         for folder in ("A", "B"):
             check(f"folder {folder} is scanned (a config) and anonymized (outputs)",
                   (tmp / folder / "anon_config.yaml").exists()
@@ -5087,7 +5089,7 @@ def scan_file_tests():
             j = client.post("/api/scan", json=body).get_json()
             while True:
                 s = client.get(f"/api/job/{j['job']}?since=0").get_json()
-                if s["status"] != "running":
+                if s["status"] not in ("queued", "running"):
                     return s
                 time.sleep(0.5)
         first = run({"folder": "c", "file": "a.pdf"})
@@ -5173,13 +5175,13 @@ def cancel_tests():
                 end = time.time() + secs
                 while time.time() < end:
                     s = client.get(f"/api/job/{job_id}?since=0").get_json()
-                    if s["status"] != "running":
+                    if s["status"] not in ("queued", "running"):
                         return s
                     time.sleep(0.1)
                 return s
             job = client.post("/api/scan", json={"folder": "c"}).get_json()["job"]
             time.sleep(0.3)
-            check("a second job is refused while one runs", client.post("/api/scan", json={"folder": "c"}).status_code == 409)
+            check("the same job is refused while it runs", client.post("/api/scan", json={"folder": "c"}).status_code == 409)
             check("cancelling a job that does not exist is a 404", client.post("/api/job/nope/cancel").status_code == 404)
             check("a running job can be cancelled", client.post(f"/api/job/{job}/cancel").status_code == 200)
             done = wait(job)
@@ -5205,17 +5207,160 @@ def cancel_tests():
             (tmp / "b").mkdir()
             shutil.copy(folder / "f0.pdf", tmp / "a" / "a.pdf")
             shutil.copy(folder / "f1.pdf", tmp / "b" / "b.pdf")
-            job3 = client.post("/api/batch", json={"folder": "", "action": "scan"}).get_json()["job"]
+            batch = client.post("/api/batch", json={"folder": "", "action": "scan"}).get_json()
+            job3 = batch["job"]
             time.sleep(0.3)
             client.post(f"/api/job/{job3}/cancel")
+            client.post("/api/queue/clear", json={"what": "waiting"})
             done3 = wait(job3)
-            check("a batch is cancelled, not counted as failed folders", done3["status"] == "cancelled" and done3["result"] is None, done3)
+            check("a batch item is cancelled, not counted as failed", done3["status"] == "cancelled" and done3["result"] is None, done3)
+            check("... and the items waiting behind it leave the queue", len(batch["jobs"]) == 2 and wait(batch["jobs"][1])["status"] == "cancelled", batch)
         finally:
             webapp.eng.scan_folder = real_scan
             webapp.eng.reset_cancel()
             webapp.STATE["root"] = saved_root
     finally:
         engine.reset_cancel()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def queue_tests():
+    """The queue (app /api/scan, /api/anonymize, /api/batch, /api/queue, /api/job/<id>/cancel): every request adds an item, ONE worker
+    runs them first in first out, the same work is not queued twice, a busy file (an item for it or for its folder) cannot be
+    rotated / re-read / reviewed, a scan of a folder locks that folder's config only, a queued item can be removed, a batch is one item
+    per folder and phase, an anonymize item whose scan did not finish is skipped, and the history is bounded."""
+    print("\n== queue")
+    import importlib.util
+    import threading
+    tmp = Path(tempfile.mkdtemp(prefix="anon_queue_"))
+    try:
+        for folder, names in (("c", ("f0", "f1")), ("d", ("g0",))):
+            (tmp / folder).mkdir()
+            for n in names:
+                doc = fitz.open()
+                doc.new_page().insert_text((72, 100), f"Titulaire : Thomas Marchand {n}", fontsize=10)
+                doc.save(tmp / folder / f"{n}.pdf")
+                doc.close()
+        res0 = engine.scan_folder(tmp / "c", "c", [], "fra+eng", lambda m: None)          # a real result for the fake scans below
+        spec = importlib.util.spec_from_file_location("anon_webapp_queue", ROOT / "app.py")
+        webapp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(webapp)
+        saved_root = webapp.STATE["root"]
+        webapp.STATE["root"] = tmp.resolve()
+        client = webapp.app.test_client()
+        real_scan, real_run = webapp.eng.scan_folder, webapp.eng.run_anonymize
+        running, order, gate = [0], [], threading.Event()
+        peak = [0]
+
+        def fake_scan(folder, rel, *a, **k):
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+            order.append(("scan", rel, tuple(k.get("only") or ())))
+            try:
+                for _ in range(200):                      # waits for the gate, but stops at a cancel like the real one
+                    webapp.eng.check_cancel()
+                    if gate.is_set():
+                        break
+                    time.sleep(0.02)
+                return res0
+            finally:
+                running[0] -= 1
+
+        def fake_run(folder, rel, *a, **k):
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+            order.append(("anon", rel, tuple(k.get("only") or ())))
+            running[0] -= 1
+            return {"files": [], "total_seconds": 0}
+        webapp.eng.scan_folder, webapp.eng.run_anonymize = fake_scan, fake_run
+
+        def state(job_id):
+            return client.get(f"/api/job/{job_id}?since=0").get_json()
+
+        def wait(ids, secs=20):
+            end = time.time() + secs
+            while time.time() < end:
+                st = [state(i)["status"] for i in ids]
+                if all(s not in ("queued", "running") for s in st):
+                    return st
+                time.sleep(0.05)
+            return st
+        try:
+            a = client.post("/api/scan", json={"folder": "c"}).get_json()["job"]
+            time.sleep(0.3)
+            b = client.post("/api/scan", json={"folder": "d", "file": "g0.pdf"}).get_json()["job"]
+            c = client.post("/api/scan", json={"folder": "c", "file": "f1.pdf"}).get_json()["job"]
+            check("a second request while one runs is queued, not refused", bool(b) and bool(c))
+            check("the first is running and the others wait", [state(i)["status"] for i in (a, b, c)] == ["running", "queued", "queued"],
+                  [state(i)["status"] for i in (a, b, c)])
+            items = client.get("/api/queue").get_json()["items"]
+            check("the queue lists them in the order asked, with their kind, folder and file",
+                  [(i["kind"], i["folder"], i["file"]) for i in items] == [("scan_folder", "c", None), ("scan_file", "d", "g0.pdf"), ("scan_file", "c", "f1.pdf")], items)
+            check("the same work is refused while it is queued or running",
+                  client.post("/api/scan", json={"folder": "c"}).status_code == 409 and client.post("/api/scan", json={"folder": "d", "file": "g0.pdf"}).status_code == 409)
+            # busy files: the item for the file, or for its folder
+            busy = lambda f, n: webapp.file_busy(f, n)
+            check("a file is busy while an item of its folder or of itself is queued or running",
+                  busy("c", "f0.pdf") and busy("d", "g0.pdf") and not busy("d", "other.pdf"))
+            rot = lambda folder, name: client.post("/api/rotate", json={"folder": folder, "file": name, "degrees": 90}).status_code
+            check("a busy file cannot be rotated (409)", rot("c", "f0.pdf") == 409 and rot("d", "g0.pdf") == 409)
+            check("the OCR view and the review flag of a busy file are refused",
+                  client.get("/api/ocrview?folder=c&file=f0.pdf&page=1").status_code == 409
+                  and client.put("/api/review", json={"folder": "c", "file": "f0.pdf", "reviewed": True}).status_code in (404, 409))
+            # the config of a folder with a scan queued or running is locked, the other folder's is not
+            (tmp / "c" / "anon_config.yaml").write_text(res0["config"], encoding="utf-8")
+            (tmp / "d" / "anon_config.yaml").write_text(res0["config"], encoding="utf-8")
+            put = lambda folder: client.put("/api/config", json={"folder": folder, "text": res0["config"]}).status_code
+            check("the config of a folder with a scan queued or running is locked (409)", put("c") == 409 and put("d") == 409)
+            check("a scan of d is queued too, so d is locked as well, but not another folder", webapp.scan_busy("c") and webapp.scan_busy("d") and not webapp.scan_busy("e"))
+            removed = client.post(f"/api/job/{b}/cancel")
+            check("a queued item can be removed", removed.status_code == 200 and state(b)["status"] == "cancelled" and any("Removed" in m for m in state(b)["log"]), state(b))
+            check("... and its folder's config is free again", put("d") == 200)
+            gate.set()
+            check("the rest runs to the end, in order", wait([a, c]) == ["done", "done"] and [o[1] for o in order] == ["c", "c"] and order[1][2] == ("f1.pdf",), (order, wait([a, c])))
+            check("only one item ran at a time", peak[0] == 1, peak)
+            check("a finished file is free again", not busy("c", "f0.pdf") and put("c") == 200 and rot("c", "f0.pdf") == 200)
+            check("cancelling a finished item is refused", client.post(f"/api/job/{a}/cancel").status_code == 409)
+
+            # a batch is one item per folder and phase
+            gate.clear()
+            order.clear()
+            r = client.post("/api/batch", json={"folder": "", "action": "scan_anonymize", "ocr_verify": False}).get_json()
+            kinds = [(i["kind"], i["folder"]) for i in client.get("/api/queue").get_json()["items"] if i["id"] in r["jobs"]]
+            check("a batch makes one item per folder and phase: scan c, anonymize c, scan d, anonymize d",
+                  kinds == [("scan_folder", "c"), ("anon_folder", "c"), ("scan_folder", "d"), ("anon_folder", "d")], kinds)
+            time.sleep(0.2)
+            client.post(f"/api/job/{r['jobs'][0]}/cancel")                 # the scan of c is cancelled while it runs
+            time.sleep(0.1)
+            gate.set()
+            st = wait(r["jobs"])
+            check("the anonymize item behind a cancelled scan is skipped, the other folder goes on",
+                  st == ["cancelled", "cancelled", "done", "done"], st)
+            check("... and says why", any("Skipped" in m for m in state(r["jobs"][1])["log"]), state(r["jobs"][1])["log"])
+            gate.set()
+            # 'clear waiting' and the bounded history
+            gate.clear()
+            x = client.post("/api/scan", json={"folder": "c"}).get_json()["job"]
+            y = client.post("/api/scan", json={"folder": "d"}).get_json()["job"]
+            time.sleep(0.2)
+            client.post("/api/queue/clear", json={"what": "waiting"})
+            check("'clear waiting' removes the queued items and leaves the running one", state(y)["status"] == "cancelled" and state(x)["status"] == "running", (state(x)["status"], state(y)["status"]))
+            gate.set()
+            wait([x])
+            webapp.HISTORY_MAX = 3
+            for n in range(5):
+                wait([client.post("/api/scan", json={"folder": "c", "file": "f0.pdf"}).get_json()["job"]])
+            finished = [i for i in client.get("/api/queue").get_json()["items"] if i["status"] not in ("queued", "running")]
+            check("only the last finished items are kept", len(finished) == 3, len(finished))
+            client.post("/api/queue/clear", json={"what": "finished"})
+            check("'clear finished' forgets them", client.get("/api/queue").get_json()["items"] == [])
+            check("a job that is not known is a 404", client.post("/api/job/nope/cancel").status_code == 404)
+        finally:
+            gate.set()
+            webapp.eng.scan_folder, webapp.eng.run_anonymize = real_scan, real_run
+            webapp.eng.reset_cancel()
+            webapp.STATE["root"] = saved_root
+    finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -6132,7 +6277,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "review_page_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "cancel_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "review_page_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "cancel_tests", "queue_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

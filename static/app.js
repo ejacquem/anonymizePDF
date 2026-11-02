@@ -3,7 +3,7 @@
 const $ = (s) => document.querySelector(s);
 const state = {
   tree: null, nodes: {}, folder: null, file: null,
-  open: new Set([""]), dirty: false, running: false, runKeepsConfig: false, hasConfig: false, report: null, status: null,
+  open: new Set([""]), dirty: false, running: false, queue: [], hasConfig: false, report: null, status: null,
 };
 
 // ---------- helpers ----------
@@ -156,7 +156,7 @@ $("#appOcr").onchange = (e) => {
 // ---------- tabs ----------
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
-  ["config", "recap", "log"].forEach((n) => { $("#tab-" + n).hidden = n !== name; });
+  ["config", "recap", "queue", "log"].forEach((n) => { $("#tab-" + n).hidden = n !== name; });
   if (typeof scheduleSave === "function") scheduleSave();
 }
 document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => showTab(t.dataset.tab)));
@@ -207,6 +207,8 @@ function renderNode(node, parent, depth) {
       const all = node.reviewed_count === node.anon_count;
       badges += `<span class="badge rev${all ? " all" : ""}" title="manually reviewed / anonymized files">✓ ${node.reviewed_count}/${node.anon_count}</span>`;
     }
+    const fq = state.queue.find((q) => isActive(q) && q.folder === node.path && q.file === null);       // an item for the whole folder
+    if (fq) badges += `<span class="qmark ${fq.status}" title="${esc(fq.label)}: ${fq.status === "running" ? "running" : "waiting in the queue"}">${fq.status === "running" ? "⚙" : "⏳"}</span>`;
     row.innerHTML = `<span class="caret">${open ? "▾" : "▸"}</span><span class="ico">📁</span><span class="name" title="${esc(node.name)}">${esc(node.name)}</span><span class="badges">${badges}</span>`;
     row.onclick = async () => {
       if (state.open.has(node.path) && state.folder === node.path) state.open.delete(node.path);
@@ -226,6 +228,8 @@ function renderNode(node, parent, depth) {
     row.innerHTML = `<span class="dot ${node.status || ""}" title="${esc(DOT_TITLE[node.status] || "")}"></span>` +
       `<span class="fico" title="${node.anon ? "anonymized file generated" : "not anonymized yet"}">${node.anon ? "🔒" : "📄"}</span>` +
       `<span class="name" title="${esc(node.name)}">${esc(node.name)}</span>`;
+    const bq = fileBusyItem(dirname(node.path), node.name);
+    if (bq) row.insertAdjacentHTML("beforeend", `<span class="qmark ${bq.status}" title="${esc(bq.label)}: ${bq.status === "running" ? "running" : "waiting in the queue"}">${bq.status === "running" ? "⚙" : "⏳"}</span>`);
     row.onclick = () => openFile(node.path);
     parent.appendChild(row);
   }
@@ -486,6 +490,7 @@ function drawOcrView() {
 async function loadOcrView() {
   const v = viewers.orig, path = v.path;
   if (!ocrViewOn() || !path) return;
+  if (curBusyItem()) { setStatus("OCR view: this file is queued or being processed; it is available when it ends"); return; }
   if (ocrView.path !== path) { ocrView.path = path; ocrView.pages = {}; }
   const token = ++ocrView.token, folder = dirname(path), file = baseName(path);
   for (let p = 1; p <= v.pages.length; p++) {
@@ -1253,9 +1258,9 @@ function removedPayload() {
   }
   return out;
 }
-function clearPending(name) { pendingBoxes.delete(pendKey(name)); undo.epoch++; updateToolbar(); }
-function clearFolderPending() {
-  for (const k of [...pendingBoxes.keys()]) if (k.startsWith(state.folder + "\u0001")) pendingBoxes.delete(k);
+function clearPending(name, folder = state.folder) { pendingBoxes.delete(folder + "\u0001" + name); undo.epoch++; updateToolbar(); }
+function clearFolderPending(folder = state.folder) {
+  for (const k of [...pendingBoxes.keys()]) if (k.startsWith(folder + "\u0001")) pendingBoxes.delete(k);
   undo.epoch++;
   updateToolbar();
 }
@@ -1291,7 +1296,7 @@ function historyFor(list) {
 }
 
 async function stepBoxes(from, to, message) {
-  if (!state.model || !state.model.manual || state.running || boxes.drag) return;
+  if (!state.model || !state.model.manual || curBusyItem() || scanItemIn(state.folder) || boxes.drag) return;
   const i = historyFor(from);
   if (i < 0) return;
   const snap = from.splice(i, 1)[0];
@@ -1625,7 +1630,7 @@ function currentOriginalNode() {
 
 function updateReviewButton() {
   const btn = $("#btnReviewed"), node = currentOriginalNode();
-  btn.disabled = !(node && node.anon);                       // shown greyed out when there is nothing to flag
+  btn.disabled = !(node && node.anon) || !!curBusyItem();    // shown greyed out when there is nothing to flag, or the file is queued / running
   btn.classList.toggle("on", !!(node && node.reviewed));
   btn.textContent = node && node.reviewed ? "✓ Reviewed" : "Mark as reviewed";
 }
@@ -2057,41 +2062,42 @@ function updateToolbar() {
   $("#btnBoth").title = batch
     ? "Each client folder below is scanned, then anonymized, before the next one starts. Reviewed files are left alone"
     : "Scan this folder, then anonymize it right away, without reviewing the new config in between";
-  $("#btnBoth").disabled = state.running || (!n && !batch);
+  const cur = currentOriginalNode();                          // either file of the pair works
+  const curFolder = cur ? dirname(cur.path) : null;
+  const busy = cur ? fileBusyItem(curFolder, cur.name) : null;    // an item for the open file (or its whole folder) is queued or running
+  const locked = !!scanItemIn(state.folder);                      // a scan of the selected folder is queued or running: its config is locked
+  $("#btnBoth").disabled = !n && !batch;
   $("#btnRunMenu").disabled = $("#btnBoth").disabled;
-  $("#btnRunReviewed").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
+  $("#btnRunReviewed").disabled = batch ? false : (!n || !state.hasConfig);
   // one filled button at a time: Scan until the folder has a config, then Anonymize
   const next = state.hasConfig ? "run" : "scan";
   $("#btnScan").classList.toggle("primary", next === "scan");
   $("#btnRun").classList.toggle("primary", next === "run");
   $("#btnRunMenu").classList.toggle("primary", next === "run");
-  $("#btnScan").disabled = state.running || (!n && !batch);
-  const scanning = state.running && !state.runKeepsConfig;    // a scan rewrites the config when it ends: no save meanwhile
-  $("#btnSave").disabled = scanning || !state.hasConfig || !state.dirty;
-  $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
-  const cur = currentOriginalNode();                          // either file of the pair works
-  $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur;
-  $("#btnScanFile").disabled = state.running || batch || !cur;
+  $("#btnScan").disabled = !n && !batch;
+  $("#btnSave").disabled = locked || !state.hasConfig || !state.dirty;
+  $("#cfgLock").hidden = !locked;                                  // the config cannot be edited while its scan is queued or running
+  $("#cfgTable").inert = locked;
+  $("#configText").readOnly = locked;
+  $("#btnRun").disabled = batch ? false : (!n || !state.hasConfig);
+  $("#btnRunFile").disabled = batch || !state.hasConfig || !cur || !!busy;
+  $("#btnScanFile").disabled = batch || !cur || !!busy;
   $("#btnScanFile").textContent = "Scan file";
   $("#btnRunFile").textContent = "Anonymize file";
-  // the button that started the running job is its Cancel button
-  const jobBtn = state.running && state.job && state.job.button ? $(state.job.button) : null;
-  ["#btnScan", "#btnRun", "#btnScanFile", "#btnRunFile"].forEach((sel) => {
-    const b = $(sel), on = !!jobBtn && b === jobBtn;
-    b.classList.toggle("cancel", on);
-    if (on) {
-      b.disabled = state.job.cancelling;
-      b.textContent = state.job.cancelling ? "Cancelling…" : "Cancel";
-      b.title = "Cancel the running " + state.job.label.toLowerCase();
-    }
-  });
+  // the button of an item that is queued or running is its Remove / Cancel button; the others of a busy file say why they are locked
+  $("#btnScan").textContent = batch ? "Scan all subfolders" : "Scan";
+  $("#btnRun").textContent = batch ? "Anonymize all subfolders" : "Anonymize";
+  itemButton("#btnScan", !batch && itemFor("scan_folder", state.folder, null));
+  itemButton("#btnRun", !batch && itemFor("anon_folder", state.folder, null));
+  itemButton("#btnScanFile", cur && itemFor("scan_file", curFolder, cur.name), busy);
+  itemButton("#btnRunFile", cur && itemFor("anon_file", curFolder, cur.name), busy);
   $("#btnExport").disabled = state.running || !state.tree;   // the dialog chooses the folders
   const pending = !!cur && isPending(cur.name);
   $("#btnRunFile").classList.toggle("save-needed", pending);
   const changes = changedBoxes();
   const nChanges = changes.replaced.length + changes.removed.length;
   btnChanges.disabled = !nChanges;
-  const rotatable = !!cur && !state.running && /\.pdf$/i.test(cur.name);
+  const rotatable = !!cur && !busy && /\.pdf$/i.test(cur.name);
   $("#btnRotL").disabled = $("#btnRotR").disabled = $("#btnRotate").disabled = !rotatable;
   $("#btnOcrMenu").disabled = !rotatable;
   $("#btnOcr").disabled = !rotatable;
@@ -2104,16 +2110,17 @@ function updateToolbar() {
   btnChanges.title = nChanges
     ? `Frame the ${changes.replaced.length} replaced field(s) (orange) and the ${changes.removed.length} removed area(s) (purple, dashed) of this file, in both panes`
     : "No replaced field recorded for this file: anonymize it to see them";
-  $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig) || nativeMode();
+  $("#btnBox").disabled = !(cur && cur.anon && state.hasConfig) || nativeMode() || !!busy || locked;
   $("#btnText").disabled = $("#btnBox").disabled;
-  $("#btnUndo").disabled = state.running || $("#btnBox").disabled || historyFor(undo.stack) < 0;
-  $("#btnRedo").disabled = state.running || $("#btnBox").disabled || historyFor(undo.redo) < 0;
+  $("#btnUndo").disabled = $("#btnBox").disabled || historyFor(undo.stack) < 0;
+  $("#btnRedo").disabled = $("#btnBox").disabled || historyFor(undo.redo) < 0;
+  updateReviewButton();
 }
 
 // ---------- rotate the original (the one place where an original file is changed) ----------
 async function rotateOriginal(degrees) {
   const cur = currentOriginalNode();
-  if (!cur || state.running) return;
+  if (!cur || curBusyItem()) return;
   if (state.dirty && !confirm("The config has unsaved changes. Rotating reloads it: discard them?")) return;
   const folder = dirname(cur.path);
   const ask = (force) => post("/api/rotate", { folder, file: cur.name, degrees, force });
@@ -2139,7 +2146,7 @@ async function rotateOriginal(degrees) {
 }
 $("#btnOcr").onclick = async () => {
   const cur = currentOriginalNode();
-  if (!cur || state.running) return;
+  if (!cur || curBusyItem()) return;
   const on = !cur.force_ocr, path = cur.path;
   try {
     await post("/api/ocrmode", { folder: dirname(path), file: cur.name, on });
@@ -2192,61 +2199,213 @@ function showProgress(p) {
   $("#progressText").textContent = text;
 }
 
-async function runJob(kind, url, body, label, opts = {}) {
-  let started;
-  try { started = await post(url, body); } catch (e) { alert(e.message); return null; }
-  state.running = true;
-  state.job = { id: started.job, button: opts.button || null, label, cancelling: false };   // the button of the job cancels it
-  state.runKeepsConfig = kind === "anonymize" || !!opts.keepsConfig;   // a scan writes the config when it ends
-  updateToolbar();
-  setStatus(label + "…", "busy");
-  showProgress({ done: 0, total: 0 });
-  appendLog([`──── ${new Date().toLocaleTimeString()}  ${label}  (${state.folder || "."}) ────`]);
-  if (!opts.quiet) showTab("log");
-  let since = 0, last = null;
-  while (true) {
-    await new Promise((r) => setTimeout(r, 800));
-    let j;
-    try { j = await api(`/api/job/${started.job}?since=${since}`); } catch (e) { appendLog(["Lost connection: " + e.message]); break; }
-    appendLog(j.log);
-    since = j.next;
-    showProgress(j.progress);
-    if (j.status === "running" && j.progress && j.progress.current) setStatus(`${label}: ${j.progress.current}…`, "busy");
-    if (j.status !== "running") { last = j; break; }
+// ---------- queue: every scan / anonymization is an item the server runs one at a time, first in first out ----------
+// A file is LOCKED (Rotate, As OCR, OCR view, Scan / Anonymize file, black boxes, review flag) while an item for it, or for its whole
+// folder, is queued or running; a scan of a folder also locks that folder's config. Everything else stays usable.
+
+// (function declarations and var: updateToolbar and renderTree run before this block does, at start-up)
+var queueTimer = null, queueBusy = false, queueAgain = false, queueSeen = null;   // queueSeen: {id: status} of the last refresh (null before the first)
+var queueStart = Date.now();
+var logNext = {}, itemLogs = {}, cancelling = {}, qOpen = new Set();            // log lines already read per item, its lines, ids being cancelled, open logs
+function isActive(q) { return q.status === "queued" || q.status === "running"; }
+function activeItems() { return state.queue.filter(isActive); }
+function itemFor(kind, folder, file) {
+  return state.queue.find((q) => isActive(q) && q.kind === kind && q.folder === folder && (q.file || null) === (file || null));
+}
+// an item for this file, or for its whole folder
+function fileBusyItem(folder, name) { return state.queue.find((q) => isActive(q) && q.folder === folder && (q.file === null || q.file === name)); }
+function scanItemIn(folder) {
+  return folder === null ? undefined : state.queue.find((q) => isActive(q) && q.folder === folder && q.kind.startsWith("scan"));
+}
+function curBusyItem() {
+  const cur = currentOriginalNode();
+  return cur ? fileBusyItem(dirname(cur.path), cur.name) : null;
+}
+
+async function refreshQueue() {
+  if (queueBusy) { queueAgain = true; return; }
+  queueBusy = true;
+  try {
+    do {
+      queueAgain = false;
+      let items;
+      try { items = (await api("/api/queue")).items; } catch (e) { break; }
+      const before = queueSeen;
+      state.queue = items;
+      queueSeen = Object.fromEntries(items.map((q) => [q.id, q.status]));
+      state.running = activeItems().length > 0;
+      // the items that ended since the last look (also one that came and went between two looks)
+      const ended = before ? items.filter((q) => !isActive(q) && (before[q.id] ? before[q.id] === "queued" || before[q.id] === "running" : q.ended * 1000 > queueStart)) : [];
+      await pumpLogs(items);
+      renderQueue();
+      showQueueProgress();
+      renderTree();
+      updateToolbar();
+      for (const q of ended) await onItemFinished(q);
+    } while (queueAgain);
+  } finally {
+    queueBusy = false;
   }
-  state.running = false;
-  state.job = null;
-  state.runKeepsConfig = false;
-  if (last) showProgress(last.progress);
-  if (last && last.status === "done") setStatus(label + ": done", "ok");
-  else if (last && last.status === "cancelled") setStatus(label + ": cancelled");
-  else setStatus(label + ": failed", "err");
-  if (last && last.status === "done" && /\/api\/(anonymize|batch)$/.test(url) && boxes.textTool) setTextTool(false);   // finished: the text boxes are hidden
+  clearTimeout(queueTimer);
+  queueTimer = activeItems().length ? setTimeout(refreshQueue, 1000) : null;
+}
+
+// the log of every item goes to the Log tab, in the order the items run, and is kept per item for the Queue tab
+async function pumpLogs(items) {
+  for (const q of items) {
+    if (q.status === "queued" || logNext[q.id] === "closed") continue;
+    if (logNext[q.id] === undefined) {
+      logNext[q.id] = 0;
+      itemLogs[q.id] = [];
+      appendLog([`──── ${new Date().toLocaleTimeString()}  ${q.label}  (${q.folder || "."}) ────`]);
+    }
+    try {
+      const j = await api(`/api/job/${q.id}?since=${logNext[q.id]}`);
+      appendLog(j.log);
+      itemLogs[q.id].push(...j.log);
+      logNext[q.id] = isActive(q) ? j.next : "closed";
+    } catch (e) { /* the item is gone from the server */ }
+  }
+}
+
+// the status bar follows the running item
+function showQueueProgress() {
+  const run = state.queue.find((q) => q.status === "running");
+  if (!run) return;
+  const waiting = state.queue.filter((q) => q.status === "queued").length;
+  showProgress(run.progress);
+  const cur = run.progress && run.progress.current ? `: ${run.progress.current}` : "";
+  setStatus(`${run.label}${cur}…${waiting ? `  ·  ${waiting} waiting` : ""}`, "busy");
+}
+
+// what an item changed is shown only where the user is looking: the open folder's config and report, the open file's pages
+async function onItemFinished(q) {
+  const word = { done: "done", cancelled: "cancelled", error: "failed" }[q.status] || q.status;
+  const sameFolder = q.folder === state.folder, cur = currentOriginalNode();
+  const mine = sameFolder && (q.file === null || (!!cur && cur.name === q.file));      // the item is about what the user has open
+  await loadTree();
+  if (state.status) loadStatus().catch(() => {});                                       // the batch overview
+  if (q.status === "done") {
+    if (q.kind.startsWith("scan")) {
+      if (sameFolder && !state.dirty) { await loadConfig(); if (mine) showTab("config"); }
+      if (q.kind === "scan_file") notify(`${q.label}: ${q.result && q.result.added != null ? q.result.added : 0} new value(s) added to the config`, "ok");
+    } else {
+      if (q.kind === "anon_file") clearPending(q.file, q.folder); else clearFolderPending(q.folder);
+      if (sameFolder) {
+        await loadReport();
+        if (!state.dirty) await reloadConfigIfSuggested();
+        if (mine) {
+          showTab("recap");
+          if (boxes.textTool) setTextTool(false);
+          if (state.file) { const f = state.file; state.file = null; await openFile(f); }
+        }
+      }
+    }
+  } else if (q.status === "error") {
+    notify(`${q.label}: failed${q.error ? " (" + q.error + ")" : ""}`, "err");
+  }
+  if (!activeItems().length) {
+    setStatus(`${q.label}: ${word}`, q.status === "done" ? "ok" : q.status === "error" ? "err" : "");
+    if (q.progress) showProgress(q.progress);
+  }
   updateToolbar();
-  return last;
+}
+
+// the queue request of a button: the item joins the end of the queue (it may start at once)
+async function enqueue(url, body, label) {
+  let r;
+  try { r = await post(url, body); } catch (e) { notify(`${label}: ${e.message}`, "err"); return null; }
+  const ahead = activeItems().length;
+  await refreshQueue();
+  if (ahead) notify(`${label} queued (${ahead} ahead)`);
+  return r;
+}
+
+// a click on the button of an item that is queued (Remove) or running (Cancel, after a confirmation)
+async function cancelItem(q) {
+  if (!q || cancelling[q.id]) return;
+  if (q.status === "running") {
+    const what = q.kind.startsWith("anon") ? "The files already anonymized are kept; the file being done and the next ones are not written."
+      : "The files already read are not saved: the config stays as it was.";
+    if (!confirm(`Cancel the running ${q.label.toLowerCase()}?\n\n${what}`)) return;
+    cancelling[q.id] = true;
+  }
+  try { await post(`/api/job/${q.id}/cancel`, {}); } catch (e) { notify("Cannot cancel: " + e.message, "err"); }
+  await refreshQueue();
+}
+
+// the Queue tab: the running item, the waiting ones in order, then the finished ones, newest first
+var Q_STATE = { queued: "waiting", running: "running", done: "done", error: "failed", cancelled: "cancelled" };
+function renderQueue() {
+  const act = activeItems().length;
+  $("#queueBadge").textContent = act;
+  $("#queueBadge").hidden = !act;
+  const running = state.queue.filter((q) => q.status === "running"), waiting = state.queue.filter((q) => q.status === "queued");
+  const rows = [...running, ...waiting, ...state.queue.filter((q) => !isActive(q)).reverse()];
+  $("#queueClearWaiting").disabled = !waiting.length;
+  $("#queueClearDone").disabled = !state.queue.some((q) => !isActive(q));
+  const box = $("#queueList");
+  if (!rows.length) { box.innerHTML = `<div class="muted small qempty">Nothing queued. Scan and anonymize buttons add their work here; it runs one item at a time.</div>`; return; }
+  box.innerHTML = rows.map((q) => {
+    const p = q.progress || {}, pos = waiting.indexOf(q) + 1;
+    let st = Q_STATE[q.status];
+    if (q.status === "running") st += p.total ? ` · ${p.done}/${p.total} file${p.total > 1 ? "s" : ""}${p.eta != null ? " · about " + fmtDuration(p.eta) + " left" : ""}` : " · starting…";
+    else if (q.status === "queued") st += ` · #${pos}`;
+    else if (q.started) st += ` · ${fmtDuration((q.ended || q.started) - q.started)}`;
+    if (q.status === "error" && q.error) st += ` · ${q.error}`;
+    const act = q.status === "running" ? `<button class="mini cancel" data-act="cancel">${cancelling[q.id] ? "Cancelling…" : "Cancel"}</button>`
+      : q.status === "queued" ? `<button class="mini" data-act="cancel">Remove</button>` : "";
+    const bar = q.status === "running" ? `<div class="qbar2"><div style="width:${p.total ? Math.floor(100 * p.done / p.total) : 0}%"></div></div>` : "";
+    const log = qOpen.has(q.id) ? `<pre class="qlog">${esc((itemLogs[q.id] || []).join("\n") || "(no log yet)")}</pre>` : "";
+    return `<div class="qrow ${q.status}" data-id="${q.id}"><span class="qdot"></span>
+      <div class="qmain"><div class="qgo"><b>${esc(q.label)}</b> <span class="muted small">${esc(q.folder || ".")}</span></div>
+        <div class="small qstate">${esc(st)}</div>${bar}${log}</div>
+      <div class="qacts">${act}<button class="mini" data-act="log" title="Show the log of this item">${qOpen.has(q.id) ? "▾" : "▸"} Log</button></div></div>`;
+  }).join("");
+  box.querySelectorAll(".qrow").forEach((row) => {
+    const q = state.queue.find((x) => x.id === row.dataset.id);
+    row.querySelector(".qgo").onclick = () => goToItem(q);
+    const c = row.querySelector('[data-act="cancel"]');
+    if (c) c.onclick = () => cancelItem(q);
+    row.querySelector('[data-act="log"]').onclick = async () => {
+      if (qOpen.has(q.id)) qOpen.delete(q.id);
+      else {
+        qOpen.add(q.id);
+        if (itemLogs[q.id] === undefined) { try { itemLogs[q.id] = (await api(`/api/job/${q.id}?since=0`)).log; } catch (e) { itemLogs[q.id] = []; } }
+      }
+      renderQueue();
+    };
+  });
+}
+async function goToItem(q) {
+  if (!q) return;
+  q.folder.split("/").forEach((_, i, parts) => state.open.add(parts.slice(0, i + 1).join("/")));
+  if (!(await selectFolder(q.folder))) return;
+  const path = (q.folder ? q.folder + "/" : "") + (q.file || "");
+  if (q.file && state.nodes[path]) await openFile(path);
+  renderTree();
+}
+$("#queueClearWaiting").onclick = async () => { await post("/api/queue/clear", { what: "waiting" }); await refreshQueue(); };
+$("#queueClearDone").onclick = async () => { await post("/api/queue/clear", { what: "finished" }); await refreshQueue(); };
+
+// the buttons of an item that is queued or running become its Remove / Cancel button; a locked file's buttons say why
+function itemButton(sel, q, locked) {
+  const b = $(sel);
+  if (b.dataset.title0 === undefined) b.dataset.title0 = b.title;
+  b.classList.toggle("cancel", !!q);
+  if (q) {
+    b.disabled = !!cancelling[q.id];
+    b.textContent = cancelling[q.id] ? "Cancelling…" : q.status === "queued" ? "Remove" : "Cancel";
+    b.title = q.status === "queued" ? `Remove "${q.label}" from the queue` : `Cancel the running "${q.label.toLowerCase()}"`;
+  } else {
+    b.title = locked ? `Locked: "${locked.label}" is ${locked.status === "running" ? "running" : "waiting in the queue"}` : b.dataset.title0;
+  }
 }
 
 // a run may add the second check's values to the config as suggestions: show them in the Config tab
 async function reloadConfigIfSuggested() {
   const offered = state.report && state.report.files.some((f) => (f.suggested || []).length);
   if (offered && !state.dirty) await loadConfig();
-}
-
-// a click on the button that started the running job: ask, then cancel the job (it stops at its next checkpoint)
-async function cancelJob(selector) {
-  const job = state.job;
-  if (!state.running || !job || job.button !== selector || job.cancelling) return;
-  const what = /anonymiz/i.test(job.label) ? "The files already anonymized are kept; the file being done and the next ones are not written."
-    : "The files already read are not saved: the config stays as it was.";
-  if (!confirm(`Cancel the running ${job.label.toLowerCase()}?\n\n${what}`)) return;
-  try {
-    await post(`/api/job/${job.id}/cancel`, {});
-    job.cancelling = true;
-    setStatus(`${job.label}: cancelling, waiting for the current step to end…`, "busy");
-  } catch (e) {
-    notify("Cannot cancel: " + e.message, "err");
-  }
-  updateToolbar();
 }
 
 // the menu of the Anonymize button (more ways to anonymize the folder)
@@ -2257,15 +2416,11 @@ document.addEventListener("pointerdown", (e) => { if (!e.target.closest("#runSpl
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeRunMenu(); });
 
 $("#btnScan").onclick = async () => {
-  if (state.running) return cancelJob("#btnScan");
+  const q = !state.batchMode && itemFor("scan_folder", state.folder, null);
+  if (q) return cancelItem(q);
   if (state.batchMode) return runBatch("scan");
-  const r = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan", { button: "#btnScan" });
-  await loadTree();
-  if (r && r.status === "done") {
-    state.dirty = false;
-    await loadConfig();
-    showTab("config");
-  }
+  if (state.dirty && !(await saveConfig())) return;
+  await enqueue("/api/scan", { folder: state.folder }, "Scan");
 };
 
 // anonymize every file of the working folder (the config is saved first when it has edits)
@@ -2275,47 +2430,33 @@ function folderPendingFiles() {
   return node ? (node.children || []).filter((c) => c.type === "file" && !c.anonymized && isPending(c.name)).map((c) => c.name) : [];
 }
 
-async function anonymizeFolder(reviewed = false) {
+async function anonymizeFolder(reviewed = false, after = null) {
   if (state.dirty && !(await saveConfig())) return null;
-  const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(), include: folderPendingFiles(), reviewed,
-      ...qualityBody() }, "Anonymize", { button: "#btnRun" });
-  await loadTree();
-  await loadReport();
-  await reloadConfigIfSuggested();
-  if (r && r.status === "done") {
-    clearFolderPending();
-    showTab("recap");
-    if (state.file) { const f = state.file; state.file = null; await openFile(f); }
-  }
-  return r;
+  return enqueue("/api/anonymize", { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(), include: folderPendingFiles(), reviewed,
+    after, ...qualityBody() }, "Anonymize");
 }
 
 // anonymize the whole folder again, the files already reviewed too (their outputs are regenerated, their review flags cleared)
 $("#btnRunReviewed").onclick = async () => {
-  if (state.running) return;
   if (!confirm("Anonymize every file of this folder again, the reviewed ones too?\n\nTheir outputs are regenerated and their review flags are cleared.")) return;
   if (state.batchMode) return runBatch("anonymize", true);
   await anonymizeFolder(true);
 };
 
 $("#btnRun").onclick = async () => {
-  if (state.running) return cancelJob("#btnRun");
+  const q = !state.batchMode && itemFor("anon_folder", state.folder, null);
+  if (q) return cancelItem(q);
   if (state.batchMode) return runBatch("anonymize");
   await anonymizeFolder();
 };
 
-// scan, then anonymize, the working folder (or every folder below it, folder by folder: see runBatch)
+// scan, then anonymize, the working folder (or every folder below it, folder by folder: see runBatch): two items, the second waits for the first
 $("#btnBoth").onclick = async () => {
   if (state.batchMode) return runBatch("scan_anonymize");
   if (!confirm("Scan this folder and anonymize it right away, without reviewing the new config? Your edits are kept.")) return;
   if (state.dirty && !(await saveConfig())) return;
-  const s = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan", { button: "#btnScan" });
-  await loadTree();
-  if (!s || s.status !== "done") return;
-  state.dirty = false;
-  await loadConfig();
-  await anonymizeFolder();
+  const s = await enqueue("/api/scan", { folder: state.folder }, "Scan");
+  if (s) await anonymizeFolder(false, s.job);
 };
 
 // Export: a dialog to choose the folders and the format. Review page = one stand-alone HTML file (static/review_page.html) with the
@@ -2453,36 +2594,22 @@ $("#exGo").onclick = async () => {
 
 // scan (and read by OCR) only the open file: its new values are added to the folder's config, the rest of it stays
 $("#btnScanFile").onclick = async () => {
-  if (state.running) return cancelJob("#btnScanFile");
   const cur = currentOriginalNode();
   if (!cur) return;
+  const q = itemFor("scan_file", dirname(cur.path), cur.name);
+  if (q) return cancelItem(q);
   if (state.dirty && !(await saveConfig())) return;
-  const r = await runJob("scan", "/api/scan", { folder: state.folder, file: cur.name }, "Scan file", { button: "#btnScanFile" });
-  await loadTree();
-  if (r && r.status === "done") {
-    state.dirty = false;
-    await loadConfig();
-    showTab("config");
-    notify(`${r.result && r.result.added != null ? r.result.added : 0} new value(s) added to the config`, "ok");
-  }
+  await enqueue("/api/scan", { folder: dirname(cur.path), file: cur.name }, `Scan ${cur.name}`);
 };
 
 $("#btnRunFile").onclick = async () => {
-  if (state.running) return cancelJob("#btnRunFile");
   const cur = currentOriginalNode();
   if (!cur) return;
+  const q = itemFor("anon_file", dirname(cur.path), cur.name);
+  if (q) return cancelItem(q);
   if (state.dirty && !(await saveConfig())) return;
-  const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      ...qualityBody() }, "Anonymize file", { button: "#btnRunFile" });
-  await loadTree();
-  await loadReport();
-  await reloadConfigIfSuggested();
-  if (r && r.status === "done") {
-    clearPending(cur.name);
-    showTab("recap");
-    const f = state.file; state.file = null; await openFile(f);
-  }
+  await enqueue("/api/anonymize", { folder: dirname(cur.path), file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
+    ...qualityBody() }, `Anonymize ${cur.name}`);
 };
 
 $("#btnRefresh").onclick = loadTree;
@@ -2518,11 +2645,11 @@ function renderOverview() {
   let h = `<div class="overview"><div class="sum"><b>${st.length} client folder(s)</b> below this one ·
     ${tot("pdfs")} PDF(s) · ${tot("anonymized")} anonymized · ${tot("reviewed")} reviewed</div>
     <div class="actions">
-      <button id="btnBatchScan" ${state.running || !noCfg ? "disabled" : ""}
+      <button id="btnBatchScan" ${!noCfg ? "disabled" : ""}
         title="Scan & draft a config in every folder that has none yet (existing configs are never overwritten)">Scan ${noCfg} folder(s) without config</button>
-      <button id="btnBatchRun" class="primary" ${state.running || !todo ? "disabled" : ""}
+      <button id="btnBatchRun" class="primary" ${!todo ? "disabled" : ""}
         title="Anonymize every folder whose outputs are missing or whose config changed since the last run">Anonymize ${todo} folder(s) to do</button>
-      <button id="btnBatchAll" ${state.running || (!noCfg && !todo) ? "disabled" : ""}
+      <button id="btnBatchAll" ${(!noCfg && !todo) ? "disabled" : ""}
         title="One click: draft the missing configs, then anonymize everything that is to do (without reviewing the new configs!)">Scan + anonymize all</button>
       <label class="chk" title="Also redo the folders that are already done (scan: replaces existing configs!)"><input type="checkbox" id="batchRedo"> redo all</label>
     </div>
@@ -2544,15 +2671,13 @@ async function runBatch(action, reviewed = false) {
   if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder. Your edits and manual data are kept. Continue?")) return;
   if (action === "scan_anonymize" && !confirm("Scan every client folder below and anonymize it right away, folder by folder, without reviewing the new configs? Your edits are kept, reviewed files are left alone.")) return;
   if (state.dirty && !(await saveConfig())) return;
-  const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, reviewed, ocr_verify: state.ocrVerify,
-    ...qualityBody() },
-    { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize",
-      scan_anonymize: "Batch scan & anonymize" }[action], { keepsConfig: action === "anonymize", button: action === "scan" ? "#btnScan" : "#btnRun" });
-  if (r && r.status === "done" && action !== "scan") pendingBoxes.clear();      // every file of the batch is regenerated
-  await loadTree();
-  await loadConfig();
-  await loadReport();
-  showTab("recap");
+  const label = { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize", scan_anonymize: "Batch scan & anonymize" }[action];
+  // one queue item per folder and phase (the server decides which folders need what)
+  const r = await enqueue("/api/batch", { folder: state.folder, action, redo, reviewed, ocr_verify: state.ocrVerify, ...qualityBody() }, label);
+  if (!r) return;
+  if (!r.jobs.length) notify(`${label}: nothing to do (${r.skipped.map((x) => `${x.folder}: ${x.why}`).join("; ") || "no folder"})`);
+  else notify(`${label}: ${r.jobs.length} item(s) queued` + (r.skipped.length ? `, ${r.skipped.length} folder(s) skipped` : ""), "ok");
+  showTab("queue");
 }
 
 function bindOverview(box) {
@@ -2722,6 +2847,7 @@ async function init() {
     await loadTree();
     renderRecap();
     await restoreSession();
+    refreshQueue();
   } catch (e) {
     $("#tree").innerHTML = `<div class="note bad">Cannot reach the server: ${esc(e.message)}</div>`;
   }

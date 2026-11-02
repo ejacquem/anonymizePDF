@@ -33,7 +33,10 @@ app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 STATE = {"root": None, "ocr_lang": "fra+eng", "spacy_models": None, "ner": None}
 JOBS: dict[str, dict] = {}
-JOB_LOCK = threading.Lock()
+# the queue: every scan / anonymization of this session, in the order they were asked for, run one at a time (see "queue" below)
+QUEUE: list[dict] = []
+QUEUE_CV = threading.Condition()
+HISTORY_MAX = 100                  # finished items kept for the Queue tab
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +299,8 @@ def put_config():
         return bad(str(e), 404)
     except Exception as e:  # noqa: BLE001
         return bad(f"Config not saved: {e}")
+    if scan_busy(rel_of(folder)):
+        return bad(CONFIG_LOCKED, 409)
     (folder / eng.CONFIG_NAME).write_text(text, encoding="utf-8")
     return jsonify({"ok": True})
 
@@ -346,6 +351,8 @@ def put_config_model():
         return bad(str(e), 404)
     except Exception as e:  # noqa: BLE001
         return bad(f"Config not saved: {e}")
+    if scan_busy(rel_of(folder)):
+        return bad(CONFIG_LOCKED, 409)
     (folder / eng.CONFIG_NAME).write_text(text, encoding="utf-8")
     return jsonify({"ok": True, "text": text})
 
@@ -398,6 +405,8 @@ def ocr_view():
         return bad(str(e), 404)
     except ValueError:
         return bad("bad page")
+    if file_busy(rel_of(folder), pdf.name):
+        return bad(f"{pdf.name} is queued or being processed: the OCR view is available when it ends", 409)
     try:
         lang, engine_id = STATE["ocr_lang"], str(ocr.engine())
         sha, saved = ocrdata.lookup(folder, pdf, engine_id, lang)
@@ -451,8 +460,8 @@ def rotate_pdf():
         return bad(str(e), 404)
     except (TypeError, ValueError):
         return bad("bad degrees")
-    if JOB_LOCK.locked():
-        return bad("A scan or anonymization is running: wait for it to end", 409)
+    if file_busy(rel_of(folder), name):
+        return bad(f"{name} is queued or being processed: wait for it to end", 409)
     boxes, texts = _manual_of(folder, name)
     if (boxes or texts) and not data.get("force"):
         return jsonify({"error": f"{name} has {boxes} black box(es) and {texts} typed text(s) drawn on its current "
@@ -518,8 +527,8 @@ def set_ocr_mode():
     pdf = folder / name
     if not name or not pdf.is_file() or pdf.suffix.lower() != ".pdf" or pdf.stem.endswith(eng.SUFFIX):
         return bad("only an original PDF can be treated as OCR", 400)
-    if JOB_LOCK.locked():
-        return bad("A scan or anonymization is running: wait for it to end", 409)
+    if file_busy(rel_of(folder), name):
+        return bad(f"{name} is queued or being processed: wait for it to end", 409)
     modes = dict(eng.ocr_modes(folder))
     on = bool(data.get("on"))
     if on == bool((modes.get(name) or {}).get("on")):
@@ -597,6 +606,8 @@ def put_review():
     anon = eng.output_of(folder / name)
     if not name or not anon.exists():
         return bad("no anonymized file for this document", 404)
+    if file_busy(rel_of(folder), name):
+        return bad(f"{name} is queued or being processed: wait for it to end", 409)
     reviews = read_reviews(folder)
     if data.get("reviewed"):
         reviews[name] = {"at": time.strftime("%Y-%m-%d %H:%M"), "sha256": _sha(anon)}
@@ -759,51 +770,115 @@ def export():
 
 
 # ---------------------------------------------------------------------------
-# jobs (scan and anonymize can take a while: run in a thread, poll the log)
+# queue: scan and anonymize can take a while. Each request adds an ITEM (scan_file, scan_folder, anon_file, anon_folder) to the queue;
+# ONE worker thread runs the items one at a time, first in first out. An item is queued, running, then done / error / cancelled.
+# A file is 'busy' while an item for it (or for its whole folder) is queued or running: the client locks that file only, the server
+# refuses to rotate / re-read / review it, and a scan of a folder locks that folder's config (it writes it when it ends).
 # ---------------------------------------------------------------------------
 
-def start_job(kind: str, fn):
-    """fn(log, progress): progress(files done, files total, current file) feeds the status bar."""
-    if not JOB_LOCK.acquire(blocking=False):
-        return None
-    eng.reset_cancel()
-    job_id = uuid.uuid4().hex[:8]
-    job = {"id": job_id, "kind": kind, "status": "running", "log": [], "result": None, "error": None,
-           "progress": None, "started": time.time(), "ended": None}
-    JOBS[job_id] = job
+CONFIG_LOCKED = "A scan of this folder is queued or running: its config is locked until the scan ends"
+KIND_NAMES = {"scan_file": "Scan file", "scan_folder": "Scan folder", "anon_file": "Anonymize file", "anon_folder": "Anonymize folder"}
+_worker_thread = None
 
+
+def _active(item) -> bool:
+    return item["status"] in ("queued", "running")
+
+
+def file_busy(folder_rel: str, name: str) -> bool:
+    """A queued or running item works on this file (an item of the file, or of its whole folder)."""
+    with QUEUE_CV:
+        return any(_active(i) and i["folder"] == folder_rel and i["file"] in (None, name) for i in QUEUE)
+
+
+def scan_busy(folder_rel: str) -> bool:
+    """A scan (of the folder or of one of its files) is queued or running: it writes the folder's config when it ends."""
+    with QUEUE_CV:
+        return any(_active(i) and i["folder"] == folder_rel and i["kind"].startswith("scan") for i in QUEUE)
+
+
+def _trim_history() -> None:
+    """Keep the last HISTORY_MAX finished items (the active ones are never dropped). Called with QUEUE_CV held."""
+    finished = [i for i in QUEUE if not _active(i)]
+    for item in finished[:max(0, len(finished) - HISTORY_MAX)]:
+        QUEUE.remove(item)
+        JOBS.pop(item["id"], None)
+
+
+def enqueue(kind: str, folder_rel: str, file: str | None, fn, needs: str | None = None) -> dict | None:
+    """Add an item to the queue; None when the same work (kind, folder, file) is already queued or running.
+    fn(log, progress) does it; progress(files done, files total, current file) feeds the status bar.
+    `needs`: the id of an item that must have finished (done) before this one: a cancelled or failed scan lets its anonymization go."""
+    global _worker_thread
+    with QUEUE_CV:
+        if any(_active(i) and (i["kind"], i["folder"], i["file"]) == (kind, folder_rel, file) for i in QUEUE):
+            return None
+        what = KIND_NAMES[kind]
+        label = f"{what} {file}" if file else f"{what} {folder_rel or '.'}"
+        item = {"id": uuid.uuid4().hex[:8], "kind": kind, "folder": folder_rel, "file": file, "label": label, "status": "queued",
+                "log": [], "result": None, "error": None, "progress": None, "queued": time.time(), "started": None, "ended": None,
+                "fn": fn, "needs": needs}
+        QUEUE.append(item)
+        JOBS[item["id"]] = item
+        _trim_history()
+        if _worker_thread is None or not _worker_thread.is_alive():
+            _worker_thread = threading.Thread(target=_worker_loop, daemon=True, name="queue-worker")
+            _worker_thread.start()
+        QUEUE_CV.notify_all()
+    return item
+
+
+def _worker_loop() -> None:
+    while True:
+        with QUEUE_CV:
+            item = next((i for i in QUEUE if i["status"] == "queued"), None)
+            while item is None:
+                QUEUE_CV.wait()
+                item = next((i for i in QUEUE if i["status"] == "queued"), None)
+            dep = JOBS.get(item["needs"]) if item["needs"] else None
+            if dep is not None and dep["status"] != "done":
+                item["status"], item["ended"] = "cancelled", time.time()
+                item["log"].append(f"{time.strftime('%H:%M:%S')}  Skipped: the {dep['label'].lower()} before it did not finish.")
+                QUEUE_CV.notify_all()
+                continue
+            eng.reset_cancel()                         # under the lock: a cancel of THIS item can only come after it is 'running'
+            item["status"], item["started"] = "running", time.time()
+        _run_item(item)
+        with QUEUE_CV:
+            _trim_history()
+            QUEUE_CV.notify_all()
+
+
+def _run_item(item: dict) -> None:
     def log(msg: str):
-        job["log"].append(f"{time.strftime('%H:%M:%S')}  {msg}")
+        item["log"].append(f"{time.strftime('%H:%M:%S')}  {msg}")
 
     def progress(done: int, total: int, current: str = ""):
-        job["progress"] = {"done": done, "total": total, "current": current}
+        item["progress"] = {"done": done, "total": total, "current": current}
 
-    def run():
-        try:
-            job["result"] = fn(log, progress)
-            job["status"] = "done"
-        except eng.Cancelled:
-            job["status"] = "cancelled"
-            log("Cancelled: what was finished before is kept (a scan leaves the config as it was).")
-        except Exception as e:  # noqa: BLE001
-            job["error"] = str(e)
-            job["status"] = "error"
-            log(f"ERROR: {e}")
-            # the full traceback goes to the console where the app runs; the log shows its last frames
-            tb = traceback.format_exc()
-            print(tb, file=sys.stderr, flush=True)
-            for line in tb.splitlines()[-12:]:
-                log(f"  {line}")
-        finally:
-            job["ended"] = time.time()
-            JOB_LOCK.release()
-
-    threading.Thread(target=run, daemon=True).start()
-    return job
+    try:
+        item["result"] = item["fn"](log, progress)
+        item["status"] = "done"
+    except eng.Cancelled:
+        item["status"] = "cancelled"
+        log("Cancelled: what was finished before is kept (a scan leaves the config as it was).")
+    except Exception as e:  # noqa: BLE001
+        item["error"] = str(e)
+        item["status"] = "error"
+        log(f"ERROR: {e}")
+        # the full traceback goes to the console where the app runs; the log shows its last frames
+        tb = traceback.format_exc()
+        print(tb, file=sys.stderr, flush=True)
+        for line in tb.splitlines()[-12:]:
+            log(f"  {line}")
+    finally:
+        item["ended"] = time.time()
 
 
 def job_progress(job) -> dict:
     """Files done / total, the time spent so far and the time left, estimated from the rate so far."""
+    if job["started"] is None:                           # still waiting in the queue
+        return {"done": 0, "total": 0, "current": "", "elapsed": 0, "eta": None}
     elapsed = (job["ended"] or time.time()) - job["started"]
     p = job["progress"] or {"done": 0, "total": 0, "current": ""}
     eta = elapsed / p["done"] * (p["total"] - p["done"]) if p["done"] and job["status"] == "running" else None
@@ -838,17 +913,8 @@ def preload_ner():
     threading.Thread(target=run, daemon=True, name="ner-preload").start()
 
 
-@app.post("/api/scan")
-def scan():
-    data = request.get_json(force=True)
-    try:
-        folder = folder_arg(data)
-    except (PermissionError, FileNotFoundError) as e:
-        return bad(str(e), 404)
+def _scan_work(folder: Path, one: str | None):
     rel = rel_of(folder)
-    one = Path(str(data["file"])).name if data.get("file") else None        # one file, or the whole folder
-    if one and one not in [p.name for p in eng.list_sources(folder)]:
-        return bad("Not an original PDF of this folder", 404)
 
     def work(log, progress):
         cfg_file = folder / eng.CONFIG_NAME
@@ -867,46 +933,81 @@ def scan():
         cfg_file.write_text(res["config"], encoding="utf-8")
         log(f"Draft config written to {eng.CONFIG_NAME}: review it, then anonymize.")
         return res["stats"]
+    return work
 
-    job = start_job("scan", work)
-    return jsonify({"job": job["id"]}) if job else bad("Another job is running", 409)
+
+def _anon_work(folder: Path, only_now, ocr_verify: bool, quality_offset, removed: list):
+    """The work of an anonymize item. The config is read when the item STARTS (the latest one), and so are the files to do
+    (`only_now()`: the reviewed ones may have changed since it was queued)."""
+    rel = rel_of(folder)
+    cfg_file = folder / eng.CONFIG_NAME
+
+    def work(log, progress):
+        if not cfg_file.exists():
+            raise RuntimeError("No config: scan the folder first")
+        only = only_now()
+        if not only:
+            log("Every file is reviewed: nothing to anonymize.")
+            return {"files": 0, "seconds": 0}
+        rep = eng.run_anonymize(folder, rel, cfg_file.read_text(encoding="utf-8"), STATE["ocr_lang"], ocr_verify, log,
+                                only=only, removed=removed, progress=progress, quality_offset=quality_offset)
+        return {"files": len(rep["files"]), "seconds": rep["total_seconds"]}
+    return work
+
+
+ALREADY = "The same work is already queued or running"
+
+
+@app.post("/api/scan")
+def scan():
+    data = request.get_json(force=True)
+    try:
+        folder = folder_arg(data)
+    except (PermissionError, FileNotFoundError) as e:
+        return bad(str(e), 404)
+    one = Path(str(data["file"])).name if data.get("file") else None        # one file, or the whole folder
+    if one and one not in [p.name for p in eng.list_sources(folder)]:
+        return bad("Not an original PDF of this folder", 404)
+    item = enqueue("scan_file" if one else "scan_folder", rel_of(folder), one, _scan_work(folder, one))
+    return jsonify({"job": item["id"]}) if item else bad(ALREADY, 409)
 
 
 @app.post("/api/anonymize")
 def anonymize():
     data = request.get_json(force=True)
+    after = data.get("after") if data.get("after") in JOBS else None       # an item that must be done before this one starts (the scan)
     try:
         folder = folder_arg(data)
         cfg_file = folder / eng.CONFIG_NAME
-        if not cfg_file.exists():
-            return bad("No config yet: run 'Scan & draft config' first")
-        eng.parse_config(cfg_file.read_text(encoding="utf-8"))
+        if not after:                                    # behind a scan, the config does not exist yet
+            if not cfg_file.exists():
+                return bad("No config yet: run 'Scan & draft config' first")
+            eng.parse_config(cfg_file.read_text(encoding="utf-8"))
     except (PermissionError, FileNotFoundError) as e:
         return bad(str(e), 404)
     except Exception as e:  # noqa: BLE001
         return bad(f"Config problem: {e}")
-    rel = rel_of(folder)
     ocr_verify = bool(data.get("ocr_verify"))
     quality_offset = _quality_offset(data)
-    only = [Path(str(data["file"])).name] if data.get("file") else None     # one file, or the whole folder
-    if only is None and data.get("reviewed"):
-        only = [p.name for p in eng.list_sources(folder)]       # every file, the reviewed ones too (their flags are cleared)
-    if only is None:
+    one = Path(str(data["file"])).name if data.get("file") else None       # one file, or the whole folder
+    reviewed = bool(data.get("reviewed"))
+    include = {Path(str(n)).name for n in (data.get("include") or [])}
+
+    def only_now() -> list[str]:
+        if one:
+            return [one]
+        if reviewed:
+            return [p.name for p in eng.list_sources(folder)]       # every file, the reviewed ones too (their flags are cleared)
         # a folder run leaves the reviewed files alone, except those whose black boxes / typed texts changed and are not
         # applied yet (the client names them in `include`): their new boxes must reach the anonymized file
-        wanted = set(files_to_anonymize(folder)) | {Path(str(n)).name for n in (data.get("include") or [])}
-        only = [p.name for p in eng.list_sources(folder) if p.name in wanted]
-        if not only:
-            return bad("Every file of this folder is reviewed: nothing to anonymize. Anonymize one file to redo it.")
+        wanted = set(files_to_anonymize(folder)) | include
+        return [p.name for p in eng.list_sources(folder) if p.name in wanted]
+    if not one and not after and not only_now():
+        return bad("Every file of this folder is reviewed: nothing to anonymize. Anonymize one file to redo it.")
     removed = data.get("removed") if isinstance(data.get("removed"), list) else []   # automatic boxes removed: this run only
-
-    def work(log, progress):
-        rep = eng.run_anonymize(folder, rel, cfg_file.read_text(encoding="utf-8"), STATE["ocr_lang"], ocr_verify, log,
-                                only=only, removed=removed, progress=progress, quality_offset=quality_offset)
-        return {"files": len(rep["files"]), "seconds": rep["total_seconds"]}
-
-    job = start_job("anonymize", work)
-    return jsonify({"job": job["id"]}) if job else bad("Another job is running", 409)
+    item = enqueue("anon_file" if one else "anon_folder", rel_of(folder), one,
+                   _anon_work(folder, only_now, ocr_verify, quality_offset, removed), needs=after)
+    return jsonify({"job": item["id"]}) if item else bad(ALREADY, 409)
 
 
 def files_to_anonymize(folder: Path) -> list[str]:
@@ -934,10 +1035,11 @@ def _batch_phases(d: Path, action: str, redo: bool) -> tuple[list[str], str]:
 
 @app.post("/api/batch")
 def batch():
-    """Scan or anonymize every client folder below the selected one, one after the other.
+    """Scan or anonymize every client folder below the selected one: ONE queue item per folder and phase, in folder order.
     scan: only folders without a config (a reviewed config is never overwritten) unless 'redo'.
     anonymize: only folders 'to do' (no output yet, or config changed since the last run) unless 'redo'.
-    scan_anonymize: every folder is scanned, then anonymized, before the next folder starts."""
+    scan_anonymize / all: a folder's scan item is followed by its anonymize item, folder by folder (an anonymize item whose scan
+    was cancelled or failed is skipped)."""
     data = request.get_json(force=True)
     try:
         base = folder_arg(data)
@@ -949,63 +1051,77 @@ def batch():
     quality_offset = _quality_offset(data)
     if action not in ("scan", "anonymize", "all", "scan_anonymize"):
         return bad("action must be 'scan', 'anonymize', 'all' or 'scan_anonymize'")
+    jobs, skipped = [], []
+    for d in client_folders(base):
+        rel = rel_of(d) or "."
+        phases, why = _batch_phases(d, action, redo)
+        if not phases:
+            skipped.append({"folder": rel, "why": why})
+            continue
+        scan_id = None
+        for phase in phases:
+            if phase == "scan":
+                item = enqueue("scan_folder", rel_of(d), None, _scan_work(d, None))
+                scan_id = item["id"] if item else None
+            else:
+                def only_now(d=d):
+                    return [p.name for p in eng.list_sources(d)] if reviewed else files_to_anonymize(d)   # the reviewed files are left alone unless asked
+                item = enqueue("anon_folder", rel_of(d), None, _anon_work(d, only_now, ocr_verify, quality_offset, []), needs=scan_id)
+            if item:
+                jobs.append(item["id"])
+            else:
+                skipped.append({"folder": rel, "why": f"{phase}: " + ALREADY.lower()})
+    return jsonify({"jobs": jobs, "job": jobs[0] if jobs else None, "skipped": skipped})
 
-    def work(log, progress):
-        folders = client_folders(base)
-        done, skipped, failed = [], [], []
-        log(f"Batch {action}: {len(folders)} folder(s) with PDFs under '{rel_of(base) or '.'}'")
-        plans = {d: _batch_phases(d, action, redo) for d in folders}
-        counts = {d: len(eng.list_sources(d)) for d in folders}
-        total = sum(counts[d] * len(plans[d][0]) for d in folders)     # files x phases, skipped folders not counted
-        offset = 0
-        for k, d in enumerate(folders, start=1):
-            rel = rel_of(d) or "."
-            phases, why = plans[d]
-            if not phases:
-                skipped.append(rel)
-                log(f"[{k}/{len(folders)}] {rel}: {why} -> skipped")
-                continue
-            try:
-                for phase in phases:
-                    log(f"[{k}/{len(folders)}] {rel}: {phase} ...")
-                    report = (lambda o: lambda n, m, cur="": progress(o + n, total, cur))(offset)
-                    if phase == "scan":
-                        res = eng.scan_folder(d, rel_of(d), get_ner(log), STATE["ocr_lang"], lambda m: log("   " + m),
-                                              progress=report)
-                        (d / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
-                    else:
-                        text = (d / eng.CONFIG_NAME).read_text(encoding="utf-8")
-                        todo = [p.name for p in eng.list_sources(d)] if reviewed else files_to_anonymize(d)   # the reviewed files are left alone unless asked
-                        if not todo:
-                            log("   every file is reviewed: nothing to anonymize")
-                        else:
-                            eng.run_anonymize(d, rel_of(d), text, STATE["ocr_lang"], ocr_verify, lambda m: log("   " + m),
-                                              only=todo, progress=report, quality_offset=quality_offset)
-                    offset += counts[d]
-                done.append(rel)
-            except eng.Cancelled:
-                raise
-            except Exception as e:  # noqa: BLE001  (one folder failing must not stop the others)
-                failed.append(rel)
-                log(f"   ERROR in {rel}: {e}")
-        log(f"Batch finished: {len(done)} done, {len(skipped)} skipped, {len(failed)} failed"
-            + (f" ({', '.join(failed)})" if failed else ""))
-        return {"done": done, "skipped": skipped, "failed": failed}
 
-    job = start_job(f"batch-{action}", work)
-    return jsonify({"job": job["id"]}) if job else bad("Another job is running", 409)
+def _public(item: dict) -> dict:
+    return {"id": item["id"], "kind": item["kind"], "folder": item["folder"], "file": item["file"], "label": item["label"],
+            "status": item["status"], "queued": item["queued"], "started": item["started"], "ended": item["ended"],
+            "progress": job_progress(item), "error": item["error"], "result": item["result"]}
+
+
+@app.get("/api/queue")
+def queue_state():
+    """Every item of this session, oldest first (queued, running, and the last finished ones)."""
+    with QUEUE_CV:
+        return jsonify({"items": [_public(i) for i in QUEUE]})
+
+
+@app.post("/api/queue/clear")
+def queue_clear():
+    """{what: 'waiting'} removes every queued item (they end as cancelled); {what: 'finished'} forgets the finished ones."""
+    what = (request.get_json(force=True) or {}).get("what")
+    if what not in ("waiting", "finished"):
+        return bad("what must be 'waiting' or 'finished'")
+    with QUEUE_CV:
+        for item in list(QUEUE):
+            if what == "waiting" and item["status"] == "queued":
+                item["status"], item["ended"] = "cancelled", time.time()
+                item["log"].append(f"{time.strftime('%H:%M:%S')}  Removed from the queue.")
+            elif what == "finished" and not _active(item):
+                QUEUE.remove(item)
+                JOBS.pop(item["id"], None)
+        QUEUE_CV.notify_all()
+    return jsonify({"ok": True})
 
 
 @app.post("/api/job/<job_id>/cancel")
 def job_cancel(job_id):
-    """Cancel the running job: it stops at its next checkpoint (between two files or two pages) and ends as 'cancelled'."""
-    job = JOBS.get(job_id)
-    if not job:
-        return bad("unknown job", 404)
-    if job["status"] != "running":
-        return bad("this job is not running", 409)
-    job["log"].append(f"{time.strftime('%H:%M:%S')}  Cancelling: stopping at the next checkpoint ...")
-    eng.CANCEL.set()
+    """Cancel a job. A queued one leaves the queue; the running one stops at its next checkpoint (between two files or two
+    pages) and ends as 'cancelled'."""
+    with QUEUE_CV:
+        job = JOBS.get(job_id)
+        if not job:
+            return bad("unknown job", 404)
+        if job["status"] == "queued":                  # not started: it just leaves the queue
+            job["status"], job["ended"] = "cancelled", time.time()
+            job["log"].append(f"{time.strftime('%H:%M:%S')}  Removed from the queue.")
+            QUEUE_CV.notify_all()
+            return jsonify({"ok": True})
+        if job["status"] != "running":
+            return bad("this job is not running", 409)
+        job["log"].append(f"{time.strftime('%H:%M:%S')}  Cancelling: stopping at the next checkpoint ...")
+        eng.CANCEL.set()
     return jsonify({"ok": True})
 
 

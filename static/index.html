@@ -135,9 +135,11 @@
     <div class="tabs">
       <button class="tab active" data-tab="config">Config <span id="dirtyMark" class="dirty" hidden>●</span></button>
       <button class="tab" data-tab="recap">Recap</button>
+      <button class="tab" data-tab="queue">Queue <span id="queueBadge" class="qbadge" hidden>0</span></button>
       <button class="tab" data-tab="log">Log</button>
     </div>
     <div id="tab-config" class="tabbody">
+      <div id="cfgLock" class="cfglock" hidden>&#128274; A scan of this folder is queued or running: its config is locked until the scan ends.</div>
       <div class="cfgbar">
         <div class="seg" title="Table: tick / edit the values. YAML: the config file itself.">
           <button data-view="table">Table</button><button data-view="yaml">YAML</button>
@@ -151,6 +153,11 @@
       <div id="configMsg" class="small"><button id="btnSave" class="mini" disabled title="Save the config (Ctrl+S)">Save</button> <span id="configMsgText"></span></div>
     </div>
     <div id="tab-recap" class="tabbody" hidden></div>
+    <div id="tab-queue" class="tabbody" hidden>
+      <div class="qbar"><button id="queueClearWaiting" class="mini" disabled title="Remove every waiting item from the queue (the running one goes on)">Clear waiting</button>
+        <button id="queueClearDone" class="mini" disabled title="Forget the finished items">Clear finished</button></div>
+      <div id="queueList"></div>
+    </div>
     <div id="tab-log" class="tabbody" hidden><pre id="logBox"></pre></div>
   </section>
 </main>

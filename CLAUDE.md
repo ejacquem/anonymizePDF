@@ -36,7 +36,7 @@ Repo: `C:\Users\Lucas\Project\anonymizePDF` (Windows 10, Git Bash + PowerShell).
 ## 3. Layout
 
 ```
-app.py                 Flask server: tree, pdf serving / page rendering, config get/put, scan/anonymize jobs (thread + polling)
+app.py                 Flask server: tree, pdf serving / page rendering, config get/put, scan/anonymize queue (one worker thread, polling)
 anonymizer/
   engine.py            scan_folder(), parse_config(), render_config(), run_anonymize(), _digital(), _scan_pdf(),
                        summarize(); labeled fields (_add_labeled); the digital pages (_digital_replace)
@@ -230,12 +230,30 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   - **ZIP**: `GET /api/export?dirs=A&dirs=B/C` = the reviewed outputs of exactly those folders (`export_files_in`, names relative to the root);
     `GET /api/export?folder=` (a folder and everything below it, `export_files`) is unchanged. `GET /api/export/info?folder=` gives the file names,
     the `unreviewed` originals and those without output. None reviewed: a message, no empty ZIP. Outside --root: 403. Test: `export_tests`.
-- Cancel (`POST /api/job/<id>/cancel`, `engine.Cancelled` / `CANCEL` / `check_cancel`, test `cancel_tests`): while a job runs, the button that
-  started it (`state.job.button`: Scan, Anonymize, Scan file, Anonymize file; Scan / Anonymize also for a batch) is its Cancel button
-  (red, 'Cancel', then 'Cancelling…'); a click asks for a confirmation (`cancelJob`). The server sets `engine.CANCEL`; the long loops
+- Queue (`app.py` section 'queue', `QUEUE`, `enqueue`, `_worker_loop`; client `refreshQueue`, `state.queue`; tests `queue_tests`, `cancel_tests`): every Scan / Anonymize
+  request ADDS an item to the queue and returns at once; ONE worker thread runs the items one at a time, first in first out. The four kinds:
+  `scan_file`, `scan_folder`, `anon_file`, `anon_folder` (`POST /api/scan`, `/api/anonymize`; `/api/batch` expands into ONE item per client folder and phase, in
+  folder order, scan then anonymize for 'all' / 'scan_anonymize'; the answer is `{jobs, job, skipped}`). The same work (kind, folder, file) is refused while it is queued
+  or running (409). An item is `queued`, `running`, then `done` / `error` / `cancelled`; it has its own log, progress and result (`GET /api/job/<id>?since=` as before, status
+  may be `queued`); `GET /api/queue` lists the session's items (the last `HISTORY_MAX` = 100 finished ones are kept, in memory only), `POST /api/queue/clear {what: waiting|finished}`.
+  An anonymize item may wait for another (`needs`, `after` in `/api/anonymize`: Scan & anonymize, batch pairs): if that one did not finish `done`, it is skipped (cancelled, 'Skipped: ...').
+  The work reads what it needs WHEN IT STARTS: the config text (so the latest edits apply) and, for a folder, the files to do (`only_now`: reviewed ones may have changed).
+  **Locks** (server: `file_busy`, `scan_busy`; client: `fileBusyItem`, `scanItemIn`, `curBusyItem`): a file is busy while an item for it, or for its whole folder, is queued
+  or running: rotate, As OCR, the OCR view, the review flag are refused (409) and the client disables Rotate, As OCR, OCR view, Scan / Anonymize file, Mark as reviewed, the black box
+  and text tools and Undo / Redo for THAT file only (the buttons say why in their tooltip; the tree shows ⏳ waiting / ⚙ running on the file or folder). A scan item (file or folder) also
+  locks its folder's config (`CONFIG_LOCKED`, 409 on `PUT /api/config` and `/api/config/model`; the client shows a lock banner, makes the table `inert` and disables Save), since the scan
+  writes the config when it ends. Every other file and folder stays usable; a button for work that is already queued / running becomes its **Remove** (queued) or **Cancel**
+  (running, after a confirmation: `cancelItem`) button; any other click adds to the queue (`enqueue`, 'queued (n ahead)').
+  **No jump**: when an item ends (`onItemFinished`, found by comparing two looks at the queue) the tree and the batch overview are refreshed; the viewer, the report, the config and
+  the tab change ONLY when the item is about what is open (same folder and, for a file item, the same file): the open folder's config is reloaded after a scan (unless it has
+  unsaved edits), an anonymization reloads the report and reopens the open file. The Log tab gets every item's log in the order they run. The **Queue** tab (`#tab-queue`, badge =
+  active items) lists running, waiting (with their position) and finished items (duration, error), with Cancel / Remove, a ▸ Log per item, a click on the name opens its folder
+  / file, and Clear waiting / Clear finished; the status bar shows the running item and how many wait. Export is disabled while anything is queued or running.
+- Cancel (`POST /api/job/<id>/cancel`, `engine.Cancelled` / `CANCEL` / `check_cancel`, test `cancel_tests`): a queued item just leaves the queue; for the running one the server sets
+  `engine.CANCEL` (reset when the next item starts) and the long loops
   stop at their next checkpoint (`_report` between two files, each scanned page of the scan, `_finish_page`, each page of `_digital`;
   waiting for a worker polls `Task.result(poll=check_cancel)` every 0.3 s, and the pages given to the workers ahead are cancelled by
-  hooks): the job ends as `cancelled` (a batch too, not 'failed'). A scan writes no config and no OCR data (the app writes them when
+  hooks): the item ends as `cancelled` (not 'failed'). A scan writes no config and no OCR data (the app writes them when
   the scan ends); an anonymization keeps the files it finished (the report is saved after each file), writes nothing for the file in
   progress and removes a `.pass2` file; the review flag of the file in progress was already cleared when it started.
 - Toolbar (top): **Scan** (`btnScan`: scan + draft config), **Anonymize** (`btnRun`) with a ▾ menu (`btnRunMenu` / `runMenu`: **Scan & anonymize**,
@@ -338,7 +356,7 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 API: `GET /api/info`, `/api/tree`, `/api/pdf?path=`, `/api/pdfinfo?path=`, `/api/page?path=&page=&scale=`,
 `GET|PUT /api/config?folder=`, `GET /api/report?folder=`, `POST /api/scan`, `POST /api/anonymize` (job id; `file` = one file name; `removed` = [{file, page, kind, box}] automatic boxes left out of this run),
 `GET|PUT /api/review?folder=`, `GET /api/status?folder=`, `GET /api/export?folder=` (ZIP), `GET /api/export/info?folder=`, `POST /api/batch`,
-`GET /api/job/<id>?since=N` (log lines + status + progress: files done / total, elapsed, eta). Jobs run in a thread, one at a time. A job error prints its full traceback on the
+`GET /api/job/<id>?since=N` (log lines + status + progress: files done / total, elapsed, eta). Jobs are queue items run by one worker thread, one at a time (see Queue). `GET /api/queue`, `POST /api/queue/clear`, `POST /api/job/<id>/cancel`. A job error prints its full traceback on the
 console running `app.py` and the last 12 lines in the job log.
 
 ## 5. Pipeline
@@ -1214,6 +1232,7 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   misreadings, never the original without accents, a wrong key does not single out the true name.
 - Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements,
   a removed photo stays removed on the second pass of a scan.
+- Queue (`queue_tests`, fake scans / anonymizations through the real endpoints): a second request while one runs is queued (FIFO, one at a time), the same work twice is refused, a busy file (item of the file or of its folder) cannot be rotated / read by the OCR view, a scan locks its folder's config only and the lock ends with it, a queued item can be removed, a batch is one item per folder and phase, an anonymize item behind a cancelled scan is skipped, 'clear waiting', the bounded history.
 - Review page (`review_page_tests`): two chosen folders (of six) give a tree of just those two under their parents, page sizes, JPEG pages of both documents, the report's replaced / removed areas, the skipped originals; without originals no original image, size or value; no folder with PDFs and an output = a message; outside --root 403; the ZIP of `dirs`; the template's data marker.
 - Export (`export_tests`): the ZIP of a folder tree holds exactly the outputs at their paths (hidden and `__pycache__`
   folders, configs, reports, review flags and `anon_ocr.json` left out), the info names the originals without output, no

@@ -157,6 +157,16 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
    - **ZIP of anonymized PDFs**: the reviewed `*_anonymized.*` files of the ticked folders, at their paths, never the
      originals, the configs or the reports.
 
+### The queue (several things at once)
+
+Every **Scan**, **Anonymize**, **Scan file** and **Anonymize file** click adds an item to a queue; the app runs them one at a time, in
+the order you asked. While something runs you keep working: only the file (or folder) that is queued or running is locked (Rotate, As OCR,
+OCR view, its own Scan / Anonymize buttons, black boxes, Mark as reviewed), and a scan also locks the config of its folder until it ends.
+Other files and folders stay fully usable, and starting work on them adds it to the queue. The button of something already queued or
+running becomes **Remove** (queued) or **Cancel** (running, with a confirmation). When an item ends, the app only refreshes what you
+are looking at; it never jumps to another file. A folder with subfolders adds one item per subfolder. The **Queue** tab (next to Config, Recap and Log)
+lists what is running, waiting and finished, with a log for each item. The queue lives in memory: restarting the app empties it.
+
 ### Many folders at once (batch)
 
 Select a folder that contains client folders (e.g. the root): the **Recap** tab shows an overview of every client
