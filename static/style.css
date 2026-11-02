@@ -56,6 +56,17 @@ button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 button.mini { padding: 0 6px; font-size: 13px; }
+/* the Anonymize button and its menu (more ways to anonymize the folder) */
+.split { position: relative; display: inline-flex; }
+.split > button:first-child { border-radius: 6px 0 0 6px; }
+.split > .caret { border-radius: 0 6px 6px 0; margin-left: -1px; padding: 6px 8px; }
+.dropmenu { position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 900; min-width: 170px; white-space: nowrap; padding: 4px; display: flex;
+  flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .2); }
+.dropmenu[hidden] { display: none; }
+.dropmenu button { border: 0; text-align: left; border-radius: 4px; background: transparent; }
+.dropmenu button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+/* the buttons of the open file, beside its name in the Original pane head */
+.file-actions { display: inline-flex; gap: 4px; margin-left: 8px; font-weight: 400; vertical-align: middle; }
 button.save-needed { border-color: var(--warn); box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 35%, transparent); }
 .chk { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
 .status { font-size: 12px; }

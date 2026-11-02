@@ -106,13 +106,13 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 ## Workflow
 
 1. Click a client folder (or a file in it) in the tree: it becomes the **working folder**.
-2. **1 · Scan & draft config** – every PDF of the folder is read (OCR for scans), personal data is detected, and
+2. **Scan** – every PDF of the folder is read (OCR for scans), personal data is detected, and
    `anon_config.yaml` is written in that folder with a **suggested replacement for each value**.
 3. Review the **Config** tab, edit, **Save** (Ctrl+S). The *Table* view lists every value by type (names, IBAN,
    phones...): tick a line to replace it, untick to keep the original, click a replacement to edit it, ✕ (on hover)
    deletes a line, the last line adds a value; *Settings* (folded at the top) holds the options; the search field
    filters. The *YAML* view shows the file itself (both views edit the same file).
-4. **2 · Anonymize folder** – the same config is applied to every PDF of the folder. Each `name.pdf` produces
+4. **Anonymize** – the same config is applied to every PDF of the folder. Each `name.pdf` produces
    `name_anonymized.pdf` next to it (originals are never touched). **Each page is processed in its own mode:**
    * Digital pages (real visible text): the original text is really removed (redaction), the fake text is written
      in its place in the same font, size and colour; annotations, metadata, bookmarks and hidden data are removed.
@@ -145,7 +145,7 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 7. Once you have checked an anonymized file by eye, press **Mark as reviewed** (top of the *Anonymized* pane). The tree
    shows `✓` on the file and `✓ 2/3` on the folder. If the file is generated again (or changed in any way), the flag
    goes back to *not reviewed* by itself. Flags are stored in `anon_review.json` in the folder.
-8. **Export anonymized** (toolbar) downloads one ZIP with the anonymized files of the selected folder and of the
+8. **Export** (toolbar) downloads one ZIP with the anonymized files of the selected folder and of the
    folders below it: only the `*_anonymized.*` files, never the originals, the configs or the reports. The status
    line says how many files it holds and which originals have no anonymized file yet.
 

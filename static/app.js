@@ -1750,9 +1750,9 @@ function renderTable() {
     const node = state.nodes[state.folder];
     box.innerHTML = !node ? "" : hasSubfolders(node) && !node.pdf_count
       ? `<div class="cfghint muted">This folder contains client folders. Each one has its own config: open a client
-         folder in the tree, or use <b>1 · Scan all subfolders</b> / <b>2 · Anonymize all subfolders</b> (overview in
+         folder in the tree, or use <b>Scan all subfolders</b> / <b>Anonymize all subfolders</b> (overview in
          the Recap tab).</div>`
-      : `<div class="cfghint muted">No config for this folder yet: click <b>1 · Scan &amp; draft config</b>.</div>`;
+      : `<div class="cfghint muted">No config for this folder yet: click <b>Scan</b>.</div>`;
     return;
   }
   const q = ($("#cfgSearch").value || "").trim().toLowerCase();
@@ -1969,15 +1969,23 @@ function updateToolbar() {
     : "Select a folder in the tree (click a folder or a file).";
   const batch = !n && hasSubfolders(node);               // a folder of client folders: the buttons act on all of them
   state.batchMode = batch;
-  $("#btnScan").textContent = batch ? "1 · Scan all subfolders" : "1 · Scan & draft config";
-  $("#btnRun").textContent = batch ? "2 · Anonymize all subfolders" : "2 · Anonymize folder";
-  $("#btnScan").title = batch ? "Draft a config in every client folder below that has none (existing configs are kept)" : "";
-  $("#btnRun").title = batch ? "Anonymize every client folder below whose outputs are missing or whose config changed" : "";
+  $("#btnScan").textContent = batch ? "Scan all subfolders" : "Scan";
+  $("#btnRun").textContent = batch ? "Anonymize all subfolders" : "Anonymize";
+  $("#btnScan").title = batch ? "Draft a config in every client folder below that has none (existing configs are kept)"
+    : "Read every PDF of the folder (OCR for scans), detect the personal data and draft the config to review";
+  $("#btnRun").title = batch ? "Anonymize every client folder below whose outputs are missing or whose config changed"
+    : "Apply the config to every PDF of the folder (reviewed files are left alone)";
   $("#btnBoth").textContent = batch ? "Scan & anonymize all subfolders" : "Scan & anonymize";
   $("#btnBoth").title = batch
     ? "Each client folder below is scanned, then anonymized, before the next one starts. Reviewed files are left alone"
     : "Scan this folder, then anonymize it right away, without reviewing the new config in between";
   $("#btnBoth").disabled = state.running || (!n && !batch);
+  $("#btnRunMenu").disabled = $("#btnBoth").disabled;
+  // one filled button at a time: Scan until the folder has a config, then Anonymize
+  const next = state.hasConfig ? "run" : "scan";
+  $("#btnScan").classList.toggle("primary", next === "scan");
+  $("#btnRun").classList.toggle("primary", next === "run");
+  $("#btnRunMenu").classList.toggle("primary", next === "run");
   $("#btnScan").disabled = state.running || (!n && !batch);
   const scanning = state.running && !state.runKeepsConfig;    // a scan rewrites the config when it ends: no save meanwhile
   $("#btnSave").disabled = scanning || !state.hasConfig || !state.dirty;
@@ -2127,6 +2135,13 @@ async function reloadConfigIfSuggested() {
   const offered = state.report && state.report.files.some((f) => (f.suggested || []).length);
   if (offered && !state.dirty) await loadConfig();
 }
+
+// the menu of the Anonymize button (more ways to anonymize the folder)
+function closeRunMenu() { $("#runMenu").hidden = true; }
+$("#btnRunMenu").onclick = () => { $("#runMenu").hidden = !$("#runMenu").hidden; };
+$("#runMenu").addEventListener("click", closeRunMenu);
+document.addEventListener("pointerdown", (e) => { if (!e.target.closest("#runSplit")) closeRunMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeRunMenu(); });
 
 $("#btnScan").onclick = async () => {
   if (state.batchMode) return runBatch("scan");

@@ -34,12 +34,14 @@
   <button id="btnTree" class="mini" title="Show / hide the file tree">☰</button>
   <div id="folderInfo" class="muted">Select a folder in the tree (click a folder or a file).</div>
   <div class="spacer"></div>
-  <button id="btnScan" class="primary" disabled>1 · Scan &amp; draft config</button>
-  <button id="btnRun" class="primary" disabled>2 · Anonymize folder</button>
-  <button id="btnBoth" disabled title="Scan the folder, then anonymize it, without reviewing the config in between">Scan &amp; anonymize</button>
-  <button id="btnScanFile" disabled title="Scan and read (OCR) only the selected file: the values it holds are added to the folder's config, the rest of the config is left as it is">Scan file</button>
-  <button id="btnRunFile" disabled title="Anonymize only the selected file (↑ ↓ in the tree switch file)">Anonymize file</button>
-  <button id="btnExport" disabled title="Download a ZIP of the REVIEWED anonymized files of the selected folder and of the folders below it (never the originals, the configs or the reports)">Export anonymized</button>
+  <button id="btnScan" class="primary" disabled title="Read every PDF of the folder (OCR for scans), detect the personal data and draft the config to review">Scan</button>
+  <span class="split" id="runSplit">
+    <button id="btnRun" disabled title="Apply the config to every PDF of the folder (reviewed files are left alone)">Anonymize</button><button id="btnRunMenu" class="caret" disabled aria-label="More ways to anonymize" aria-haspopup="menu" title="More ways to anonymize">&#9662;</button>
+    <div id="runMenu" class="dropmenu" role="menu" hidden>
+      <button id="btnBoth" role="menuitem" disabled title="Scan the folder, then anonymize it, without reviewing the config in between">Scan &amp; anonymize</button>
+    </div>
+  </span>
+  <button id="btnExport" disabled title="Download a ZIP of the REVIEWED anonymized files of the selected folder and of the folders below it (never the originals, the configs or the reports)">Export</button>
 </div>
 
 <main>
@@ -52,7 +54,11 @@
 
   <section id="origPane" class="pane">
     <div class="pane-head tools">
-      <div class="phead-title"><span>Original</span> <span id="origName" class="muted"></span></div>
+      <div class="phead-title"><span>Original</span> <span id="origName" class="muted"></span>
+        <span class="file-actions">
+          <button id="btnScanFile" class="mini" disabled title="Scan and read (OCR) only this file: the values it holds are added to the folder's config, the rest of the config is left as it is">Scan file</button>
+          <button id="btnRunFile" class="mini" disabled title="Anonymize only this file (&#8593; &#8595; in the tree switch file)">Anonymize file</button>
+        </span></div>
       <div class="pane-tools">
         <div class="zoom">
           <button id="zoomOut" class="mini" title="Zoom out (wheel; Shift + wheel scrolls)">−</button>
@@ -118,7 +124,7 @@
       </div>
       <div id="cfgTable" class="cfgtable"></div>
       <textarea id="configText" spellcheck="false" disabled
-        placeholder="No config for this folder yet.&#10;Click “1 · Scan &amp; draft config” to detect personal data and get suggested replacements."></textarea>
+        placeholder="No config for this folder yet.&#10;Click “Scan” to detect personal data and get suggested replacements."></textarea>
       <div id="configMsg" class="small"><button id="btnSave" class="mini" disabled title="Save the config (Ctrl+S)">Save</button> <span id="configMsgText"></span></div>
     </div>
     <div id="tab-recap" class="tabbody" hidden></div>
