@@ -152,7 +152,7 @@ parallel processes: 1 = never, default = the cores minus one, at most 6, fewer w
 Directory tree | Original | Anonymized | right panel with tabs **Config / Recap / Log**.
 - The 3 bars between panes are draggable (pointer events, double-click resets), widths in localStorage.
 - Viewer toolbars (layout; the buttons keep their ids): one **View** row (`.viewbar`, in `#viewArea`) above both panes holds what they share:
-  zoom (`#zoomOut` / `#zoomFit` / `#zoomIn`), **Changes** (`#btnChanges`) and the **Viewer | PDF** switch (`.viewmode`). Below it `#viewPanes` holds the two
+  zoom (`#zoomOut` / `#zoomFit` / `#zoomIn`), **Changes** (`#btnChanges`), **Warnings** (`#btnWarn`: shows / hides the red leftover and orange second-check frames `.lbox` of the anonymized pane, class `hide-warn` on `main`, remembered in localStorage `anonymizePDF.warnings`, enabled when the open file has any, switched back on by a click on a leftover / suspect in the Recap) and the **Viewer | PDF** switch (`.viewmode`). Below it `#viewPanes` holds the two
   panes. The Original pane head keeps the file's own buttons, in one tools row (the title row is only the name): **Rotate ▾** (`#btnRotate`, menu `#rotMenu`
   with `#btnRotL` / `#btnRotR` and a note that the original file is changed: the one destructive action takes two clicks), **As OCR** and
   **OCR view ▾** (`#btnOcrView` toggles; the caret `#btnOcrMenu` opens `#ocrMenu` to choose the layer Final / Initial / Differences / Raw engine, which sets the

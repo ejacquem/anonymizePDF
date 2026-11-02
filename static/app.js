@@ -1035,6 +1035,7 @@ async function locateHits(file, cycle, sel, label, hits) {
   centerOn("anon", h);
   leftSel.file = file;
   leftSel.key = sel + "|" + i;
+  if (!$("#btnWarn").classList.contains("on")) setWarnings(true);
   drawBoxes();
   setStatus(`“${label}” · place ${i + 1} of ${n} (page ${h.page}), click again for the next one`, "ok");
 }
@@ -1073,6 +1074,16 @@ function removedBoxes() {
   if (!name || !man) return [];
   return man.blackouts.map((b, idx) => ({ b, idx })).filter((x) => x.b.file === name && x.b.removed);
 }
+
+// the red (leftover) and orange (second check) frames of the anonymized pages: a toggle, remembered
+const WARN_KEY = "anonymizePDF.warnings";
+function setWarnings(on) {
+  $("#btnWarn").classList.toggle("on", on);
+  $("main").classList.toggle("hide-warn", !on);
+  try { localStorage.setItem(WARN_KEY, on ? "1" : "0"); } catch (e) { /* no storage */ }
+}
+$("#btnWarn").onclick = () => setWarnings(!$("#btnWarn").classList.contains("on"));
+try { if (localStorage.getItem(WARN_KEY) === "0") setWarnings(false); } catch (e) { /* no storage */ }
 
 function drawBoxes() {
   const v = viewers.anon;
@@ -2097,6 +2108,7 @@ function updateToolbar() {
   const changes = changedBoxes();
   const nChanges = changes.replaced.length + changes.removed.length;
   btnChanges.disabled = !nChanges;
+  $("#btnWarn").disabled = !leftoverHits().length;
   const rotatable = !!cur && !busy && /\.pdf$/i.test(cur.name);
   $("#btnRotL").disabled = $("#btnRotR").disabled = $("#btnRotate").disabled = !rotatable;
   $("#btnOcrMenu").disabled = !rotatable;
