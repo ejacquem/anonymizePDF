@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review page</title>
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #dde1e8;
+  --accent: #2b59c3; --sel: #e4ecfb; --ok: #1f8a4c; --warn: #b7791f; --bad: #c0392b; --viewer-bg: #9aa0aa; --removed: #8e44ad;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171d; --panel: #1c2028; --text: #e6e9ef; --muted: #8e97aa; --line: #2d3340; --accent: #5b86e5; --sel: #26324d;
+          --ok: #4cc27f; --warn: #e0a84b; --bad: #ef7a6c; --viewer-bg: #0d0f13; --removed: #c39bd3; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+* { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+header { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header h1 { font-size: 15px; margin: 0; }
+.muted { color: var(--muted); } .small { font-size: 12px; }
+.tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.legend i { display: inline-block; width: 12px; height: 12px; vertical-align: -2px; margin-right: 3px; border: 2px solid var(--warn); }
+.legend i.rm { border: 2px dashed var(--removed); margin-left: 8px; }
+main { flex: 1; display: flex; min-height: 0; }
+#tree { width: 250px; flex: none; overflow: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 6px 0; }
+.row { display: flex; align-items: center; gap: 6px; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+.row:hover { background: var(--sel); }
+.row.selected { background: var(--sel); font-weight: 600; }
+.row .name { overflow: hidden; text-overflow: ellipsis; }
+.row .tick { color: var(--ok); margin-left: auto; }
+.row .count { margin-left: auto; color: var(--muted); font-size: 12px; }
+#panes { flex: 1; display: flex; min-width: 0; gap: 2px; background: var(--line); }
+.pane { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; background: var(--viewer-bg); }
+.pane[hidden] { display: none; }
+.phead { padding: 5px 10px; background: var(--panel); border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: baseline; }
+.phead b { font-weight: 600; }
+.phead .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.view { flex: 1; overflow: auto; padding: 12px; cursor: grab; }
+.view.pan { cursor: grabbing; user-select: none; }
+.page { position: relative; background: #fff; margin: 0 auto 12px; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+.page img { display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
+.page .pno { position: absolute; top: 4px; left: 6px; font-size: 11px; color: #fff; background: rgba(0,0,0,.45); padding: 0 5px; border-radius: 3px; z-index: 4; }
+.chg { position: absolute; border: 2px solid var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); z-index: 3; }
+.chg.removed { border-style: dashed; border-color: var(--removed); background: color-mix(in srgb, var(--removed) 14%, transparent); }
+.hide-chg .chg { display: none; }
+.empty { margin: auto; color: #fff; padding: 20px; text-align: center; }
+#lock { margin: 12vh auto; width: min(380px, 90vw); padding: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; gap: 10px; }
+#lock input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+#lock .err { color: var(--bad); min-height: 1.2em; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="lock" class="hidden">
+  <b>This review page is password protected</b>
+  <input id="pw" type="password" placeholder="Password" autocomplete="off">
+  <button id="unlock" class="on">Open</button>
+  <div class="err" id="lockErr"></div>
+</div>
+<div id="app" class="hidden" style="display:flex;flex-direction:column;flex:1;min-height:0">
+  <header>
+    <h1 id="title"></h1><span id="where" class="muted small"></span>
+    <div class="tools">
+      <span class="legend muted small" title="Frames on the pages"><i></i>replaced<i class="rm"></i>removed</span>
+      <button id="btnChg" class="on" title="Show a frame around each replaced value">Changes</button>
+      <button id="zOut" title="Zoom out">−</button><span id="zVal" class="small" style="min-width:42px;text-align:center"></span><button id="zIn" title="Zoom in">+</button>
+      <button id="zFit" title="Fit the page width">Fit</button>
+    </div>
+  </header>
+  <main>
+    <div id="tree"></div>
+    <div id="panes">
+      <section class="pane" id="origPane"><div class="phead"><b>Original</b><span class="fname muted small" id="origName"></span></div><div class="view" id="origView"></div></section>
+      <section class="pane" id="anonPane"><div class="phead"><b>Anonymized</b><span class="fname muted small" id="anonName"></span></div><div class="view" id="anonView"></div></section>
+    </div>
+  </main>
+</div>
+<!--REVIEW_DATA-->
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const PT_TO_PX = 96 / 72;
+let DATA = null, META = null, KEY = null;
+const state = { file: null, scale: 1, fit: true, changes: true, open: new Set([""]) };
+const urls = new Map();
+
+// ---- data (plain, or encrypted with a password: every image has its own IV) ----
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+async function deriveKey(password, enc) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt: unb64(enc.salt), iterations: enc.iter, hash: "SHA-256" }, base,
+    { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+}
+async function decrypt(blob) {
+  const u = unb64(blob);
+  return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: u.slice(0, 12) }, KEY, u.slice(12)));
+}
+function pageUrl(id) {
+  if (!urls.has(id)) {
+    const blob = DATA.pages[id];
+    urls.set(id, DATA.enc
+      ? decrypt(blob).then((b) => URL.createObjectURL(new Blob([b], { type: "image/jpeg" })))
+      : Promise.resolve("data:image/jpeg;base64," + blob));
+  }
+  return urls.get(id);
+}
+
+// ---- tree and files ----
+let FILES = {}, ORDER = [];
+function indexMeta() {
+  FILES = {}; ORDER = [];
+  META.files.forEach((f) => { FILES[f.id] = f; });
+  (function walk(n) { n.files.forEach((id) => ORDER.push(id)); n.dirs.forEach(walk); })(META.tree);
+  document.title = META.title + " · review";
+  $("#title").textContent = META.title;
+  $("#where").textContent = `${ORDER.length} file(s) · exported ${META.created}${META.originals ? "" : " · anonymized files only"}`;
+  $("#origPane").hidden = !META.originals;
+}
+function countFiles(n) { return n.files.length + n.dirs.reduce((s, d) => s + countFiles(d), 0); }
+function renderTree() {
+  const box = $("#tree");
+  box.innerHTML = "";
+  (function walk(n, depth) {
+    n.dirs.forEach((d) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.style.paddingLeft = 8 + depth * 14 + "px";
+      const open = state.open.has(d.path);
+      row.innerHTML = `<span>${open ? "▾" : "▸"}</span><span>📁</span><span class="name"></span><span class="count">${countFiles(d)}</span>`;
+      row.querySelector(".name").textContent = d.name;
+      row.title = d.path;
+      row.onclick = () => { open ? state.open.delete(d.path) : state.open.add(d.path); renderTree(); };
+      box.appendChild(row);
+      if (open) walk(d, depth + 1);
+    });
+    n.files.forEach((id) => {
+      const f = FILES[id], row = document.createElement("div");
+      row.className = "row" + (state.file === id ? " selected" : "");
+      row.style.paddingLeft = 8 + depth * 14 + 14 + "px";
+      row.innerHTML = `<span>📄</span><span class="name"></span>${f.reviewed ? '<span class="tick" title="reviewed">✓</span>' : ""}`;
+      row.querySelector(".name").textContent = f.name;
+      row.title = f.name;
+      row.onclick = () => openFile(id);
+      box.appendChild(row);
+    });
+  })(META.tree, 0);
+}
+
+// ---- viewer ----
+const VIEWS = { orig: $("#origView"), anon: $("#anonView") };
+let observer = null;
+function pageSizes(f, which) { return which === "orig" ? (f.opages || f.pages) : f.pages; }
+function unfoldTo(path) {
+  path.split("/").filter(Boolean).forEach((_, i, p) => state.open.add(p.slice(0, i + 1).join("/")));
+}
+function openFile(id) {
+  const f = FILES[id];
+  if (!f) return;
+  state.file = id;
+  unfoldTo(f.folder);
+  renderTree();
+  $("#origName").textContent = $("#anonName").textContent = (f.folder ? f.folder + " / " : "") + f.name;
+  if (observer) observer.disconnect();
+  observer = new IntersectionObserver((es) => es.forEach((e) => {
+    if (!e.isIntersecting) return;
+    observer.unobserve(e.target);
+    const img = e.target.querySelector("img");
+    pageUrl(e.target.dataset.id).then((u) => { img.src = u; });
+  }), { rootMargin: "800px 0px" });
+  ["orig", "anon"].forEach((which) => {
+    if (which === "orig" && !META.originals) return;
+    const view = VIEWS[which];
+    view.innerHTML = "";
+    view.scrollTop = view.scrollLeft = 0;
+    pageSizes(f, which).forEach((pg, i) => {
+      const el = document.createElement("div");
+      el.className = "page";
+      el.dataset.id = `${id}${which === "orig" ? "o" : "a"}.${i + 1}`;
+      el.dataset.n = i + 1;
+      el.innerHTML = `<span class="pno">${i + 1}</span><img alt="" draggable="false">`;
+      view.appendChild(el);
+      observer.observe(el);
+    });
+  });
+  layout();
+}
+function paneWidth() { return (META.originals ? $("#origView") : $("#anonView")).clientWidth - 26; }
+function layout() {
+  const f = FILES[state.file];
+  if (!f) return;
+  if (state.fit) {
+    const widest = Math.max(...f.pages.map((p) => p.w), ...(f.opages || []).map((p) => p.w));
+    state.scale = Math.min(Math.max(paneWidth() / widest / PT_TO_PX, 0.2), 4);
+  }
+  const k = state.scale * PT_TO_PX;
+  $("#zVal").textContent = Math.round(state.scale * 100) + " %";
+  ["orig", "anon"].forEach((which) => {
+    if (which === "orig" && !META.originals) return;
+    const sizes = pageSizes(f, which);
+    [...VIEWS[which].children].forEach((el, i) => {
+      el.style.width = sizes[i].w * k + "px";
+      el.style.height = sizes[i].h * k + "px";
+      el.querySelectorAll(".chg").forEach((n) => n.remove());
+      const shapes = [...f.items.map((c) => ({ ...c, cls: "chg", title: tip(c) })),
+                      ...f.removed.map((c) => ({ ...c, cls: "chg removed", title: "Removed: text taken out, nothing written in its place" }))];
+      shapes.filter((c) => c.page === i + 1).forEach((c) => {
+        const d = document.createElement("div");
+        d.className = c.cls;
+        d.title = c.title;
+        d.style.left = c.box[0] * k + "px";
+        d.style.top = c.box[1] * k + "px";
+        d.style.width = (c.box[2] - c.box[0]) * k + "px";
+        d.style.height = (c.box[3] - c.box[1]) * k + "px";
+        el.appendChild(d);
+      });
+    });
+  });
+}
+function tip(c) {
+  const kind = c.type ? `\n(${c.type})` : "";
+  return META.originals ? `${c.original}  →  ${c.replacement}${kind}` : `Replaced by: ${c.replacement}${kind}`;
+}
+function setZoom(s, fit) { state.fit = !!fit; state.scale = Math.min(Math.max(s, 0.2), 4); layout(); }
+$("#zIn").onclick = () => setZoom(state.scale * 1.15);
+$("#zOut").onclick = () => setZoom(state.scale / 1.15);
+$("#zFit").onclick = () => setZoom(state.scale, true);
+$("#btnChg").onclick = () => { state.changes = !state.changes; $("#btnChg").classList.toggle("on", state.changes); $("#panes").classList.toggle("hide-chg", !state.changes); };
+window.addEventListener("resize", () => { if (state.fit) layout(); });
+
+// scroll of the two panes together (the same position, as a share of what each can scroll) and drag to pan
+function mirror(from, to) {
+  const fx = from.scrollWidth - from.clientWidth, fy = from.scrollHeight - from.clientHeight;
+  const tx = to.scrollWidth - to.clientWidth, ty = to.scrollHeight - to.clientHeight;
+  const y = fy > 0 ? from.scrollTop / fy * ty : 0, x = fx > 0 ? from.scrollLeft / fx * tx : 0;
+  if (Math.abs(to.scrollTop - y) > 1) to.scrollTop = y;
+  if (Math.abs(to.scrollLeft - x) > 1) to.scrollLeft = x;
+}
+Object.entries(VIEWS).forEach(([which, v]) => {
+  const other = VIEWS[which === "orig" ? "anon" : "orig"];
+  v.addEventListener("scroll", () => { if (META && META.originals) mirror(v, other); });
+  v.addEventListener("wheel", (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    setZoom(state.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+  }, { passive: false });
+  v.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    const sx = e.clientX, sy = e.clientY, l = v.scrollLeft, t = v.scrollTop;
+    v.classList.add("pan");
+    const move = (m) => { v.scrollLeft = l - (m.clientX - sx); v.scrollTop = t - (m.clientY - sy); };
+    const up = () => { v.classList.remove("pan"); window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  });
+});
+document.addEventListener("keydown", (e) => {
+  if (!META || (e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.target.tagName === "INPUT") return;
+  const i = ORDER.indexOf(state.file), n = ORDER.length;
+  if (!n) return;
+  e.preventDefault();
+  openFile(ORDER[(i + (e.key === "ArrowDown" ? 1 : -1) + n) % n]);
+});
+
+// ---- start ----
+function start() {
+  $("#lock").classList.add("hidden");
+  $("#app").classList.remove("hidden");
+  indexMeta();
+  state.open = new Set([""]);
+  renderTree();
+  if (ORDER.length) openFile(ORDER[0]);
+  else $("#tree").textContent = "Nothing in this page.";
+}
+async function unlock() {
+  $("#lockErr").textContent = "";
+  if (!window.crypto || !crypto.subtle) { $("#lockErr").textContent = "This browser cannot decrypt here (a secure context is needed): open the file from disk or the shared drive."; return; }
+  try {
+    KEY = await deriveKey($("#pw").value, DATA.enc);
+    META = JSON.parse(new TextDecoder().decode(await decrypt(DATA.meta)));
+  } catch (e) {
+    $("#lockErr").textContent = "Wrong password.";
+    return;
+  }
+  start();
+}
+const node = document.getElementById("review-data");
+if (node) {
+  DATA = JSON.parse(node.textContent);
+  if (DATA.enc) {
+    $("#lock").classList.remove("hidden");
+    $("#unlock").onclick = unlock;
+    $("#pw").addEventListener("keydown", (e) => { if (e.key === "Enter") unlock(); });
+    $("#pw").focus();
+  } else {
+    META = DATA.meta;
+    start();
+  }
+} else {
+  $("#lock").classList.remove("hidden");
+  $("#lock").innerHTML = "<b>No data</b><span class='muted'>This is the empty template of the review page: export it from the app.</span>";
+}
+</script>
+</body>
+</html>

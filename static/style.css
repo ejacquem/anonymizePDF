@@ -329,3 +329,20 @@ td.num { text-align: right; white-space: nowrap; }
 .note { padding: 6px 10px; font-size: 12px; }
 .note.bad { color: var(--bad); } .note.warn { color: var(--warn); }
 
+
+/* the Export dialog: which folders, which format */
+.exdlg { width: min(560px, 92vw); max-height: 86vh; padding: 16px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .3); }
+.exdlg::backdrop { background: rgba(0, 0, 0, .35); }
+.exdlg h3 { margin: 0 0 10px; }
+.exdlg[open] { display: flex; flex-direction: column; gap: 10px; }
+.exrow { display: flex; flex-direction: column; gap: 6px; }
+.exrow label { display: block; }
+.exsub { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.exall { margin-left: auto; font-weight: 400; }
+.exfolders { overflow: auto; max-height: 40vh; min-height: 80px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 0; }
+.exfolders .exnode { display: flex; align-items: center; gap: 6px; padding: 2px 8px; }
+.exfolders .exnode.off { opacity: .45; }
+.exfolders .exinfo { margin-left: auto; color: var(--muted); font-size: 12px; }
+.exbtns { display: flex; justify-content: flex-end; gap: 8px; }
+.exdlg input[type=password] { font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }

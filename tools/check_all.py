@@ -4873,6 +4873,88 @@ def export_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def review_page_tests():
+    """The review page (`anonymizer/reviewpage.py`, app /api/review-page, static/review_page.html): the data of the folders the
+    export dialog selects, as one tree with their files, page images and changes; originals left out on request; a folder with no
+    output is named, a path outside --root is refused; the ZIP export takes exactly the folders named."""
+    print("\n== review page")
+    import base64
+    import importlib.util
+    import zipfile
+    spec = importlib.util.spec_from_file_location("anon_webapp_review", ROOT / "app.py")
+    webapp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(webapp)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_review_"))
+    saved_root = webapp.STATE["root"]
+    try:
+        def make(path: Path, text: str, pages: int = 1):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            doc = fitz.open()
+            for n in range(pages):
+                doc.new_page(width=300, height=400).insert_text((40, 80), f"{text} page {n + 1}")
+            doc.save(path)
+            doc.close()
+        for rel in ("FolderA/SubA", "FolderA/SubB", "FolderA/SubC", "FolderB/SubA", "FolderB/SubB", "FolderB/SubC"):
+            make(tmp / rel / "doc.pdf", "Jean Dupont", 2)
+            make(tmp / rel / "doc_anonymized.pdf", "Marc Leroy", 2)
+            report = {"files": [{"file": "doc.pdf", "items": [
+                {"type": "PERSON", "original": "Jean Dupont", "replacement": "Marc Leroy", "boxes": [{"page": 1, "box": [40, 70, 120, 84]}],
+                 "removed": [{"page": 2, "box": [40, 70, 120, 84]}]}]}]}
+            (tmp / rel / "anon_report.json").write_text(json.dumps(report), encoding="utf-8")
+        make(tmp / "FolderB/SubC/late.pdf", "no output yet")                   # an original with no anonymized file
+        out = tmp / "FolderA/SubC/doc_anonymized.pdf"
+        (tmp / "FolderA/SubC/anon_review.json").write_text(
+            json.dumps({"doc.pdf": {"at": "2026-11-02 10:00", "sha256": webapp._sha(out)}}), encoding="utf-8")
+        webapp.STATE["root"] = tmp
+        client = webapp.app.test_client()
+        dirs = ["FolderA/SubC", "FolderB/SubC"]
+
+        r = client.post("/api/review-page", json={"dirs": dirs, "originals": True})
+        data = r.get_json()
+        check("the review page of two chosen folders is built", r.status_code == 200 and data and len(data["meta"]["files"]) == 2, r.status_code)
+        meta = data["meta"]
+        tree = meta["tree"]
+        got = {d["path"]: sorted(x["path"] for x in d["dirs"]) for d in tree["dirs"]}
+        check("only the chosen folders are in the tree, under their parents", got == {"FolderA": ["FolderA/SubC"], "FolderB": ["FolderB/SubC"]}, got)
+        f0 = meta["files"][0]
+        check("a file has its page sizes, original and anonymized, and its review flag",
+              f0["pages"] == [{"w": 300.0, "h": 400.0}] * 2 and f0["opages"] == f0["pages"] and f0["reviewed"] is True
+              and meta["files"][1]["reviewed"] is False, f0)
+        check("every page of both documents is a JPEG, under the id the viewer asks for",
+              all(base64.b64decode(data["pages"][f"{f['id']}{w}.{n}"])[:3] == b"\xff\xd8\xff"
+                  for f in meta["files"] for w in "ao" for n in (1, 2)) and len(data["pages"]) == 8, sorted(data["pages"]))
+        check("the replaced value and the removed area come from the report, with the original value",
+              f0["items"] == [{"page": 1, "box": [40, 70, 120, 84], "replacement": "Marc Leroy", "type": "PERSON", "original": "Jean Dupont"}]
+              and f0["removed"][0]["page"] == 2, f0)
+        check("an original with no anonymized file is named and left out", data["skipped"] == ["FolderB/SubC/late.pdf"], data["skipped"])
+
+        r = client.post("/api/review-page", json={"dirs": dirs, "originals": False})
+        data = r.get_json()
+        text = json.dumps(data)
+        check("without originals there is no original image, no original page size and no original value",
+              len(data["pages"]) == 4 and not any("o." in k for k in data["pages"]) and "opages" not in data["meta"]["files"][0]
+              and "Jean Dupont" not in text and data["meta"]["originals"] is False, sorted(data["pages"]))
+        make(tmp / "FolderC" / "only.pdf", "not anonymized")
+        r = client.post("/api/review-page", json={"dirs": ["FolderC"], "originals": True})
+        check("a folder with no anonymized file is a message, not an empty page",
+              r.status_code == 404 and "anonymize them first" in r.get_data(as_text=True), r.status_code)
+        check("a path outside --root is refused (403)", client.post("/api/review-page", json={"dirs": ["../"]}).status_code == 403)
+        check("no folder selected is refused", client.post("/api/review-page", json={"dirs": []}).status_code == 400)
+
+        r = client.get("/api/export?dirs=FolderA/SubC&dirs=FolderB/SubC")
+        with zipfile.ZipFile(io.BytesIO(r.data)) as z:
+            names = sorted(z.namelist())
+        check("the ZIP of chosen folders holds the reviewed outputs of exactly those folders",
+              r.status_code == 200 and names == ["FolderA/SubC/doc_anonymized.pdf"], names)
+
+        template = (ROOT / "static" / "review_page.html").read_text(encoding="utf-8")
+        check("the template has one place for the data and reads it from a script tag",
+              template.count("<!--REVIEW_DATA-->") == 1 and 'getElementById("review-data")' in template)
+    finally:
+        webapp.STATE["root"] = saved_root
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def ocr_view_tests():
     """The OCR viewer (`ocrview`, app /api/ocrview): the first pass and the final reading are compared place by place
     (same / changed / added / dropped, boxes in PDF points); a page with a text layer gives its words; a scanned page
@@ -6050,7 +6132,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "cancel_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "review_page_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "cancel_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

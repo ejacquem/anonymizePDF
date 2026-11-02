@@ -42,7 +42,7 @@
       <button id="btnBoth" role="menuitem" disabled title="Scan the folder, then anonymize it, without reviewing the config in between">Scan &amp; anonymize</button>
     </div>
   </span>
-  <button id="btnExport" disabled title="Download a ZIP of the REVIEWED anonymized files of the selected folder and of the folders below it (never the originals, the configs or the reports)">Export</button>
+  <button id="btnExport" disabled title="Export folders you choose: a review page (one HTML file, original and anonymized side by side) or a ZIP of the reviewed anonymized files">Export</button>
 </div>
 
 <main>
@@ -143,6 +143,22 @@
   </div>
 </footer>
 
+<dialog id="exportDlg" class="exdlg">
+  <h3>Export</h3>
+  <div class="exrow">
+    <label><input type="radio" name="exFormat" value="page" checked> Review page <span class="muted small">one HTML file: original and anonymized side by side, with the changes (needs nothing to open it)</span></label>
+    <label><input type="radio" name="exFormat" value="zip"> ZIP of anonymized PDFs <span class="muted small">reviewed files only</span></label>
+  </div>
+  <div class="exsub">Folders <span class="muted small" id="exCount"></span>
+    <span class="exall"><button class="mini" id="exAll">All</button> <button class="mini" id="exNone">None</button></span></div>
+  <div id="exFolders" class="exfolders"></div>
+  <div id="exPageOpts" class="exrow">
+    <label><input type="checkbox" id="exOriginals" checked> Include the original pages and values <span class="muted small">(uncheck to share the anonymized side only)</span></label>
+    <label>Password <input type="password" id="exPassword" autocomplete="new-password" placeholder="none"> <span class="muted small">encrypts the page in the browser; whoever has the file but not the password sees nothing</span></label>
+    <div class="muted small">Folder and file names are shown as they are.</div>
+  </div>
+  <div class="exbtns"><button id="exCancel">Cancel</button><button id="exGo" class="primary">Export</button></div>
+</dialog>
 <script src="/static/app.js"></script>
 </body>
 </html>

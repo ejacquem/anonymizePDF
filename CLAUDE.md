@@ -54,6 +54,7 @@ anonymizer/
                        term_regex (OCR-tolerant mode), apply_config, words_to_text, match_boxes, plan_page
   ocr.py               OCR engines (Tesseract / Windows winrt), engine(), ocr_words(), fix_digits(), render_page()
   ocrpage.py           a page read more than once: page_words() = the 300 dpi reading repaired with the page rescaled and, on a poor page, with thick / native / smooth variants (section 9)
+  reviewpage.py        the data of a review page (tree of the chosen folders, page JPEGs, changes), see section 4 Export
   ocrview.py           what the OCR returned for a page, first pass and final reading compared, for the OCR view (section 4)
   ocrdata.py           anon_ocr.json per folder: the full-page OCR words the scan read, with the sha256 of the file, the OCR
                        engine and the language; click-to-find reads them back (section 5, 11b)
@@ -79,7 +80,7 @@ anonymizer/
   faces.py             faces of people (YuNet, ONNX Runtime, offline): detect, find_faces, find_faces_digital
   models/              face_detection_yunet_2023mar.onnx (OpenCV zoo, MIT; sha256 checked at load)
   configmodel.py       anon_config.yaml <-> review-table model (settings, entries incl. the commented suggestions)
-static/                index.html, app.js, style.css (vanilla JS)
+static/                index.html, app.js, style.css (vanilla JS), review_page.html (the stand-alone viewer of an exported review page)
 docs/config.example.yaml
 sample_data/Dossier Test 00/   FR bank statement, Helvetica (digital + clean scan)
 sample_data/Dossier Test 01/   BE bank statement: Calibri/Georgia/Consolas subsetted, tinted boxes, 2 holders,
@@ -199,14 +200,26 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Trace also lists the glyphs each redaction removed: 'glyphs removed (value)' (the characters of the values) and
   'glyph restored (taken by a neighbouring redaction)' (characters next to a value that the redaction took and that
   were written again). Black boxes and pixel redactions do the same. Invisible characters are never written again.
-- Export (toolbar, `#btnExport`, enabled when a folder is selected and nothing runs): a ZIP of the anonymized files of the
-  selected folder and of every folder below it (`GET /api/export?folder=`, built in memory, sent as
-  `<folder>_anonymized.zip`). Only the REVIEWED outputs go in (`export_files`: `eng.output_of` of each original whose
-  current output is marked as reviewed, `reviewed_files`, at its path relative to the selected folder): never an
-  original, a config, a report, a review flag, the OCR data or a hidden / `__pycache__` folder, and never an output that
-  is not reviewed or whose review is stale. `GET /api/export/info?folder=` gives the file names, the `unreviewed` originals
-  and the originals without output (the status line names the ones left out, before the download). None reviewed: a
-  message, no empty ZIP. Outside --root: 403. Test: `export_tests`.
+- Export (toolbar, `#btnExport`, enabled when the tree is loaded and nothing runs): a dialog (`#exportDlg`, `exRender`) with a checkbox tree
+  of the folders (`exDataDirs`: the folders that hold PDFs; a parent ticks / unticks the usable folders below it, indeterminate when
+  some; a folder with no anonymized file, or no reviewed one for the ZIP, is disabled; it starts on the selected folder's subtree) and a format.
+  - **Review page** (`POST /api/review-page {dirs, originals}`, `anonymizer/reviewpage.build`, `static/review_page.html`): the server returns
+    `{meta, pages, skipped}`: `meta.tree` = only the chosen folders under their parents, `meta.files` = per file its page sizes (`pages`,
+    `opages`), `reviewed`, the replaced values (`items`: page, box in PDF points, replacement, type, and `original` unless originals are
+    left out) and `removed` areas from the report; `pages` = base64 JPEG of every page of the output (`<id>a.<n>`) and, with originals, of
+    the original (`<id>o.<n>`), 2 px per PDF point. Files with no output are `skipped` (named in the status line); not only reviewed files go
+    in, the page is for reviewing. The BROWSER then (`exportPage`) fetches `/static/review_page.html`, replaces its `<!--REVIEW_DATA-->` by
+    a `<script id="review-data" type="application/json">` holding the data (`<` escaped) and downloads it as `review_<date>.html`. With a
+    password `encryptBundle` seals the meta and every image separately with AES-GCM (key: PBKDF2-SHA256, 250000 iterations, salt and
+    iteration count in `enc`; `iv || ciphertext` in base64), WebCrypto only, so the server needs no crypto library. Nothing is written
+    next to the documents. The viewer (inline JS, no library): password screen (a wrong password = the GCM tag fails), tree + file list,
+    two panes with the scroll mirrored as a share of each pane's range, zoom (Fit, +/-, Ctrl+wheel), drag to pan, up/down keys switch
+    file, frames (`.chg`, purple dashed = removed) with a tooltip, images decoded lazily (IntersectionObserver). No originals: the
+    original pane is hidden and the tooltips say only the replacement. Privacy: without a password the originals are readable in the file
+    (the app confirms); folder and file names are always shown. Test: `review_page_tests`.
+  - **ZIP**: `GET /api/export?dirs=A&dirs=B/C` = the reviewed outputs of exactly those folders (`export_files_in`, names relative to the root);
+    `GET /api/export?folder=` (a folder and everything below it, `export_files`) is unchanged. `GET /api/export/info?folder=` gives the file names,
+    the `unreviewed` originals and those without output. None reviewed: a message, no empty ZIP. Outside --root: 403. Test: `export_tests`.
 - Cancel (`POST /api/job/<id>/cancel`, `engine.Cancelled` / `CANCEL` / `check_cancel`, test `cancel_tests`): while a job runs, the button that
   started it (`state.job.button`: Scan, Anonymize, Scan file, Anonymize file; Scan / Anonymize also for a batch) is its Cancel button
   (red, 'Cancel', then 'Cancelling…'); a click asks for a confirmation (`cancelJob`). The server sets `engine.CANCEL`; the long loops
@@ -1192,6 +1205,7 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   misreadings, never the original without accents, a wrong key does not single out the true name.
 - Options: qr_codes / signatures off, `mrz: keep`, old `mrz: blackout`, photos searched on every page of statements,
   a removed photo stays removed on the second pass of a scan.
+- Review page (`review_page_tests`): two chosen folders (of six) give a tree of just those two under their parents, page sizes, JPEG pages of both documents, the report's replaced / removed areas, the skipped originals; without originals no original image, size or value; no folder with PDFs and an output = a message; outside --root 403; the ZIP of `dirs`; the template's data marker.
 - Export (`export_tests`): the ZIP of a folder tree holds exactly the outputs at their paths (hidden and `__pycache__`
   folders, configs, reports, review flags and `anon_ocr.json` left out), the info names the originals without output, no
   output gives a message, a path outside --root is 403.

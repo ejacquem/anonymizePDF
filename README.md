@@ -145,9 +145,17 @@ Layout: `root/Client_A/*.pdf`, `root/Client_B/*.pdf`, … Each client folder get
 7. Once you have checked an anonymized file by eye, press **Mark as reviewed** (top of the *Anonymized* pane). The tree
    shows `✓` on the file and `✓ 2/3` on the folder. If the file is generated again (or changed in any way), the flag
    goes back to *not reviewed* by itself. Flags are stored in `anon_review.json` in the folder.
-8. **Export** (toolbar) downloads one ZIP with the anonymized files of the selected folder and of the
-   folders below it: only the `*_anonymized.*` files, never the originals, the configs or the reports. The status
-   line says how many files it holds and which originals have no anonymized file yet.
+8. **Export** (toolbar) opens a dialog: tick the folders to export (a parent ticks its subfolders; folders with nothing
+   anonymized yet are greyed out), then choose the format.
+   - **Review page**: one `.html` file to put on a shared drive. Double-click it: a tree of the exported folders on the
+     left, the files of a folder under it, and the original and the anonymized file side by side (scroll, zoom and
+     pan together), with a frame on each replaced value (hover: `original -> replacement`). It needs nothing installed
+     and no server, and it is read-only. Options: leave the original pages out (the page then holds only the
+     anonymized side), and a password (the page is encrypted in the browser; without the password the file shows
+     nothing). Without a password the original pages and their real values are readable by anyone who opens the file:
+     the app asks to confirm. Folder and file names are shown as they are.
+   - **ZIP of anonymized PDFs**: the reviewed `*_anonymized.*` files of the ticked folders, at their paths, never the
+     originals, the configs or the reports.
 
 ### Many folders at once (batch)
 

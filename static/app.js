@@ -2039,7 +2039,7 @@ function updateToolbar() {
       b.title = "Cancel the running " + state.job.label.toLowerCase();
     }
   });
-  $("#btnExport").disabled = state.running || state.folder === null;   // the folder and the folders below it: the server decides
+  $("#btnExport").disabled = state.running || !state.tree;   // the dialog chooses the folders
   const pending = !!cur && isPending(cur.name);
   $("#btnRunFile").classList.toggle("save-needed", pending);
   const changes = changedBoxes();
@@ -2271,21 +2271,137 @@ $("#btnBoth").onclick = async () => {
   await anonymizeFolder();
 };
 
-// Export: a ZIP of the anonymized files below the selected folder. The info says how many files it holds and which
-// originals have no anonymized file yet; the download is the same address (the server sends it as an attachment).
-$("#btnExport").onclick = async () => {
-  if (state.folder === null) return;
-  try {
-    const info = await api(`/api/export/info?folder=${encodeURIComponent(state.folder)}`);
-    // only the reviewed outputs go in the ZIP: the others are named, so that the user knows what is left out
-    const left = [...info.unreviewed, ...info.missing];
-    if (!info.files.length) { setStatus("Nothing to export: no reviewed anonymized file in this folder (Mark as reviewed first).", "err"); return; }
-    const skipped = left.length ? ` · not reviewed or not anonymized, left out (${left.length}): ${left.join(", ")}` : "";
-    setStatus(`Export: ${info.files.length} reviewed file(s)${skipped}`, left.length ? "" : "ok");
-    location.href = `/api/export?folder=${encodeURIComponent(state.folder)}`;
-  } catch (e) {
-    setStatus(e.message, "err");
+// Export: a dialog to choose the folders and the format. Review page = one stand-alone HTML file (static/review_page.html) with the
+// pages of the selected folders, original and anonymized side by side (the server sends the data, the browser encrypts it when a
+// password is given and writes the file); ZIP = the reviewed anonymized PDFs of the selected folders.
+const exDlg = $("#exportDlg");
+const ex = { sel: new Set() };
+const exFormat = () => document.querySelector("input[name=exFormat]:checked").value;
+// the folders that hold PDFs (a folder with PDFs may have subfolders too)
+function exDataDirs(node, out = []) {
+  if (node.type !== "dir") return out;
+  if (node.pdf_count) out.push(node);
+  node.children.forEach((c) => exDataDirs(c, out));
+  return out;
+}
+const exUsable = (n) => (exFormat() === "zip" ? n.reviewed_count : n.anon_count) > 0;
+function exRender() {
+  const box = $("#exFolders");
+  box.innerHTML = "";
+  (function walk(node, depth) {
+    if (node.type !== "dir") return;
+    const data = exDataDirs(node).filter(exUsable), on = data.filter((d) => ex.sel.has(d.path));
+    const row = document.createElement("label");
+    row.className = "exnode" + (data.length ? "" : " off");
+    row.style.paddingLeft = 8 + depth * 16 + "px";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.disabled = !data.length;
+    cb.checked = !!data.length && on.length === data.length;
+    cb.indeterminate = on.length > 0 && on.length < data.length;
+    cb.onchange = () => { data.forEach((d) => (cb.checked ? ex.sel.add(d.path) : ex.sel.delete(d.path))); exRender(); };
+    const name = document.createElement("span");
+    name.textContent = node.name;
+    const info = document.createElement("span");
+    info.className = "exinfo";
+    info.textContent = node.pdf_count ? `${node.pdf_count} pdf · ${node.anon_count} anonymized · ${node.reviewed_count} reviewed` : "";
+    row.append(cb, name, info);
+    box.appendChild(row);
+    node.children.forEach((c) => walk(c, depth + 1));
+  })(state.tree, 0);
+  const total = exDataDirs(state.tree).filter((d) => ex.sel.has(d.path))
+    .reduce((s, d) => s + (exFormat() === "zip" ? d.reviewed_count : d.anon_count), 0);
+  $("#exCount").textContent = `${ex.sel.size} folder(s) · ${total} file(s)`;
+  $("#exPageOpts").hidden = exFormat() !== "page";
+  $("#exGo").disabled = !ex.sel.size;
+}
+$("#btnExport").onclick = () => {
+  if (!state.tree) return;
+  // start from the selected folder and the ones below it (the whole root when no folder is selected)
+  const from = state.nodes[state.folder] || state.tree;
+  ex.sel = new Set(exDataDirs(from).filter(exUsable).map((d) => d.path));
+  exRender();
+  exDlg.showModal();
+};
+document.querySelectorAll("input[name=exFormat]").forEach((r) => {
+  r.onchange = () => {
+    ex.sel = new Set([...ex.sel].filter((p) => exUsable(state.nodes[p])));
+    exRender();
+  };
+});
+$("#exAll").onclick = () => { ex.sel = new Set(exDataDirs(state.tree).filter(exUsable).map((d) => d.path)); exRender(); };
+$("#exNone").onclick = () => { ex.sel.clear(); exRender(); };
+$("#exCancel").onclick = () => exDlg.close();
+
+const b64 = (bytes) => {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+// AES-GCM with a key from the password (PBKDF2-SHA256): the tree and the values in one blob, every page image in its own
+async function encryptBundle(bundle, password, progress) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iter = 250000;
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: iter, hash: "SHA-256" }, base,
+    { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+  const seal = async (bytes) => {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, bytes));
+    const out = new Uint8Array(12 + ct.length);
+    out.set(iv);
+    out.set(ct, 12);
+    return b64(out);
+  };
+  const ids = Object.keys(bundle.pages), pages = {};
+  for (let i = 0; i < ids.length; i++) {
+    pages[ids[i]] = await seal(unb64(bundle.pages[ids[i]]));
+    if (i % 10 === 0) progress(i, ids.length);
   }
+  return { enc: { salt: b64(salt), iter }, meta: await seal(new TextEncoder().encode(JSON.stringify(bundle.meta))), pages };
+}
+async function exportPage(dirs, originals, password) {
+  setStatus("Export: reading the pages…", "busy");
+  const bundle = await post("/api/review-page", { dirs, originals });
+  let data = { meta: bundle.meta, pages: bundle.pages };
+  if (password) {
+    if (!(window.crypto && crypto.subtle)) throw new Error("This browser cannot encrypt here (needs localhost or https).");
+    data = await encryptBundle(bundle, password, (i, n) => setStatus(`Export: encrypting ${i}/${n}…`, "busy"));
+  }
+  setStatus("Export: writing the page…", "busy");
+  const template = await (await fetch("/static/review_page.html")).text();
+  const json = JSON.stringify(data).replace(/</g, "\\u003c");
+  const html = template.replace("<!--REVIEW_DATA-->", () => `<script id="review-data" type="application/json">${json}</script>`);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  a.download = `review_${new Date().toISOString().slice(0, 10)}${password ? "_protected" : ""}.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  const n = bundle.meta.files.length, left = bundle.skipped.length;
+  setStatus(`Export: review page with ${n} file(s)${bundle.meta.originals ? "" : ", anonymized side only"}${password ? ", password protected" : ""}` +
+    (left ? ` · no anonymized file yet, left out (${left}): ${bundle.skipped.join(", ")}` : ""), left ? "" : "ok");
+}
+$("#exGo").onclick = async () => {
+  const dirs = [...ex.sel];
+  if (!dirs.length) return;
+  if (exFormat() === "zip") {
+    exDlg.close();
+    location.href = "/api/export?" + dirs.map((d) => "dirs=" + encodeURIComponent(d)).join("&");
+    setStatus(`Export: ZIP of the reviewed files of ${dirs.length} folder(s)`, "ok");
+    return;
+  }
+  const originals = $("#exOriginals").checked, password = $("#exPassword").value;
+  if (originals && !password && !confirm("The page will hold the ORIGINAL pages with the real values, and no password.\n\nAnyone who can open the file sees them. Continue?")) return;
+  exDlg.close();
+  $("#btnExport").disabled = true;
+  try {
+    await exportPage(dirs, originals, password);
+  } catch (e) {
+    setStatus("Export: " + e.message, "err");
+  }
+  $("#btnExport").disabled = state.running || !state.tree;
 };
 
 // scan (and read by OCR) only the open file: its new values are added to the folder's config, the rest of it stays

@@ -25,7 +25,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from anonymizer import engine as eng
-from anonymizer import configmodel, ocr, ocrdata, ocrview, secret, verify
+from anonymizer import configmodel, ocr, ocrdata, ocrview, reviewpage, secret, verify
 from anonymizer.pii import fitz, load_ner
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -684,16 +684,69 @@ def export_info():
     return jsonify({"files": [rel for _, rel in outputs], "unreviewed": unreviewed, "missing": missing})
 
 
-@app.get("/api/export")
-def export():
-    """A ZIP of the anonymized files of the selected folder, built in memory (never written next to the documents)."""
+def dirs_arg(rels) -> list[Path]:
+    """The client folders named by the export dialog (paths relative to the root): each one inside --root and holding PDFs."""
+    out = []
+    for rel in rels:
+        d = safe(str(rel))
+        if not d.is_dir():
+            raise FileNotFoundError(f"folder not found: {rel}")
+        if eng.list_sources(d):
+            out.append(d)
+    return out
+
+
+def export_files_in(base: Path, dirs: list[Path]) -> tuple[list[tuple[Path, str]], list[str], list[str]]:
+    """export_files for exactly these folders (names relative to `base`)."""
+    outputs, unreviewed, missing = [], [], []
+    for d in dirs:
+        reviewed = reviewed_files(d)
+        for src in eng.list_sources(d):
+            out = eng.output_of(src)
+            rel = src.relative_to(base).as_posix()
+            if not out.is_file():
+                missing.append(rel)
+            elif src.name in reviewed:
+                outputs.append((out, out.relative_to(base).as_posix()))
+            else:
+                unreviewed.append(rel)
+    return outputs, unreviewed, missing
+
+
+@app.post("/api/review-page")
+def review_page():
+    """The data of a stand-alone review page (see anonymizer/reviewpage.py) for the folders the export dialog selected.
+    The browser encrypts it when a password is asked and writes the HTML file."""
+    data = request.get_json(force=True)
     try:
-        base = folder_arg(request.args)
+        dirs = dirs_arg(data.get("dirs") or [])
     except PermissionError:
         return bad("forbidden", 403)
     except FileNotFoundError as e:
         return bad(str(e), 404)
-    outputs, _, _ = export_files(base)
+    if not dirs:
+        return bad("No folder with PDFs selected.")
+    built = reviewpage.build(STATE["root"], dirs, bool(data.get("originals", True)), doc_of, fitz, reviewed_files, rel_of)
+    if not built["meta"]["files"]:
+        return bad("No anonymized file in the selected folders: anonymize them first.", 404)
+    return jsonify(built)
+
+
+@app.get("/api/export")
+def export():
+    """A ZIP of the anonymized files of the selected folder, built in memory (never written next to the documents).
+    `dirs` (repeated) = exactly these folders, paths relative to the root (the export dialog)."""
+    try:
+        if request.args.getlist("dirs"):
+            base = STATE["root"]
+            outputs, _, _ = export_files_in(base, dirs_arg(request.args.getlist("dirs")))
+        else:
+            base = folder_arg(request.args)
+            outputs, _, _ = export_files(base)
+    except PermissionError:
+        return bad("forbidden", 403)
+    except FileNotFoundError as e:
+        return bad(str(e), 404)
     if not outputs:
         return bad("No reviewed anonymized file in this folder: review the outputs (Mark as reviewed) first.", 404)
     buf = io.BytesIO()
