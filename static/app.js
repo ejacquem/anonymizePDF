@@ -1984,6 +1984,7 @@ function updateToolbar() {
   $("#btnRun").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
   const cur = currentOriginalNode();                          // either file of the pair works
   $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur;
+  $("#btnScanFile").disabled = state.running || batch || !cur;
   $("#btnExport").disabled = state.running || state.folder === null;   // the folder and the folders below it: the server decides
   const pending = !!cur && isPending(cur.name);
   $("#btnRunFile").classList.toggle("save-needed", pending);
@@ -2193,6 +2194,21 @@ $("#btnExport").onclick = async () => {
     location.href = `/api/export?folder=${encodeURIComponent(state.folder)}`;
   } catch (e) {
     setStatus(e.message, "err");
+  }
+};
+
+// scan (and read by OCR) only the open file: its new values are added to the folder's config, the rest of it stays
+$("#btnScanFile").onclick = async () => {
+  const cur = currentOriginalNode();
+  if (!cur) return;
+  if (state.dirty && !(await saveConfig())) return;
+  const r = await runJob("scan", "/api/scan", { folder: state.folder, file: cur.name }, "Scan file");
+  await loadTree();
+  if (r && r.status === "done") {
+    state.dirty = false;
+    await loadConfig();
+    showTab("config");
+    notify(`${r.result && r.result.added != null ? r.result.added : 0} new value(s) added to the config`, "ok");
   }
 };
 

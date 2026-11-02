@@ -157,6 +157,25 @@ def keep_edits(new_text: str, old_text: str) -> str:
     return to_yaml(model, model.get("folder") or "")
 
 
+def add_scan(old_text: str, new_text: str) -> tuple[str, int]:
+    """The config `old_text` with the values a scan of ONE file found (`new_text`) added: the values the config already has
+    (same text) keep their replacement, their ticks, their edits and everything else in it; the new ones are added as the scan
+    made them (active or a suggestion). -> (the config text, how many values were added)."""
+    try:
+        old = to_model(old_text)
+    except ValueError:
+        return new_text, len(to_model(new_text)["entries"])
+    have = {_key(e["find"]) for e in old["entries"]}
+    have |= {_key(m["find"]) for m in (old.get("manual") or {}).get("replacements") or []}
+    added = []
+    for e in to_model(new_text)["entries"]:
+        if _key(e["find"]) not in have:
+            have.add(_key(e["find"]))
+            added.append(e)
+    old["entries"].extend(added)
+    return to_yaml(old, old.get("folder") or ""), len(added)
+
+
 def _key(s: str) -> str:
     return " ".join(str(s).split()).casefold()
 

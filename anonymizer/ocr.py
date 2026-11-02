@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import math
 import os
 import pickle
 import re
@@ -249,7 +250,29 @@ def windows_words(img, lang: str = "fra+eng") -> list[dict]:
             r = w.bounding_rect
             words.append({"text": w.text, "conf": 100.0, "line": ("w", li),
                           "box": (r.x / scale, r.y / scale, (r.x + r.width) / scale, (r.y + r.height) / scale)})
-    return words
+    return _unturn(words, result.text_angle, img.width, img.height)
+
+
+def _unturn(words: list[dict], angle, width: int, height: int) -> list[dict]:
+    """Windows OCR turns a page it finds tilted straight before it reads it (`OcrResult.text_angle`, in degrees) and gives
+    the boxes of that straightened page: up to a few text heights off the words of the scan, in a pattern that grows with the
+    distance from the centre of the page (a page tilted 1.2 degrees: -25 px at the top, +22 px at the bottom, at 300 dpi).
+    The centre of each box is turned back by that angle about the centre of the page; the box is the bounding box of
+    the turned word, so the boxes sit on the words of the image that was read."""
+    if not angle or abs(angle) < 0.05:
+        return words
+    a = math.radians(angle)
+    ca, sa = math.cos(a), math.sin(a)
+    cx, cy = width / 2, height / 2
+    out = []
+    for w in words:
+        x0, y0, x1, y1 = w["box"]
+        hw, hh = (x1 - x0) / 2, (y1 - y0) / 2
+        mx, my = (x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy
+        nx, ny = cx + mx * ca - my * sa, cy + mx * sa + my * ca
+        ew, eh = abs(hw * ca) + abs(hh * sa), abs(hw * sa) + abs(hh * ca)
+        out.append({**w, "box": (nx - ew, ny - eh, nx + ew, ny + eh)})
+    return out
 
 
 # ---------------------------------------------------------------------------

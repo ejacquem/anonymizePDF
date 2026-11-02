@@ -4873,6 +4873,13 @@ def ocr_view_tests():
     check("a word only the final reading has is 'added', one only the first pass has is 'dropped'",
           fin[2]["tag"] == "added" and ini[2]["tag"] == "dropped", (ini, fin))
     check("boxes are in PDF points (300 dpi pixels x 72 / 300)", fin[0]["box"] == [0.0, 24.0, 12.0, 31.2], fin[0]["box"])
+    page = [{"text": "a", "box": (950.0, 980.0, 1050.0, 1020.0)}, {"text": "b", "box": (100.0, 100.0, 200.0, 140.0)}]
+    check("a page read with no angle keeps its boxes (Windows OCR text_angle)", ocr._unturn(page, None, 2000, 2000) == page)
+    got = ocr._unturn(page, -1.2, 2000, 2000)
+    check("a word at the centre of the page does not move", abs((got[0]["box"][0] + got[0]["box"][2]) / 2 - 1000) < 1 and abs((got[0]["box"][1] + got[0]["box"][3]) / 2 - 1000) < 1, got[0])
+    check("a word far from the centre moves by about distance x angle (900 px x 0.021 = 19 px)",
+          15 < abs(got[1]["box"][0] - 100) < 25, got[1])
+    check("the turned boxes keep their size to within a pixel or two", abs((got[1]["box"][2] - got[1]["box"][0]) - 100) < 3, got[1])
     spec = importlib.util.spec_from_file_location("anon_webapp_ocrview", ROOT / "app.py")
     webapp = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(webapp)
@@ -4907,6 +4914,65 @@ def ocr_view_tests():
             check("... the final words are saved for the next call", (tmp / "c" / "anon_ocr.json").exists())
             again = client.get("/api/ocrview?folder=c&file=s.pdf&page=1").get_json()
             check("... and the next call gives the same words", [x["text"] for x in again["final"]] == [x["text"] for x in got["final"]])
+    finally:
+        webapp.STATE["root"] = saved_root
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def scan_file_tests():
+    """Scan one file (`configmodel.add_scan`, app /api/scan with `file`): only that file is read, its values are added to the
+    folder's config, and everything the config already has (replacements, ticks, edits, manual data) stays as it was."""
+    print("\n== scan one file")
+    import importlib.util
+    old = ('replacements:\n  - {find: "Thomas Marchand", replace: "MY EDIT", type: PERSON}\n'
+           '  # - {find: "FR76 3000 6000 0112 3456 7890 189", replace: "FR21 9876 5432 1098 7654 321", type: IBAN}\n')
+    new = ('replacements:\n  - {find: "Thomas Marchand", replace: "Other Fake", type: PERSON}\n'
+           '  - {find: "thomas  marchand", replace: "Other Fake", type: PERSON}\n'
+           '  - {find: "Alice Verbeek", replace: "Zoe Dupont", type: PERSON}\n'
+           '  - {find: "FR76 3000 6000 0112 3456 7890 189", replace: "FR00 0000", type: IBAN}\n')
+    text, added = configmodel.add_scan(old, new)
+    model = configmodel.to_model(text)
+    by = {e["find"]: e for e in model["entries"]}
+    check("a value the config has keeps its replacement (spacing and case aside)", by["Thomas Marchand"]["replace"] == "MY EDIT", text)
+    check("... and a suggestion stays a suggestion", by["FR76 3000 6000 0112 3456 7890 189"]["active"] is False and
+          by["FR76 3000 6000 0112 3456 7890 189"]["replace"].startswith("FR21"), text)
+    check("a new value is added, once", added == 1 and "Alice Verbeek" in by and len(model["entries"]) == 3, (added, sorted(by)))
+    check("with no earlier config the scan is the config", configmodel.add_scan("", new)[1] == 3)
+    spec = importlib.util.spec_from_file_location("anon_webapp_scanfile", ROOT / "app.py")
+    webapp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(webapp)
+    tmp = Path(tempfile.mkdtemp(prefix="anon_scanfile_"))
+    saved_root = webapp.STATE["root"]
+    try:
+        folder = tmp / "c"
+        folder.mkdir()
+        for name, text_ in (("a.pdf", "Titulaire : Thomas Marchand IBAN FR76 3000 6000 0112 3456 7890 189"),
+                            ("b.pdf", "Titulaire : Thomas Marchand Contact : alice.verbeek@example.org")):
+            doc = fitz.open()
+            doc.new_page().insert_text((72, 100), text_, fontsize=10)
+            doc.save(folder / name)
+            doc.close()
+        webapp.STATE["root"] = tmp.resolve()
+        client = webapp.app.test_client()
+
+        def run(body):
+            j = client.post("/api/scan", json=body).get_json()
+            while True:
+                s = client.get(f"/api/job/{j['job']}?since=0").get_json()
+                if s["status"] != "running":
+                    return s
+                time.sleep(0.5)
+        first = run({"folder": "c", "file": "a.pdf"})
+        cfg = (folder / engine.CONFIG_NAME).read_text(encoding="utf-8")
+        check("scanning one file writes a config with its values", first["status"] == "done" and "FR76 3000" in cfg and "alice.verbeek" not in cfg, first)
+        (folder / engine.CONFIG_NAME).write_text(cfg.replace("# ---------- PERSON", "# ---------- PERSON") + "\n# kept: my note\n", encoding="utf-8")
+        second = run({"folder": "c", "file": "b.pdf"})
+        cfg2 = (folder / engine.CONFIG_NAME).read_text(encoding="utf-8")
+        check("scanning the other file adds its values", second["status"] == "done" and "alice.verbeek" in cfg2, second)
+        check("... and the values of the first file are still there, as they were",
+              all(line in cfg2 for line in cfg.splitlines() if line.lstrip().startswith("- {find:")))
+        check("an unknown file is refused", client.post("/api/scan", json={"folder": "c", "file": "z.pdf"}).status_code == 404)
+        check("an anonymized output is not a file to scan", client.post("/api/scan", json={"folder": "c", "file": "a_anonymized.pdf"}).status_code == 404)
     finally:
         webapp.STATE["root"] = saved_root
         shutil.rmtree(tmp, ignore_errors=True)
@@ -5825,7 +5891,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

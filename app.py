@@ -787,11 +787,25 @@ def scan():
     except (PermissionError, FileNotFoundError) as e:
         return bad(str(e), 404)
     rel = rel_of(folder)
+    one = Path(str(data["file"])).name if data.get("file") else None        # one file, or the whole folder
+    if one and one not in [p.name for p in eng.list_sources(folder)]:
+        return bad("Not an original PDF of this folder", 404)
 
     def work(log, progress):
+        cfg_file = folder / eng.CONFIG_NAME
+        if one:
+            # only this file is read; what it holds is added to the folder's config, which is otherwise left as it is
+            log(f"Scanning '{one}' in folder '{rel or '.'}' ...")
+            res = eng.scan_folder(folder, rel, get_ner(log), STATE["ocr_lang"], log, progress=progress, only=[one])
+            text, added = res["config"], len(configmodel.to_model(res["config"])["entries"])
+            if cfg_file.exists():
+                text, added = configmodel.add_scan(cfg_file.read_text(encoding="utf-8"), res["config"])
+            cfg_file.write_text(text, encoding="utf-8")
+            log(f"{added} new value(s) of '{one}' added to {eng.CONFIG_NAME}: review them, then anonymize.")
+            return {**res["stats"], "added": added}
         log(f"Scanning folder '{rel or '.'}' ...")
         res = eng.scan_folder(folder, rel, get_ner(log), STATE["ocr_lang"], log, progress=progress)
-        (folder / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        cfg_file.write_text(res["config"], encoding="utf-8")
         log(f"Draft config written to {eng.CONFIG_NAME}: review it, then anonymize.")
         return res["stats"]
 

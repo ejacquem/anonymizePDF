@@ -209,7 +209,12 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   message, no empty ZIP. Outside --root: 403. Test: `export_tests`.
 - Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Scan & anonymize** (scan, then anonymize, with no
   review in between: `btnBoth`, `anonymizeFolder()` is the second half; in batch mode the action `scan_anonymize` of
-  `/api/batch` does each folder's scan then its anonymization before the next folder), **Anonymize file** (either file of the pair; the
+  `/api/batch` does each folder's scan then its anonymization before the next folder), **Scan file** (`#btnScanFile`: `POST /api/scan` with `file`;
+  `scan_folder(only=[name])` reads and OCRs only that file and saves its `anon_ocr.json` entry; `configmodel.add_scan` adds the values
+  it found to the folder's config, the values the config already has (same text, spacing and case aside) keep their replacement, ticks and
+  edits, and nothing else in the config changes; with no config the scan is the config. The fakes of the new values are chosen from this
+  file alone, so two new names of different files may in rare cases get the same fake. Test: `scan_file_tests`),
+  **Anonymize file** (either file of the pair; the
   report keeps the other entries). ↑ / ↓ switch file (wraps, also while a job runs; not while typing in a text field, a checkbox
   does not keep the arrows), Ctrl+↑ / Ctrl+↓ the previous / next folder that holds PDFs (`pdfFolders`, wraps, opens its first
   file). The header counts the file: 'Working folder: x · 2/3 PDFs'. **Save** (Ctrl+S) is in the Config tab; it stays
@@ -624,6 +629,12 @@ Order must never change a result (`order_tests`): a value written with several s
 - `engine()`: Tesseract if found (TESSERACT_CMD, PATH, Program Files, %LOCALAPPDATA%\Programs), else Windows OCR
   (`winrt-Windows.Media.Ocr`, one language: the first of `ocr_lang` installed in Windows). `pip install tesseract`
   is an unrelated package.
+- Windows OCR turns a page it finds tilted straight BEFORE reading it (any tilt, not only 10 degrees: a page tilted 1.2 degrees
+  was read straight) and gives the boxes of that straightened page, off the scan by a pattern that grows with the distance from the
+  centre (-25 px at the top, +22 px at the bottom at 300 dpi). `OcrResult.text_angle` says the angle; `ocr._unturn` turns each box
+  centre back by it about the page centre (offset 52 % -> 78 % of the ink inside the boxes on `doc_sharp_contrat_contrast120`,
+  offset (0, 0) px; measured with `tools/ocr_compare_doc.py`, which also compares Windows OCR / RapidOCR / Tesseract on a generated
+  scan against the text the generator wrote).
 - Windows OCR quirks: ~1 s/page, reads some `0` as `O` (handled by `fix_digits` + tolerant matching), drops isolated
   letters (the `F` of Sexe) and sometimes whole labels, reads only part of a passport MRZ line 1 and none of an ID
   card MRZ, even on cropped / enlarged lines.

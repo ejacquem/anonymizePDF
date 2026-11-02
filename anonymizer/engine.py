@@ -480,20 +480,25 @@ def _report(progress, done: int, total: int, name: str = ""):
 
 
 def scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None,
-                progress=None) -> dict:
+                progress=None, only: list[str] | None = None) -> dict:
     """Detect the personal data of every file of ONE folder -> {'config': YAML text, 'stats': {...}}; stats['stages']
-    is the time by stage (timing)."""
+    is the time by stage (timing). `only`: the names of the files to read (the others are left alone: the config holds what
+    these files have, with no earlier edits put back; `configmodel.add_scan` adds it to the folder's config)."""
     with timing.collecting() as tm:
-        res = _scan_folder(folder, rel, ner, default_ocr_lang, log, secret_key, progress)
+        res = _scan_folder(folder, rel, ner, default_ocr_lang, log, secret_key, progress, only)
     res["stats"]["stages"] = tm.report()
     log("   time by stage: " + timing.format_stages(res["stats"]["stages"]))
     return res
 
 
 def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret_key: bytes | None = None,
-                 progress=None) -> dict:
+                 progress=None, only: list[str] | None = None) -> dict:
     t0 = time.time()
     pdfs = list_sources(folder)
+    if only is not None:
+        pdfs = [p for p in pdfs if p.name in only]
+        if not pdfs:
+            raise ValueError("Not an original PDF of this folder")
     if not pdfs:
         raise ValueError("No PDF in this folder")
     can_ocr = ocr.available()
@@ -786,7 +791,7 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
     off = [o for o in off if norm_value(o["value"]) not in active_values]
     text = render_config(rel, pdfs, active, off, default_ocr_lang)
     old = folder / CONFIG_NAME                              # a new scan keeps the changes made by hand
-    if old.exists():
+    if old.exists() and only is None:
         text = configmodel.keep_edits(text, old.read_text(encoding="utf-8"))
     aggregate.done()
     stats = {"files": len(pdfs), "active": len(active), "inactive": len(off), "seconds": round(time.time() - t0, 1)}
