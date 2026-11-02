@@ -211,7 +211,7 @@ table.ov tr.click:hover { background: var(--sel); }
 
 /* tabs */
 .tabs { display: flex; border-bottom: 1px solid var(--line); }
-.tab { flex: 1; border: 0; border-radius: 0; border-bottom: 2px solid transparent; background: transparent; }
+.tab { flex: 1; min-width: 0; white-space: nowrap; padding-left: 6px; padding-right: 6px; border: 0; border-radius: 0; border-bottom: 2px solid transparent; background: transparent; }
 .tab.active { border-bottom-color: var(--accent); font-weight: 600; }
 .dirty { color: var(--warn); }
 .tabbody { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
@@ -392,3 +392,6 @@ main.raw-view .chg, main.raw-view .lbox, main.raw-view .tlbox, main.raw-view .oc
 .qmark.queued { color: var(--muted); }
 .cfglock { margin: 6px 8px 0; padding: 6px 10px; border: 1px solid var(--warn); border-radius: 6px; font-size: 12px; background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .cfgtable[inert], #configText[readonly] { opacity: .55; }
+
+/* the count stays on the tab's line, whatever the width of the panel */
+.qbadge { vertical-align: 1px; }
