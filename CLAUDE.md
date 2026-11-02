@@ -183,7 +183,7 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   `ocr.ocr_words` run on the 300 dpi render), `final` = the words the app works with (`ocrpage.page_words`; the saved words of
   `anon_ocr.json` when the scan read the page, else read now and saved with `ocrdata.store`). `tag_words` compares them place by
   place: `same`, `changed` (`was` / `now` say the other reading's text), `added` (final only), `dropped` (initial only). Layers: Final,
-  Initial, Differences (orange changed, green added, red dashed dropped). A page with a text layer has one reading, its words
+  Initial, Differences (orange changed, green added, red dashed dropped). A fourth layer, **Raw engine** (`GET /api/ocrview?...&raw=1`, `ocrview.raw_view`, `ocr.raw_words`), shows what the engine returned, with nothing done to it: Windows OCR's words in the frame of the page it turned straight (its `text_angle` is in the tooltip; the app turns the boxes back, `ocr._unturn`), Tesseract's single `--psm 3` pass with its confidence and with no ink or confidence filter (the app runs `--psm 6` too, merges, and drops boxes with no ink). 'Initial' is not raw: it is `ocr.ocr_words`, the first reading as the pipeline gets it (after those steps). The raw layer is read when chosen (a second reading of each page, not saved). A page with a text layer has one reading, its words
   (`source` 'text layer'). The boxes are those of the scan as shown: the straightening of a turned page happens at anonymization, on a
   copy, and is not shown. The pages are fetched one after the other on opening a file (the status line says which). Test: `ocr_view_tests`.
 - Status bar (footer, bottom): the message on the left (`setStatus`), on the right the progress of the running job:

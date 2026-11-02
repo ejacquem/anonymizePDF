@@ -405,6 +405,8 @@ def ocr_view():
         try:
             if not 1 <= pno <= len(doc):
                 return bad("no such page", 404)
+            if request.args.get("raw"):                # the engine's own words, nothing done to them (the 'Raw engine' layer)
+                return jsonify(ocrview.raw_view(doc[pno - 1], lang))
             view, read = ocrview.page_view(doc[pno - 1], lang, saved.get(pno))
         finally:
             doc.close()

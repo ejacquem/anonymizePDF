@@ -446,7 +446,12 @@ const ocrView = { path: null, pages: {}, token: 0 };
 
 function ocrViewOn() { return btnOcrView.classList.contains("on"); }
 
-function ocrWordTitle(w, mode, source) {
+function ocrWordTitle(w, mode, source, meta) {
+  if (mode === "raw") {
+    const conf = w.conf != null ? `, confidence ${Math.round(w.conf)}` : "";
+    const turned = meta && meta.angle ? `\n(Windows OCR turned the page straight by ${meta.angle.toFixed(2)}° and gives the boxes of that page)` : "";
+    return `${w.text}\n(raw ${meta ? meta.engine : "OCR"}${conf})${turned}`;
+  }
   if (source === "text layer") return `${w.text}\n(text layer, no OCR on this page)`;
   if (w.tag === "changed") return mode === "initial" ? `${w.text}\n(final reading: ${w.now})` : `${w.text}\n(first pass: ${w.was})`;
   if (w.tag === "added") return `${w.text}\n(not read by the first pass, added by the other readings)`;
@@ -461,13 +466,14 @@ function drawOcrView() {
     el.querySelectorAll(".ocrbox").forEach((n) => n.remove());
     const d = live ? ocrView.pages[i + 1] : null;
     if (!d) return;
-    const words = mode === "initial" ? d.initial
+    if (mode === "raw" && !d.raw) return;                // fetched in a moment (loadOcrRaw)
+    const words = mode === "raw" ? d.raw : mode === "initial" ? d.initial
       : mode === "diff" ? [...d.final.filter((w) => w.tag !== "same"), ...d.initial.filter((w) => w.tag === "dropped")]
       : d.final;
     words.forEach((w) => {
       const n = document.createElement("div");
       n.className = "ocrbox" + (w.tag && w.tag !== "same" ? " " + w.tag : "");
-      n.title = ocrWordTitle(w, mode, d.source);
+      n.title = ocrWordTitle(w, mode, d.source, d.meta);
       n.style.left = w.box[0] * k + "px";
       n.style.top = w.box[1] * k + "px";
       n.style.width = (w.box[2] - w.box[0]) * k + "px";
@@ -489,8 +495,33 @@ async function loadOcrView() {
       const d = await api(`/api/ocrview?folder=${encodeURIComponent(folder)}&file=${encodeURIComponent(file)}&page=${p}`);
       if (token !== ocrView.token || !ocrViewOn() || v.path !== path) return;
       ocrView.pages[p] = d;
+      if (ocrLayer.value === "raw") { await loadOcrRaw(p); if (token !== ocrView.token) return; }
     } catch (e) {
       if (token === ocrView.token) { setStatus(""); notify("OCR view: " + e.message, "err"); }
+      return;
+    }
+    drawOcrView();
+  }
+  setStatus("");
+}
+
+// the engine's own words of a page (the Raw engine layer): read when the layer is chosen, kept with the page
+async function loadOcrRaw(only) {
+  const v = viewers.orig, path = v.path, token = ocrView.token;
+  if (!ocrViewOn() || !path) return;
+  const folder = dirname(path), file = baseName(path);
+  for (let p = only || 1; p <= (only || v.pages.length); p++) {
+    const d = ocrView.pages[p];
+    if (!d || d.raw) continue;
+    setStatus(`Reading what the OCR engine returns for page ${p}/${v.pages.length}…`);
+    try {
+      const r = await api(`/api/ocrview?folder=${encodeURIComponent(folder)}&file=${encodeURIComponent(file)}&page=${p}&raw=1`);
+      if (token !== ocrView.token || v.path !== path) return;
+      d.raw = r.raw;
+      d.meta = r.meta;
+    } catch (e) {
+      setStatus("");
+      notify("OCR view: " + e.message, "err");
       return;
     }
     drawOcrView();
@@ -507,6 +538,7 @@ btnOcrView.onclick = () => {
 ocrLayer.onchange = () => {
   try { localStorage.setItem(OCRLAYER_KEY, ocrLayer.value); } catch (e) { /* no storage */ }
   drawOcrView();
+  if (ocrLayer.value === "raw") loadOcrRaw();
 };
 try {
   const saved = localStorage.getItem(OCRLAYER_KEY);

@@ -4895,6 +4895,8 @@ def ocr_view_tests():
         client = webapp.app.test_client()
         got = client.get("/api/ocrview?folder=c&file=d.pdf&page=1").get_json()
         check("a page with a text layer gives its words, one reading", got.get("source") == "text layer" and any(x["text"] == "Thomas" for x in got["final"]), got)
+        raw = client.get("/api/ocrview?folder=c&file=d.pdf&page=1&raw=1").get_json()
+        check("the raw layer of a text-layer page is its words", raw.get("source") == "text layer" and any(x["text"] == "Thomas" for x in raw["raw"]), raw)
         check("a page that does not exist is refused", client.get("/api/ocrview?folder=c&file=d.pdf&page=9").status_code == 404)
         check("a path outside --root is refused", client.get("/api/ocrview?folder=../x&file=d.pdf&page=1").status_code in (403, 404))
         if ocr.available():
@@ -4913,6 +4915,11 @@ def ocr_view_tests():
             check("... every final word has a tag and a box in points", all(x["tag"] in ("same", "changed", "added") and len(x["box"]) == 4 for x in got["final"]))
             check("... the final words are saved for the next call", (tmp / "c" / "anon_ocr.json").exists())
             again = client.get("/api/ocrview?folder=c&file=s.pdf&page=1").get_json()
+            raw = client.get("/api/ocrview?folder=c&file=s.pdf&page=1&raw=1").get_json()
+            check("the raw layer of a scanned page is what the engine returned, with its engine", raw.get("source") == "ocr" and raw["raw"]
+                  and raw["meta"]["engine"] in ("windows", "tesseract") and all(len(x["box"]) == 4 for x in raw["raw"]), raw)
+            check("... Windows OCR says the angle of the page it turned straight", raw["meta"]["engine"] != "windows" or "angle" in raw["meta"], raw["meta"])
+            check("... and Tesseract gives its confidence", raw["meta"]["engine"] != "tesseract" or all("conf" in x for x in raw["raw"]))
             check("... and the next call gives the same words", [x["text"] for x in again["final"]] == [x["text"] for x in got["final"]])
     finally:
         webapp.STATE["root"] = saved_root

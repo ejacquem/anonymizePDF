@@ -219,6 +219,12 @@ def _windows_tag(lang: str) -> str:
 
 
 def windows_words(img, lang: str = "fra+eng") -> list[dict]:
+    words, angle = _windows_read(img, lang)
+    return _unturn(words, angle, img.width, img.height)
+
+
+def _windows_read(img, lang: str) -> tuple[list[dict], float | None]:
+    """(the words Windows OCR returns, its `text_angle`): its boxes are those of the page it turned straight, not turned back."""
     import asyncio
 
     from winrt.windows.globalization import Language
@@ -250,7 +256,7 @@ def windows_words(img, lang: str = "fra+eng") -> list[dict]:
             r = w.bounding_rect
             words.append({"text": w.text, "conf": 100.0, "line": ("w", li),
                           "box": (r.x / scale, r.y / scale, (r.x + r.width) / scale, (r.y + r.height) / scale)})
-    return _unturn(words, result.text_angle, img.width, img.height)
+    return words, result.text_angle
 
 
 def _unturn(words: list[dict], angle, width: int, height: int) -> list[dict]:
@@ -278,6 +284,33 @@ def _unturn(words: list[dict], angle, width: int, height: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Tesseract
 # ---------------------------------------------------------------------------
+
+def raw_words(img, lang: str = "fra+eng") -> tuple[list[dict], dict]:
+    """What the engine returned for the image, with nothing done to it (the OCR view's 'Raw engine' layer): ({text, box, conf},
+    {engine, angle}). Windows OCR: every word, in the frame of the page it turned straight (`angle`, its text_angle; the app turns the
+    boxes back). Tesseract: one `--psm 3` pass (the app also runs `--psm 6` and merges), every word it gives with its confidence,
+    no filter on the confidence or on the ink in the box."""
+    e = engine()
+    if e == "windows":
+        words, angle = _windows_read(img, lang)
+        return words, {"engine": "windows", "angle": angle}
+    if e == "tesseract":
+        import pytesseract
+
+        d = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
+        out = []
+        for i, t in enumerate(d["text"]):
+            if d["level"][i] != 5 or not str(t).strip():
+                continue
+            try:
+                conf = float(d["conf"][i])
+            except (TypeError, ValueError):
+                conf = -1.0
+            x, y, w, h = d["left"][i], d["top"][i], d["width"][i], d["height"][i]
+            out.append({"text": str(t), "box": (x, y, x + w, y + h), "conf": conf})
+        return out, {"engine": "tesseract", "angle": None}
+    raise RuntimeError("no OCR engine")
+
 
 def _tess_words(img, lang, psm, min_conf, tag):
     import pytesseract

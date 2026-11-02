@@ -54,6 +54,24 @@ def tag_words(initial: list[dict], final: list[dict]) -> tuple[list[dict], list[
     return ini, fin
 
 
+def raw_view(page, lang: str) -> dict:
+    """The words the OCR engine returned for a page, as it returned them (`ocr.raw_words`): boxes in PDF points, `conf` when the
+    engine gives one, `meta` = {engine, angle}. A page with a text layer gives its words."""
+    lay = engine.page_layout(page)
+    if lay["kind"] == "digital":
+        return {"source": "text layer", "raw": [{"text": w["text"], "box": [round(float(v), 1) for v in w["box"]]}
+                                                for w in lay["visible"]], "meta": {"engine": "text layer", "angle": None}}
+    img = ocr.render_page(page, 300)
+    words, meta = ocr.raw_words(img, lang)
+    raw = []
+    for w in words:
+        item = {"text": w["text"], "box": [round(float(v) * PX_TO_PT, 1) for v in w["box"]]}
+        if meta["engine"] == "tesseract":
+            item["conf"] = round(float(w["conf"]), 1)
+        raw.append(item)
+    return {"source": "ocr", "raw": raw, "meta": meta}
+
+
 def page_view(page, lang: str, saved: list | None = None) -> tuple[dict, list | None]:
     """(the view of a page, the final words when they were read now and not taken from `saved`, so the caller can keep them)."""
     lay = engine.page_layout(page)
