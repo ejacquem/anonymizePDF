@@ -36,7 +36,7 @@ import threading
 import time
 import zlib
 from collections import OrderedDict
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 
 WORKER_MB = int(os.environ.get("ANON_WORKER_MB", "800"))        # what one worker is expected to hold (peak, estimated)
@@ -266,9 +266,15 @@ class Task:
     def done(self) -> bool:
         return self.future is None or self.future.done()
 
-    def result(self):
+    def result(self, poll=None):
+        """`poll`: called every few tenths of a second while the worker is still busy (it may raise: the app's cancel)."""
         if self.future is None:
             return None
+        if poll is not None:
+            while not self.future.done():
+                wait([self.future], timeout=0.3)
+                poll()
+            poll()
         try:
             return self.future.result()
         except BrokenProcessPool:

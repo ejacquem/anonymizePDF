@@ -207,9 +207,19 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   is not reviewed or whose review is stale. `GET /api/export/info?folder=` gives the file names, the `unreviewed` originals
   and the originals without output (the status line names the ones left out, before the download). None reviewed: a
   message, no empty ZIP. Outside --root: 403. Test: `export_tests`.
-- Toolbar: **1 · Scan & draft config**, **2 · Anonymize folder**, **Scan & anonymize** (scan, then anonymize, with no
-  review in between: `btnBoth`, `anonymizeFolder()` is the second half; in batch mode the action `scan_anonymize` of
-  `/api/batch` does each folder's scan then its anonymization before the next folder), **Scan file** (`#btnScanFile`: `POST /api/scan` with `file`;
+- Cancel (`POST /api/job/<id>/cancel`, `engine.Cancelled` / `CANCEL` / `check_cancel`, test `cancel_tests`): while a job runs, the button that
+  started it (`state.job.button`: Scan, Anonymize, Scan file, Anonymize file; Scan / Anonymize also for a batch) is its Cancel button
+  (red, 'Cancel', then 'Cancelling…'); a click asks for a confirmation (`cancelJob`). The server sets `engine.CANCEL`; the long loops
+  stop at their next checkpoint (`_report` between two files, each scanned page of the scan, `_finish_page`, each page of `_digital`;
+  waiting for a worker polls `Task.result(poll=check_cancel)` every 0.3 s, and the pages given to the workers ahead are cancelled by
+  hooks): the job ends as `cancelled` (a batch too, not 'failed'). A scan writes no config and no OCR data (the app writes them when
+  the scan ends); an anonymization keeps the files it finished (the report is saved after each file), writes nothing for the file in
+  progress and removes a `.pass2` file; the review flag of the file in progress was already cleared when it started.
+- Toolbar (top): **Scan** (`btnScan`: scan + draft config), **Anonymize** (`btnRun`) with a ▾ menu (`btnRunMenu` / `runMenu`: **Scan & anonymize**,
+  `btnBoth`: scan, then anonymize, with no review in between; **Anonymize reviewed files too**, `btnRunReviewed`: `reviewed: true` in `/api/anonymize` and `/api/batch` anonymizes every file, the reviewed ones included, whose outputs are regenerated and review flags cleared (a confirmation first); `anonymizeFolder()` is the second half; in batch mode the action
+  `scan_anonymize` of `/api/batch` does each folder's scan then its anonymization before the next folder) and **Export**. Only one of
+  Scan / Anonymize is filled (primary): Scan until the folder has a config, then Anonymize. The file buttons are on the right of the file's name
+  in the pane heads (`.file-actions`): **Scan file** and **Anonymize file** (Original pane), **Mark as reviewed** (Anonymized pane). **Scan file** (`#btnScanFile`: `POST /api/scan` with `file`;
   `scan_folder(only=[name])` reads and OCRs only that file and saves its `anon_ocr.json` entry; `configmodel.add_scan` adds the values
   it found to the folder's config, the values the config already has (same text, spacing and case aside) keep their replacement, ticks and
   edits, and nothing else in the config changes; with no config the scan is the config. The fakes of the new values are chosen from this

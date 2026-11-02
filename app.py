@@ -711,6 +711,7 @@ def start_job(kind: str, fn):
     """fn(log, progress): progress(files done, files total, current file) feeds the status bar."""
     if not JOB_LOCK.acquire(blocking=False):
         return None
+    eng.reset_cancel()
     job_id = uuid.uuid4().hex[:8]
     job = {"id": job_id, "kind": kind, "status": "running", "log": [], "result": None, "error": None,
            "progress": None, "started": time.time(), "ended": None}
@@ -726,6 +727,9 @@ def start_job(kind: str, fn):
         try:
             job["result"] = fn(log, progress)
             job["status"] = "done"
+        except eng.Cancelled:
+            job["status"] = "cancelled"
+            log("Cancelled: what was finished before is kept (a scan leaves the config as it was).")
         except Exception as e:  # noqa: BLE001
             job["error"] = str(e)
             job["status"] = "error"
@@ -830,6 +834,8 @@ def anonymize():
     ocr_verify = bool(data.get("ocr_verify"))
     quality_offset = _quality_offset(data)
     only = [Path(str(data["file"])).name] if data.get("file") else None     # one file, or the whole folder
+    if only is None and data.get("reviewed"):
+        only = [p.name for p in eng.list_sources(folder)]       # every file, the reviewed ones too (their flags are cleared)
     if only is None:
         # a folder run leaves the reviewed files alone, except those whose black boxes / typed texts changed and are not
         # applied yet (the client names them in `include`): their new boxes must reach the anonymized file
@@ -883,6 +889,8 @@ def batch():
     except (PermissionError, FileNotFoundError) as e:
         return bad(str(e), 404)
     action, redo, ocr_verify = data.get("action"), bool(data.get("redo")), bool(data.get("ocr_verify"))
+    reviewed = bool(data.get("reviewed")) and action == "anonymize"        # the reviewed files are anonymized again too
+    redo = redo or reviewed
     quality_offset = _quality_offset(data)
     if action not in ("scan", "anonymize", "all", "scan_anonymize"):
         return bad("action must be 'scan', 'anonymize', 'all' or 'scan_anonymize'")
@@ -912,7 +920,7 @@ def batch():
                         (d / eng.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
                     else:
                         text = (d / eng.CONFIG_NAME).read_text(encoding="utf-8")
-                        todo = files_to_anonymize(d)               # the reviewed files are left alone
+                        todo = [p.name for p in eng.list_sources(d)] if reviewed else files_to_anonymize(d)   # the reviewed files are left alone unless asked
                         if not todo:
                             log("   every file is reviewed: nothing to anonymize")
                         else:
@@ -920,6 +928,8 @@ def batch():
                                               only=todo, progress=report, quality_offset=quality_offset)
                     offset += counts[d]
                 done.append(rel)
+            except eng.Cancelled:
+                raise
             except Exception as e:  # noqa: BLE001  (one folder failing must not stop the others)
                 failed.append(rel)
                 log(f"   ERROR in {rel}: {e}")
@@ -929,6 +939,19 @@ def batch():
 
     job = start_job(f"batch-{action}", work)
     return jsonify({"job": job["id"]}) if job else bad("Another job is running", 409)
+
+
+@app.post("/api/job/<job_id>/cancel")
+def job_cancel(job_id):
+    """Cancel the running job: it stops at its next checkpoint (between two files or two pages) and ends as 'cancelled'."""
+    job = JOBS.get(job_id)
+    if not job:
+        return bad("unknown job", 404)
+    if job["status"] != "running":
+        return bad("this job is not running", 409)
+    job["log"].append(f"{time.strftime('%H:%M:%S')}  Cancelling: stopping at the next checkpoint ...")
+    eng.CANCEL.set()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/job/<job_id>")

@@ -66,7 +66,12 @@ button.mini { padding: 0 6px; font-size: 13px; }
 .dropmenu button { border: 0; text-align: left; border-radius: 4px; background: transparent; }
 .dropmenu button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 /* the buttons of the open file, beside its name in the Original pane head */
-.file-actions { display: inline-flex; gap: 4px; margin-left: 8px; font-weight: 400; vertical-align: middle; }
+.file-actions { display: inline-flex; gap: 4px; margin-left: auto; align-items: center; font-weight: 400; flex: none; }
+.phead-title { align-items: center; }
+.file-actions .mini { margin-left: 0; }
+/* the button that started the running job becomes its Cancel button */
+button.cancel { border-color: var(--bad); color: var(--bad); }
+button.cancel.primary { background: transparent; color: var(--bad); }
 button.save-needed { border-color: var(--warn); box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 35%, transparent); }
 .chk { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
 .status { font-size: 12px; }

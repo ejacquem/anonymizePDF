@@ -12,6 +12,7 @@ import datetime as dt
 import functools
 import json
 import re
+import threading
 import time
 from collections import defaultdict
 from difflib import SequenceMatcher
@@ -473,8 +474,37 @@ def _detect_words(found: dict, tokens: dict, sequences: dict, words: list[dict],
     _add_labeled(found, words, ocr_page, file, pno, id_page)
 
 
+class Cancelled(Exception):
+    """The user cancelled the running job (the app sets `CANCEL`): raised at the next checkpoint, between two files or two pages."""
+
+
+CANCEL = threading.Event()             # set by the app when the user cancels the running job (one job runs at a time)
+_cancel_hooks: list = []               # what to stop when it is cancelled (the pages given to the workers ahead)
+
+
+def reset_cancel() -> None:
+    """A new job starts: nothing is cancelled."""
+    CANCEL.clear()
+    _cancel_hooks.clear()
+
+
+def check_cancel() -> None:
+    """Checkpoint of the long loops: when the job was cancelled, stops the work given ahead to the workers and raises Cancelled.
+    What a file has written so far stays; a file in progress writes nothing (an output is written when its file is done)."""
+    if CANCEL.is_set():
+        for hook in _cancel_hooks:
+            try:
+                hook()
+            except Exception:  # noqa: BLE001  (stopping the workers' queue must never hide the cancel)
+                pass
+        _cancel_hooks.clear()
+        raise Cancelled("cancelled")
+
+
 def _report(progress, done: int, total: int, name: str = ""):
     """progress(files done, files total, name of the file being done): optional, for the status bar."""
+    if done < total:
+        check_cancel()                  # between two files
     if progress:
         progress(done, total, name)
 
@@ -509,6 +539,7 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
     sequences: dict[str, dict] = {}
     seen_pages: list[dict] = []        # the scanned pages as read (grey image, words): the fonts of the names are measured on them
     classified, reads = _start_reads(pdfs, default_ocr_lang) if can_ocr else ({}, {})   # scanned pages read by the workers
+    _cancel_hooks.append(lambda: [t.cancel() for t in reads.values() if hasattr(t, "cancel")])
     ocr_engine_id = ocr.engine() if can_ocr else None
     ocr_saved: dict[str, tuple] = {}   # file -> (sha256, engine, lang, {page: full-page OCR words}), kept for click-to-find
     for fi, pdf in enumerate(pdfs, start=1):
@@ -521,6 +552,7 @@ def _scan_folder(folder: Path, rel: str, ner, default_ocr_lang: str, log, secret
         if can_ocr:
             ocr_saved[pdf.name] = (ocrdata.fingerprint(pdf), ocr_engine_id, default_ocr_lang, read_pages)
         for pno, (page, lay) in enumerate(zip(doc, layouts), start=1):
+            check_cancel()
             if lay.get("garbled") and lay["kind"] == "scan":
                 log(f"   page {pno}: the text layer is unreadable ({lay['garbled']} garbled word(s)): read by OCR")
             if lay["kind"] == "scan":
@@ -852,7 +884,7 @@ def _read_scan_page(task, page, ocr_lang: str):
     got = None
     if task is not None:
         with timing.stage("wait"):
-            got = task.result()
+            got = task.result(poll=check_cancel)
     if got is not None:
         if timing.current() is not None:
             timing.current().add_workers(got["stages"])
@@ -888,7 +920,7 @@ def _name_faces(pages: list[dict], keys: set[str], aliases: dict[str, str]) -> d
         answer = None
         if k in measured:
             with timing.stage("wait"):
-                answer = measured[k].result()
+                answer = measured[k].result(poll=check_cancel)
             if answer is not None and timing.current() is not None:
                 timing.current().add_workers(answer["stages"])
         pf = None
@@ -1260,6 +1292,7 @@ def _digital(pdf: Path, out: Path, cfg: dict, ocr_lang: str, log, layouts: list[
     if tasks is None:
         tasks = _start_pages(pdf, scans, len(layouts), cfg, ocr_lang, beside=len(scans) < len(layouts))
     for i, lay in enumerate(layouts):
+        check_cancel()
         pno, page = i + 1, doc[i]
         if lay["kind"] == "scan":
             # rebuilt as an image, like a scanned file: nothing of the original page (image, invisible text) is kept
@@ -1432,6 +1465,13 @@ class _Feeder:
         self.active = (workers.configured_workers() > 1 and workers.splittable(cfg) and ocr.available()
                        and sum(p.suffix.lower() == ".pdf" for p in pdfs) >= 1)
         self.prepared: dict[int, dict] = {}
+        _cancel_hooks.append(self.cancel)
+
+    def cancel(self) -> None:
+        """Stop the pages given to the workers that have not started."""
+        for e in self.prepared.values():
+            for t in (e["tasks"] or {}).values():
+                t.cancel()
 
     def _prepare(self, j: int) -> None:
         if j in self.prepared:
@@ -1491,10 +1531,11 @@ def _finish_page(task, page, pno: int, n_pages: int, cfg: dict, pc: dict, ocr_la
                  extras: dict, log) -> bytes:
     """The JPEG of an anonymized scanned page: from its worker (its records, extras and log lines are added in page
     order, as if the page had been done here), else done here."""
+    check_cancel()
     answer = None
     if task is not None:
         with timing.stage("wait"):
-            answer = task.result()
+            answer = task.result(poll=check_cancel)
     if answer is None:
         img = _scan_page(page, pno, n_pages, cfg, pc, ocr_lang, numberer, records, extras, log)
         with timing.stage("save"):
@@ -1808,6 +1849,10 @@ def run_anonymize(folder: Path, rel: str, config_text: str, default_ocr_lang: st
                 # one line per value in the Recap (each one clickable, see report 'suspects'): not a warning text here
                 shown = ", ".join(f"{s['type']} '{s['value']}' p.{s['page']}" for s in entry["suspects"][:8])
                 log(f"   WARNING: {len(entry['suspects'])} value(s) still readable in the output: {shown}")
+        except Cancelled:
+            timers.__exit__(None, None, None)
+            out.with_name(out.stem + ".pass2" + out.suffix).unlink(missing_ok=True)      # a second pass cut short
+            raise
         except Exception as e:  # noqa: BLE001
             entry["error"] = f"{type(e).__name__}: {e}"      # the type too: some exceptions have no message
             log(f"   ERROR: {entry['error']}")

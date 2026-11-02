@@ -1981,6 +1981,7 @@ function updateToolbar() {
     : "Scan this folder, then anonymize it right away, without reviewing the new config in between";
   $("#btnBoth").disabled = state.running || (!n && !batch);
   $("#btnRunMenu").disabled = $("#btnBoth").disabled;
+  $("#btnRunReviewed").disabled = state.running || (batch ? false : (!n || !state.hasConfig));
   // one filled button at a time: Scan until the folder has a config, then Anonymize
   const next = state.hasConfig ? "run" : "scan";
   $("#btnScan").classList.toggle("primary", next === "scan");
@@ -1993,6 +1994,19 @@ function updateToolbar() {
   const cur = currentOriginalNode();                          // either file of the pair works
   $("#btnRunFile").disabled = state.running || batch || !state.hasConfig || !cur;
   $("#btnScanFile").disabled = state.running || batch || !cur;
+  $("#btnScanFile").textContent = "Scan file";
+  $("#btnRunFile").textContent = "Anonymize file";
+  // the button that started the running job is its Cancel button
+  const jobBtn = state.running && state.job && state.job.button ? $(state.job.button) : null;
+  ["#btnScan", "#btnRun", "#btnScanFile", "#btnRunFile"].forEach((sel) => {
+    const b = $(sel), on = !!jobBtn && b === jobBtn;
+    b.classList.toggle("cancel", on);
+    if (on) {
+      b.disabled = state.job.cancelling;
+      b.textContent = state.job.cancelling ? "Cancelling…" : "Cancel";
+      b.title = "Cancel the running " + state.job.label.toLowerCase();
+    }
+  });
   $("#btnExport").disabled = state.running || state.folder === null;   // the folder and the folders below it: the server decides
   const pending = !!cur && isPending(cur.name);
   $("#btnRunFile").classList.toggle("save-needed", pending);
@@ -2103,6 +2117,7 @@ async function runJob(kind, url, body, label, opts = {}) {
   let started;
   try { started = await post(url, body); } catch (e) { alert(e.message); return null; }
   state.running = true;
+  state.job = { id: started.job, button: opts.button || null, label, cancelling: false };   // the button of the job cancels it
   state.runKeepsConfig = kind === "anonymize" || !!opts.keepsConfig;   // a scan writes the config when it ends
   updateToolbar();
   setStatus(label + "…", "busy");
@@ -2121,9 +2136,11 @@ async function runJob(kind, url, body, label, opts = {}) {
     if (j.status !== "running") { last = j; break; }
   }
   state.running = false;
+  state.job = null;
   state.runKeepsConfig = false;
   if (last) showProgress(last.progress);
   if (last && last.status === "done") setStatus(label + ": done", "ok");
+  else if (last && last.status === "cancelled") setStatus(label + ": cancelled");
   else setStatus(label + ": failed", "err");
   if (last && last.status === "done" && /\/api\/(anonymize|batch)$/.test(url) && boxes.textTool) setTextTool(false);   // finished: the text boxes are hidden
   updateToolbar();
@@ -2136,6 +2153,23 @@ async function reloadConfigIfSuggested() {
   if (offered && !state.dirty) await loadConfig();
 }
 
+// a click on the button that started the running job: ask, then cancel the job (it stops at its next checkpoint)
+async function cancelJob(selector) {
+  const job = state.job;
+  if (!state.running || !job || job.button !== selector || job.cancelling) return;
+  const what = /anonymiz/i.test(job.label) ? "The files already anonymized are kept; the file being done and the next ones are not written."
+    : "The files already read are not saved: the config stays as it was.";
+  if (!confirm(`Cancel the running ${job.label.toLowerCase()}?\n\n${what}`)) return;
+  try {
+    await post(`/api/job/${job.id}/cancel`, {});
+    job.cancelling = true;
+    setStatus(`${job.label}: cancelling, waiting for the current step to end…`, "busy");
+  } catch (e) {
+    notify("Cannot cancel: " + e.message, "err");
+  }
+  updateToolbar();
+}
+
 // the menu of the Anonymize button (more ways to anonymize the folder)
 function closeRunMenu() { $("#runMenu").hidden = true; }
 $("#btnRunMenu").onclick = () => { $("#runMenu").hidden = !$("#runMenu").hidden; };
@@ -2144,8 +2178,9 @@ document.addEventListener("pointerdown", (e) => { if (!e.target.closest("#runSpl
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeRunMenu(); });
 
 $("#btnScan").onclick = async () => {
+  if (state.running) return cancelJob("#btnScan");
   if (state.batchMode) return runBatch("scan");
-  const r = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan");
+  const r = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan", { button: "#btnScan" });
   await loadTree();
   if (r && r.status === "done") {
     state.dirty = false;
@@ -2161,11 +2196,11 @@ function folderPendingFiles() {
   return node ? (node.children || []).filter((c) => c.type === "file" && !c.anonymized && isPending(c.name)).map((c) => c.name) : [];
 }
 
-async function anonymizeFolder() {
+async function anonymizeFolder(reviewed = false) {
   if (state.dirty && !(await saveConfig())) return null;
   const r = await runJob("anonymize", "/api/anonymize",
-    { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(), include: folderPendingFiles(),
-      ...qualityBody() }, "Anonymize");
+    { folder: state.folder, ocr_verify: state.ocrVerify, removed: removedPayload(), include: folderPendingFiles(), reviewed,
+      ...qualityBody() }, "Anonymize", { button: "#btnRun" });
   await loadTree();
   await loadReport();
   await reloadConfigIfSuggested();
@@ -2177,7 +2212,16 @@ async function anonymizeFolder() {
   return r;
 }
 
+// anonymize the whole folder again, the files already reviewed too (their outputs are regenerated, their review flags cleared)
+$("#btnRunReviewed").onclick = async () => {
+  if (state.running) return;
+  if (!confirm("Anonymize every file of this folder again, the reviewed ones too?\n\nTheir outputs are regenerated and their review flags are cleared.")) return;
+  if (state.batchMode) return runBatch("anonymize", true);
+  await anonymizeFolder(true);
+};
+
 $("#btnRun").onclick = async () => {
+  if (state.running) return cancelJob("#btnRun");
   if (state.batchMode) return runBatch("anonymize");
   await anonymizeFolder();
 };
@@ -2187,7 +2231,7 @@ $("#btnBoth").onclick = async () => {
   if (state.batchMode) return runBatch("scan_anonymize");
   if (!confirm("Scan this folder and anonymize it right away, without reviewing the new config? Your edits are kept.")) return;
   if (state.dirty && !(await saveConfig())) return;
-  const s = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan");
+  const s = await runJob("scan", "/api/scan", { folder: state.folder }, "Scan", { button: "#btnScan" });
   await loadTree();
   if (!s || s.status !== "done") return;
   state.dirty = false;
@@ -2214,10 +2258,11 @@ $("#btnExport").onclick = async () => {
 
 // scan (and read by OCR) only the open file: its new values are added to the folder's config, the rest of it stays
 $("#btnScanFile").onclick = async () => {
+  if (state.running) return cancelJob("#btnScanFile");
   const cur = currentOriginalNode();
   if (!cur) return;
   if (state.dirty && !(await saveConfig())) return;
-  const r = await runJob("scan", "/api/scan", { folder: state.folder, file: cur.name }, "Scan file");
+  const r = await runJob("scan", "/api/scan", { folder: state.folder, file: cur.name }, "Scan file", { button: "#btnScanFile" });
   await loadTree();
   if (r && r.status === "done") {
     state.dirty = false;
@@ -2228,12 +2273,13 @@ $("#btnScanFile").onclick = async () => {
 };
 
 $("#btnRunFile").onclick = async () => {
+  if (state.running) return cancelJob("#btnRunFile");
   const cur = currentOriginalNode();
   if (!cur) return;
   if (state.dirty && !(await saveConfig())) return;
   const r = await runJob("anonymize", "/api/anonymize",
     { folder: state.folder, file: cur.name, ocr_verify: state.ocrVerify, removed: removedPayload(),
-      ...qualityBody() }, "Anonymize file");
+      ...qualityBody() }, "Anonymize file", { button: "#btnRunFile" });
   await loadTree();
   await loadReport();
   await reloadConfigIfSuggested();
@@ -2297,16 +2343,16 @@ function renderOverview() {
   return h + `</table></div>`;
 }
 
-async function runBatch(action) {
+async function runBatch(action, reviewed = false) {
   const redo = $("#batchRedo") && $("#batchRedo").checked;
   if (action === "all" && !confirm("Scan the folders without config and anonymize them right away, without reviewing the new configs?")) return;
   if (action === "scan" && redo && !confirm("'redo all' rescans EVERY folder. Your edits and manual data are kept. Continue?")) return;
   if (action === "scan_anonymize" && !confirm("Scan every client folder below and anonymize it right away, folder by folder, without reviewing the new configs? Your edits are kept, reviewed files are left alone.")) return;
   if (state.dirty && !(await saveConfig())) return;
-  const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, ocr_verify: state.ocrVerify,
+  const r = await runJob("batch", "/api/batch", { folder: state.folder, action, redo, reviewed, ocr_verify: state.ocrVerify,
     ...qualityBody() },
     { scan: "Batch scan", anonymize: "Batch anonymize", all: "Batch scan + anonymize",
-      scan_anonymize: "Batch scan & anonymize" }[action], { keepsConfig: action === "anonymize" });
+      scan_anonymize: "Batch scan & anonymize" }[action], { keepsConfig: action === "anonymize", button: action === "scan" ? "#btnScan" : "#btnRun" });
   if (r && r.status === "done" && action !== "scan") pendingBoxes.clear();      // every file of the batch is regenerated
   await loadTree();
   await loadConfig();

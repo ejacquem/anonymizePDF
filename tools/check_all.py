@@ -5002,6 +5002,119 @@ def scan_file_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def cancel_tests():
+    """Cancel a running job (`engine.Cancelled`, app /api/job/<id>/cancel): a scan stops between two files and writes no config,
+    an anonymization keeps the files it finished and writes nothing for the others, a batch is cancelled and not 'failed',
+    and the next job can start."""
+    print("\n== cancel a running job")
+    import importlib.util
+    tmp = Path(tempfile.mkdtemp(prefix="anon_cancel_"))
+    try:
+        folder = tmp / "c"
+        folder.mkdir()
+        for k in range(4):
+            doc = fitz.open()
+            doc.new_page().insert_text((72, 100), f"Titulaire : Thomas Marchand IBAN FR76 3000 6000 0112 3456 7890 18{k}", fontsize=10)
+            doc.save(folder / f"f{k}.pdf")
+            doc.close()
+        logs: list[str] = []
+
+        def cancel_after(n):
+            def progress(done, total, name=""):
+                if done >= n:
+                    engine.CANCEL.set()
+            return progress
+        engine.reset_cancel()
+        try:
+            engine.scan_folder(folder, "c", [], "fra+eng", logs.append, progress=cancel_after(1))
+            raised = False
+        except engine.Cancelled:
+            raised = True
+        check("a scan cancelled after its first file raises Cancelled", raised)
+        check("... and read no more than the first file", sum("page(s)" in m for m in logs) <= 2, logs)
+        check("... and wrote no config (the app writes it when the scan ends)", not (folder / engine.CONFIG_NAME).exists())
+        engine.reset_cancel()
+        res = engine.scan_folder(folder, "c", [], "fra+eng", lambda m: None)
+        (folder / engine.CONFIG_NAME).write_text(res["config"], encoding="utf-8")
+        check("a new job is not cancelled by the old one", bool(res["config"]))
+        engine.reset_cancel()
+        try:
+            engine.run_anonymize(folder, "c", res["config"], "fra+eng", False, logs.append, progress=cancel_after(1))
+            raised = False
+        except engine.Cancelled:
+            raised = True
+        outs = sorted(p.name for p in folder.glob("*_anonymized.pdf"))
+        check("an anonymization cancelled after its first file raises Cancelled", raised)
+        check("... the first file is anonymized, the others have no output", outs == ["f0_anonymized.pdf"], outs)
+        check("... and the report keeps the first file", [f["file"] for f in json.loads((folder / "anon_report.json").read_text(encoding="utf-8"))["files"]] == ["f0.pdf"])
+        check("... no half-written file is left", not list(folder.glob("*.pass2*")) and not list(folder.glob("*.tmp")))
+        engine.reset_cancel()
+
+        spec = importlib.util.spec_from_file_location("anon_webapp_cancel", ROOT / "app.py")
+        webapp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(webapp)
+        saved_root = webapp.STATE["root"]
+        webapp.STATE["root"] = tmp.resolve()
+        client = webapp.app.test_client()
+        real_scan = webapp.eng.scan_folder
+
+        def slow_scan(*a, **k):                       # a long scan that stops at the checkpoint, as the real one does
+            for _ in range(600):
+                webapp.eng.check_cancel()
+                time.sleep(0.05)
+            return real_scan(*a, **k)
+        webapp.eng.scan_folder = slow_scan
+        try:
+            def wait(job_id, secs=20):
+                end = time.time() + secs
+                while time.time() < end:
+                    s = client.get(f"/api/job/{job_id}?since=0").get_json()
+                    if s["status"] != "running":
+                        return s
+                    time.sleep(0.1)
+                return s
+            job = client.post("/api/scan", json={"folder": "c"}).get_json()["job"]
+            time.sleep(0.3)
+            check("a second job is refused while one runs", client.post("/api/scan", json={"folder": "c"}).status_code == 409)
+            check("cancelling a job that does not exist is a 404", client.post("/api/job/nope/cancel").status_code == 404)
+            check("a running job can be cancelled", client.post(f"/api/job/{job}/cancel").status_code == 200)
+            done = wait(job)
+            check("the job ends as 'cancelled', with no error", done["status"] == "cancelled" and not done["error"], done)
+            check("... and says so in its log", any("Cancel" in m for m in done["log"]), done["log"])
+            check("cancelling a finished job is refused", client.post(f"/api/job/{job}/cancel").status_code == 409)
+            seen = []
+            real_run = webapp.eng.run_anonymize
+            webapp.eng.run_anonymize = lambda *a, **k: seen.append(sorted(k.get("only") or [])) or {"files": [], "total_seconds": 0}
+            try:
+                (folder / "anon_review.json").write_text(json.dumps({"f0.pdf": {"at": "x", "sha256": webapp._sha(folder / "f0_anonymized.pdf")}}), encoding="utf-8")
+                for body in ({"folder": "c"}, {"folder": "c", "reviewed": True}):
+                    wait(client.post("/api/anonymize", json=body).get_json()["job"])
+                check("a folder run leaves the reviewed file alone", seen[0] == ["f1.pdf", "f2.pdf", "f3.pdf"], seen)
+                check("'reviewed': true anonymizes every file, the reviewed one too", seen[1] == ["f0.pdf", "f1.pdf", "f2.pdf", "f3.pdf"], seen)
+            finally:
+                webapp.eng.run_anonymize = real_run
+            job2 = client.post("/api/scan", json={"folder": "c", "file": "f1.pdf"})
+            check("the next job starts, not cancelled", job2.status_code == 200)
+            client.post(f"/api/job/{job2.get_json()['job']}/cancel")
+            wait(job2.get_json()["job"])
+            (tmp / "a").mkdir()
+            (tmp / "b").mkdir()
+            shutil.copy(folder / "f0.pdf", tmp / "a" / "a.pdf")
+            shutil.copy(folder / "f1.pdf", tmp / "b" / "b.pdf")
+            job3 = client.post("/api/batch", json={"folder": "", "action": "scan"}).get_json()["job"]
+            time.sleep(0.3)
+            client.post(f"/api/job/{job3}/cancel")
+            done3 = wait(job3)
+            check("a batch is cancelled, not counted as failed folders", done3["status"] == "cancelled" and done3["result"] is None, done3)
+        finally:
+            webapp.eng.scan_folder = real_scan
+            webapp.eng.reset_cancel()
+            webapp.STATE["root"] = saved_root
+    finally:
+        engine.reset_cancel()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def ocr_data_tests():
     """Click-to-find reads the OCR saved by the scan (anon_ocr.json, anonymizer/ocrdata.py): the hits are the same as a
     fresh reading, a changed file or another OCR engine is read again, and the saved data is never used for them."""
@@ -5915,7 +6028,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "cancel_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",
