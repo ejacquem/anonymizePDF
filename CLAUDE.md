@@ -153,10 +153,14 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - The 3 bars between panes are draggable (pointer events, double-click resets), widths in localStorage.
 - Viewer toolbars (layout; the buttons keep their ids): one **View** row (`.viewbar`, in `#viewArea`) above both panes holds what they share:
   zoom (`#zoomOut` / `#zoomFit` / `#zoomIn`), **Changes** (`#btnChanges`) and the **Viewer | PDF** switch (`.viewmode`). Below it `#viewPanes` holds the two
-  panes. The Original pane head keeps the file's own buttons: Scan file / Anonymize file (title row), then **Rotate ▾** (`#btnRotate`, menu `#rotMenu`
+  panes. The Original pane head keeps the file's own buttons, in one tools row (the title row is only the name): **Rotate ▾** (`#btnRotate`, menu `#rotMenu`
   with `#btnRotL` / `#btnRotR` and a note that the original file is changed: the one destructive action takes two clicks), **As OCR** and
   **OCR view ▾** (`#btnOcrView` toggles; the caret `#btnOcrMenu` opens `#ocrMenu` to choose the layer Final / Initial / Differences / Raw engine, which sets the
-  hidden `#ocrLayer`; the button reads 'OCR: <layer>' while on). The pane-head menus are generic (`[data-menu]`, `closePaneMenus`). Where the text
+  hidden `#ocrLayer`; the button reads 'OCR: <layer>' while on), then, at the right end of the row behind a `|` separator, **Scan file** / **Anonymize file**
+  (the Anonymized pane ends its row the same way with **Mark as reviewed**). **Raw view**: Space with the mouse over a page (`setRawView`, class `raw-view` on `main`,
+  the hint `#rawHint` in the View row also toggles it) hides every layer drawn over the pages (`.chg`, `.lbox`, `.tlbox`, `.ocrbox`, `.bbox` with its typed
+  texts, `.btextinput`) so the pages show as they are, e.g. the text the output really holds under a typed-text box; Space again brings them back; not
+  while typing in a field. The pane-head menus are generic (`[data-menu]`, `closePaneMenus`). Where the text
   below says 'Original pane head' for zoom, Changes or Viewer / PDF, it is now the View row.
 - Viewer: pages are rendered server-side to PNG (`/api/page`, PyMuPDF), shown in a scrollable column, lazily loaded
   (IntersectionObserver). Zoom shared by both panes (−/+, Fit; mouse wheel zooms, trackpad pinch (Ctrl) zooms, two-finger scroll and Shift+wheel scroll; input kind from `inputKind`), scroll synced page by page,
@@ -238,8 +242,7 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
 - Toolbar (top): **Scan** (`btnScan`: scan + draft config), **Anonymize** (`btnRun`) with a ▾ menu (`btnRunMenu` / `runMenu`: **Scan & anonymize**,
   `btnBoth`: scan, then anonymize, with no review in between; **Anonymize reviewed files too**, `btnRunReviewed`: `reviewed: true` in `/api/anonymize` and `/api/batch` anonymizes every file, the reviewed ones included, whose outputs are regenerated and review flags cleared (a confirmation first); `anonymizeFolder()` is the second half; in batch mode the action
   `scan_anonymize` of `/api/batch` does each folder's scan then its anonymization before the next folder) and **Export**. Only one of
-  Scan / Anonymize is filled (primary): Scan until the folder has a config, then Anonymize. The file buttons are on the right of the file's name
-  in the pane heads (`.file-actions`): **Scan file** and **Anonymize file** (Original pane), **Mark as reviewed** (Anonymized pane). **Scan file** (`#btnScanFile`: `POST /api/scan` with `file`;
+  Scan / Anonymize is filled (primary): Scan until the folder has a config, then Anonymize. The file buttons end the tools row of the pane heads (`.file-actions`, behind a `|`): **Scan file** and **Anonymize file** (Original pane), **Mark as reviewed** (Anonymized pane). **Scan file** (`#btnScanFile`: `POST /api/scan` with `file`;
   `scan_folder(only=[name])` reads and OCRs only that file and saves its `anon_ocr.json` entry; `configmodel.add_scan` adds the values
   it found to the folder's config, the values the config already has (same text, spacing and case aside) keep their replacement, ticks and
   edits, and nothing else in the config changes; with no config the scan is the config. The fakes of the new values are chosen from this
