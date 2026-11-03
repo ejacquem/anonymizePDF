@@ -2506,7 +2506,7 @@ function exDataDirs(node, out = []) {
   node.children.forEach((c) => exDataDirs(c, out));
   return out;
 }
-const exUsable = (n) => (exFormat() === "zip" ? n.reviewed_count : n.anon_count) > 0;
+const exUsable = (n) => (exFormat() === "zip" ? n.reviewed_count : exFormat() === "data" ? (n.has_config ? 1 : 0) : n.anon_count) > 0;
 function exRender() {
   const box = $("#exFolders");
   box.innerHTML = "";
@@ -2533,7 +2533,7 @@ function exRender() {
   })(state.tree, 0);
   const total = exDataDirs(state.tree).filter((d) => ex.sel.has(d.path))
     .reduce((s, d) => s + (exFormat() === "zip" ? d.reviewed_count : d.anon_count), 0);
-  $("#exCount").textContent = `${ex.sel.size} folder(s) · ${total} file(s)`;
+  $("#exCount").textContent = exFormat() === "data" ? `${ex.sel.size} folder(s) · ${ex.sel.size} text file(s)` : `${ex.sel.size} folder(s) · ${total} file(s)`;
   $("#exPageOpts").hidden = exFormat() !== "page";
   $("#exGo").disabled = !ex.sel.size;
 }
@@ -2608,6 +2608,12 @@ async function exportPage(dirs, originals, password) {
 $("#exGo").onclick = async () => {
   const dirs = [...ex.sel];
   if (!dirs.length) return;
+  if (exFormat() === "data") {
+    exDlg.close();
+    location.href = "/api/export-data?" + dirs.map((d) => "dirs=" + encodeURIComponent(d)).join("&");
+    setStatus(`Export: replaced values of ${dirs.length} folder(s)`, "ok");
+    return;
+  }
   if (exFormat() === "zip") {
     exDlg.close();
     location.href = "/api/export?" + dirs.map((d) => "dirs=" + encodeURIComponent(d)).join("&");

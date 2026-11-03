@@ -4884,6 +4884,20 @@ def export_tests():
         check("a path outside the root is refused (403)", r.status_code == 403, r.status_code)
         r = client.get("/api/export?folder=A/../../")
         check("a traversal through a folder of the root is refused too", r.status_code == 403, r.status_code)
+        # the replaced values: the fakes of the active entries by type, no originals, no commented suggestions
+        (tmp / "A" / "anon_config.yaml").write_text(
+            'replacements:\n  - {find: "Thomas Marchand", replace: "Laura P", type: PERSON}\n'
+            '  - {find: "FR7611", replace: "FR761151", type: IBAN}\n  # - {find: "Zed Qux", replace: "Yan Rho", type: PERSON}\n', encoding="utf-8")
+        (tmp / "B" / "anon_config.yaml").write_text('replacements:\n  - {find: "a@b.c", replace: "z@y.x", type: EMAIL}\n', encoding="utf-8")
+        r = client.get("/api/export-data?dirs=A")
+        text = r.get_data(as_text=True)
+        check("replaced values: one text file named after the folder, fakes by type", r.status_code == 200 and "A_data.txt" in r.headers.get("Content-Disposition", "")
+              and text == "IBAN:\nFR761151\n\nPerson:\nLaura P\n", (r.status_code, text))
+        check("replaced values: no original, no commented value", "Thomas" not in text and "FR7611\n" not in text and "Yan" not in text)
+        with zipfile.ZipFile(io.BytesIO(client.get("/api/export-data?dirs=A&dirs=B").data)) as z:
+            check("replaced values: several folders give one text file each", sorted(z.namelist()) == ["A/A_data.txt", "B/B_data.txt"], z.namelist())
+        check("replaced values: a folder with no config is a message", client.get("/api/export-data?dirs=A/sub").status_code == 404)
+        check("replaced values: outside --root is refused", client.get("/api/export-data?dirs=../").status_code == 403)
     finally:
         webapp.STATE["root"] = saved_root
         shutil.rmtree(tmp, ignore_errors=True)

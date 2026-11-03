@@ -801,6 +801,61 @@ def review_page():
     return jsonify(built)
 
 
+_ACRONYMS = {"IBAN", "BIC", "VAT", "MRZ", "SEPA", "BE", "QR"}
+
+
+def _type_title(t: str) -> str:
+    return " ".join(w if w in _ACRONYMS else w.capitalize() for w in t.split("_"))
+
+
+def replaced_values_text(folder: Path) -> str | None:
+    """The fake values the folder's config replaces with, one block per type ('Person:' then the values); the originals are not
+    written, commented suggestions and unchecked values are not in the active config. None when the folder has no config."""
+    cfg = folder / eng.CONFIG_NAME
+    if not cfg.is_file():
+        return None
+    parsed = eng.parse_config(cfg.read_text(encoding="utf-8"))
+    groups: dict[str, list[str]] = {}
+    for find, rep in parsed["terms"].items():
+        if not rep.strip():
+            continue
+        vals = groups.setdefault(parsed["types"].get(eng.norm_value(find), "TERM"), [])
+        if rep not in vals:
+            vals.append(rep)
+    return "\n\n".join(f"{_type_title(t)}:\n" + "\n".join(v) for t, v in sorted(groups.items())) + "\n" if groups else ""
+
+
+@app.get("/api/export-data")
+def export_data():
+    """The replaced (fake) values of the selected folders as text files, `<folder>_data.txt` each (a ZIP when there are several).
+    `dirs` (repeated) = folders relative to the root; a folder with no config is left out."""
+    try:
+        dirs = dirs_arg(request.args.getlist("dirs"))
+    except PermissionError:
+        return bad("forbidden", 403)
+    except FileNotFoundError as e:
+        return bad(str(e), 404)
+    files = []
+    for d in dirs:
+        try:
+            text = replaced_values_text(d)
+        except ValueError as e:
+            return bad(f"{rel_of(d)}: {e}")
+        if text:
+            files.append((d, text))
+    if not files:
+        return bad("No replaced value in the selected folders: scan them first.", 404)
+    if len(files) == 1:
+        d, text = files[0]
+        return send_file(io.BytesIO(text.encode("utf-8")), mimetype="text/plain", as_attachment=True, download_name=f"{d.name}_data.txt")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for d, text in files:
+            z.writestr("/".join(p for p in (rel_of(d), f"{d.name}_data.txt") if p), text)
+    buf.seek(0)
+    return send_file(buf, mimetype="application/zip", as_attachment=True, download_name="replaced_values.zip")
+
+
 @app.get("/api/export")
 def export():
     """A ZIP of the anonymized files of the selected folder, built in memory (never written next to the documents).

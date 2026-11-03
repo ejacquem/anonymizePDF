@@ -227,6 +227,9 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
     file, frames (`.chg`, purple dashed = removed) with a tooltip, images decoded lazily (IntersectionObserver). No originals: the
     original pane is hidden and the tooltips say only the replacement. Privacy: without a password the originals are readable in the file
     (the app confirms); folder and file names are always shown. Test: `review_page_tests`.
+  - **Replaced values (.txt)** (`GET /api/export-data?dirs=A&dirs=B/C`, `app.replaced_values_text`): per chosen folder with a config, `<folder>_data.txt` with the FAKE values of the active
+    entries of `anon_config.yaml`, one block per type ('Person:' then the values, 'IBAN:' ...), no originals, no commented suggestions, no unchecked values (one file = the .txt itself, several = a ZIP
+    with each file at its folder's path; a folder with no config is left out). Test: `export_tests`.
   - **ZIP**: `GET /api/export?dirs=A&dirs=B/C` = the reviewed outputs of exactly those folders (`export_files_in`, names relative to the root);
     `GET /api/export?folder=` (a folder and everything below it, `export_files`) is unchanged. `GET /api/export/info?folder=` gives the file names,
     the `unreviewed` originals and those without output. None reviewed: a message, no empty ZIP. Outside --root: 403. Test: `export_tests`.
