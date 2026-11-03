@@ -64,7 +64,7 @@ BLUR = 1.2                  # both images are blurred by this before they are co
 INK = 20.0                  # grey levels under the clean page that count as ink
 FOUND = 0.6                 # share of the value's box the report's boxes must cover
 FAR = 18                    # pixels from a value's box beyond which a change is collateral
-MEASURES = ("bg", "bg95", "floor", "ink_rel", "mass", "dark", "height", "edge", "edge_rel", "dy", "dx", "coll")
+MEASURES = ("bg", "bg95", "floor", "band", "ink_rel", "mass", "dark", "height", "edge", "edge_rel", "dy", "dx", "coll")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -166,6 +166,12 @@ def measure_row(orig, out, clean, ideal, bbox) -> dict:
     res = {"bg": float(d_out[bg_zone].mean()) if bg_zone.any() else None,
            "bg95": float(np.percentile(d_out[bg_zone], 95)) if bg_zone.any() else None,
            "floor": float(d_org[floor_zone].mean()) if floor_zone.any() else None}
+    # band: the colour the box shows (median per channel, the largest difference) against the clean page's: a background that
+    # switched (a dark band lit, a highlighter replaced by a light patch) is far off whatever the text does; it holds for light
+    # ink on a dark band too, where the ink masks above (dark ink on light paper) do not
+    bx0, by0, bx1, by1 = bbox
+    mo, mc = cut(out, (bx0, by0, bx1, by1)).reshape(-1, 3), cut(clean, (bx0, by0, bx1, by1)).reshape(-1, 3)
+    res["band"] = float(np.abs(np.median(mo, axis=0) - np.median(mc, axis=0)).max()) if len(mo) else None
     want = np.abs(cg - ig).mean()
     # the best fit over a shift of up to 2 px: the position is judged by dx / dy, the shape and weight by ink_rel
     res["ink_rel"] = float(min(np.abs(np.roll(xg, (sy, sx), axis=(0, 1)) - ig).mean()
@@ -589,7 +595,7 @@ def cell(v, fmt="{:.2f}"):
 
 
 def print_summary(summary: dict, place: bool = False) -> None:
-    cols = (("found", "{:.0%}"), ("det", "{:.0%}"), ("bg_excess", "{:.2f}"), ("bg95", "{:.1f}"), ("bg_worst", "{:.1f}"), ("ink_rel", "{:.2f}"),
+    cols = (("found", "{:.0%}"), ("det", "{:.0%}"), ("bg_excess", "{:.2f}"), ("bg95", "{:.1f}"), ("bg_worst", "{:.1f}"), ("band", "{:.1f}"), ("ink_rel", "{:.2f}"),
             ("mass", "{:.2f}"), ("dark", "{:.1f}"), ("height", "{:.2f}"), ("edge", "{:.2f}"), ("edge_rel", "{:.2f}"), ("dy", "{:.1f}"), ("dx", "{:.1f}"),
             ("coll", "{:.1f}"))
     if place:

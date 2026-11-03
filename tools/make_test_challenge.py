@@ -233,6 +233,13 @@ def background(kind: str, rng, size=None) -> np.ndarray:
 HL = {"yellow": (255, 238, 64), "green": (150, 240, 120), "pink": (255, 170, 205), "blue": (130, 200, 255),
       "magenta": (255, 110, 220)}
 INKGREY = (60, 60, 64)
+DARK = {"navy": (24, 36, 84), "black": (20, 20, 22), "red": (120, 24, 30), "green": (22, 70, 40), "grey": (70, 72, 78)}
+WHITE_INK = (246, 246, 246)
+
+
+def dark_row(deco) -> bool:
+    """The value of this row is written in white (a dark band under it)."""
+    return bool(deco) and deco.startswith("darkband")
 
 
 def decorate(deco: str | None, box, y: float, base, m, rng):
@@ -285,6 +292,36 @@ def decorate(deco: str | None, box, y: float, base, m, rng):
             blend(base, loc, colour)
         else:
             multiply(m, loc, colour)
+    elif deco.startswith("hlt_"):                            # hlt_<colour>_<degrees>[_opaque]: a highlighter band TURNED against the text
+        parts = deco.split("_")
+        colour, ang = HL[parts[1]], math.radians(float(parts[2]))
+        big = Local(x0 - 160, y0 - 120, x1 + 160, y1 + 120)
+        cx, cy = (x0 + x1) / 2 + rng.uniform(-6, 6), y - 0.3 * em
+        L, Hh = wd / 2 + 22, 0.60 * em
+        pts = [(cx + dx * math.cos(ang) - dy * math.sin(ang), cy + dx * math.sin(ang) + dy * math.cos(ang))
+               for dx, dy in ((-L, -Hh), (L, -Hh), (L, Hh), (-L, Hh))]
+        big.d.polygon([big.p(*q) for q in pts], fill=255)
+        if deco.endswith("_opaque"):
+            blend(base, big, colour)
+        else:
+            multiply(m, big, colour)
+    elif deco.startswith("band_"):                           # band_<colour>_<degrees>[_opaque]: a thin pen stripe across the value
+        parts = deco.split("_")
+        colour, ang = HL[parts[1]], math.radians(float(parts[2]))
+        big = Local(x0 - 200, y0 - 200, x1 + 200, y1 + 200)
+        cx, cy = x0 + rng.uniform(0.3, 0.7) * wd, y - 0.3 * em
+        L, Hh = wd / 2 + 90, 0.30 * em
+        pts = [(cx + dx * math.cos(ang) - dy * math.sin(ang), cy + dx * math.sin(ang) + dy * math.cos(ang))
+               for dx, dy in ((-L, -Hh), (L, -Hh), (L, Hh), (-L, Hh))]
+        big.d.polygon([big.p(*q) for q in pts], fill=255)
+        if deco.endswith("_opaque"):
+            blend(base, big, colour)
+        else:
+            multiply(m, big, colour)
+    elif deco.startswith("darkband"):                        # darkband[_<colour>]: a dark band under a WHITE value
+        colour = DARK[deco.split("_")[1]] if "_" in deco else DARK["navy"]
+        loc.rect((x0 - 14, y0 - 12, x1 + 14, y1 + 12))
+        blend(base, loc, colour)
     elif deco == "stamp":                                    # a translucent red stamp across the value
         big = Local(x0 - 40, y0 - 60, x1 + 40, y1 + 60)
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -448,6 +485,13 @@ def cases() -> list[dict]:
     add("deco_rules", "deco", "dev", decos=rules)
     add("deco_marker", "deco", "dev", decos=marker)
     add("deco_frames", "deco", "dev", decos=frames)
+    # highlights and bands that are NOT aligned with the text (turned against it, crossing it), and white text on dark bands
+    add("deco_tilthl", "deco", "dev", decos=["hlt_yellow_3", "hlt_pink_-4", "hlt_green_2_opaque", "hlt_yellow_6", "hlt_blue_-2"])
+    add("deco_band", "deco", "dev", decos=["band_yellow_20", "band_pink_-15", "band_green_30_opaque", "band_blue_8", "band_yellow_-25"])
+    add("deco_dark", "deco", "dev", decos=["darkband_navy", "darkband_black", "darkband_red", "darkband_green", "darkband_grey"])
+    add("deco_tilthl_zebra", "deco", "held", bg="zebra", decos=["hlt_pink_3", "hlt_yellow_-5", "hlt_green_4", "hlt_blue_2_opaque", "hlt_yellow_5"])
+    add("deco_dark_tilt", "deco", "held", decos=["darkband_navy", "darkband_green", "darkband_black", "darkband_red", "darkband_grey"],
+        geom=[("rotate", 2.0)])
     add("deco_specks", "deco", "held", decos=["specks", "crease", "specks", "thick", "specks"])
     add("deco_marker_zebra", "deco", "held", bg="zebra", decos=["hl_pink", "hl_yellow_part", "hl_green_opaque", "tintbox",
                                                                 "hl_yellow"])
@@ -533,7 +577,8 @@ def render_case(spec: dict, texts: dict | None = None, noise: bool = False) -> d
     ink = spec["ink"]
     for i, row in enumerate(spec["rows"]):
         text = (texts or {}).get(i, row["value"])
-        put_text(withv, text, row["font"], row["size"], row["bold"], VALUE_X, boxes[i][1], ink)
+        put_text(withv, text, row["font"], row["size"], row["bold"], VALUE_X, boxes[i][1],
+                 WHITE_INK if dark_row(row["deco"]) else ink)
     withv *= m
     maps = geometry_maps([tuple(o) for o in spec["geom"]])
     rows = []

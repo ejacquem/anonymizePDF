@@ -5464,6 +5464,46 @@ def file_flag_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def highlight_tests():
+    """Bands and highlighters that are not aligned with the text (tools/make_test_challenge.py: deco_dark, deco_dark_tilt,
+    deco_tilthl_zebra): the colour the box shows after the replacement is the page's own (the median of the box against the clean
+    page, `band`): a navy or grey band with white text stays dark on a straight page AND on a page turned by 2 degrees (the turned
+    word used to be erased with the light colour of the page around it), and a highlighter turned against the text on a tinted row
+    keeps its colour (the box was a flat light patch when no level was clean). The turned path writes light text on the band."""
+    print("\n== bands and highlighters across the text")
+    sys.path.insert(0, str(ROOT / "tools"))
+    import make_test_challenge as gen
+    tmp = Path(tempfile.mkdtemp(prefix="anon_hl_"))
+    try:
+        use_key(tmp / "key" / "secret.key")
+        specs = [c for c in gen.cases() if c["name"] in ("deco_dark", "deco_dark_tilt", "deco_tilthl_zebra")]
+        folder = tmp / "c"
+        gen.build(folder, specs, jobs=1)
+        config = engine.scan_folder(folder, "c", [], "fra+eng", lambda m: None)["config"]
+        rep = engine.run_anonymize(folder, "c", config, "fra+eng", False, lambda m: None)
+        files = {Path(f["file"]).stem: f for f in rep["files"]}
+        worst: dict = {}
+        for spec in specs:
+            r = gen.render_case(spec)
+            f = files[spec["name"]]
+            doc = fitz.open(folder / f["output"])
+            pix = doc[0].get_pixmap(matrix=fitz.Matrix(gen.DPI / 72, gen.DPI / 72), alpha=False)
+            out = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3).astype(np.float32)
+            for i, row in enumerate(r["rows"]):
+                x0, y0, x1, y1 = row["bbox"]
+                mo = np.median(out[y0:y1, x0:x1].reshape(-1, 3), axis=0)
+                mc = np.median(r["clean"][y0:y1, x0:x1].reshape(-1, 3), axis=0)
+                dev = float(np.abs(mo - mc).max())
+                kind = spec["rows"][i]["deco"]
+                if dev > worst.get(spec["name"], (0, ""))[0]:
+                    worst[spec["name"]] = (dev, kind)
+                if spec["name"] == "deco_dark_tilt" or kind in ("darkband_navy", "darkband_grey"):
+                    check(f"{spec['name']} row {i} ({kind}): the band keeps its colour (median {dev:.0f} levels off)", dev < 40)
+        check("a tilted highlighter on a tinted row keeps its colour (the e-mail row)", worst["deco_tilthl_zebra"][0] < 60, str(worst))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def ocr_data_tests():
     """Click-to-find reads the OCR saved by the scan (anon_ocr.json, anonymizer/ocrdata.py): the hits are the same as a
     fresh reading, a changed file or another OCR engine is read again, and the saved data is never used for them."""
@@ -6377,7 +6417,7 @@ GROUPS = [
     "speedup_tests", "memo_tests", "parallel_tests", "font_unit_tests", "font_scan_tests", "scan_text_tests", "contract_tests", "quality_offset_tests",
     "name_width_tests", "tilted_font_tests", "mrz_typed_quality_tests", "ink_tail_tests", "italic_tests",
     "key_and_fake_tests", "ocr_merge_tests", "native_blocks_tests", "paragraph_scan_tests", "colour_tests",
-    "review_summary_tests", "scan_props_tests", "export_tests", "review_page_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "cancel_tests", "queue_tests", "file_flag_tests", "ocr_data_tests", "ruler_tests",
+    "review_summary_tests", "scan_props_tests", "export_tests", "review_page_tests", "rotate_tests", "ocr_mode_tests", "number_sequence_tests", "masked_number_match_tests", "ocr_view_tests", "scan_file_tests", "ocr_blank_tests", "cancel_tests", "queue_tests", "file_flag_tests", "highlight_tests", "ocr_data_tests", "ruler_tests",
     "label_and_town_tests", "licence_title_tests", "iban_gap_tests", "masked_number_tests", "title_tests",
     "underline_tests", "backdrop_tests", "dewarp_tests", "weight_tests", "suspect_hits_tests", "corrupt_layer_tests", "town_region_tests", "repeated_value_tests", "background_quality_tests",
     "sharp_review_tests", "sharp_read_tests", "sharp_tone_tests", "stage_a_backdrop_tests", "stage_a_font_tests", "stage_a_scan_tests", "placement_tests",

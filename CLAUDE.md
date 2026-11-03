@@ -771,6 +771,12 @@ Order must never change a result (`order_tests`): a value written with several s
   so `ink_crop` is unchanged. Test: `underline_tests` (the line under each replaced value keeps at least 60 % of its
   ink; no replacement is written in a Bold face). Limit: a dotted rule can still touch the glyphs of a replacement
   whose height differs from the original's (the date '27/04/1988' in Arial over a Courier value).
+- A turned word (`render.paint_tilted`, a line of 1.5 degrees or more that the page dewarp did not straighten) is erased with `backdrop.Surface` of the straightened patch
+  ONLY where a flat colour is wrong: on a dark band, or when the paper around the box changes by more than `backdrop.EDGE_SPREAD` (40 levels: a highlighter, a tinted row;
+  the 25 levels of the shading of a card are not an edge); elsewhere with the paper colour as before (the surface of a poor copy keeps a faint ghost of the strokes that the
+  second check reads back as letters: Dossier Test 09 with some keys). The text takes the ink colour only when it contrasts with the fill (60 levels, else black or white), and the
+  patch is padded with its own edge colour. It used the brighter half of the patch as the paper (a dark band turned light, white text on it written dark) and `_ink_band` looked for dark ink
+  only (`dark=` for light ink on a dark paper, looking close to the word: `reach` 0.15). Test: `highlight_tests` (a navy / grey band on a page turned 2 degrees).
 - Scans, the value's box: a word only partly covered is cut by the Arial widths of its characters (`pii._advance`,
   `match_boxes`). `render.ink_start` skips a colon-like first mark only (narrow, a few rows of the text height, a gap
   after it), so a colon before the value is not counted; a letter is never skipped (an 'A' keeps its foot and is
@@ -977,6 +983,12 @@ Order must never change a result (`order_tests`): a value written with several s
   channel of the pixels INSIDE the box that are not strokes, a tint only when its chroma differs from the ring's by more than 20 levels or it is
   more than 12 levels lighter: a darkening by what is left of the strokes keeps the hue; the surface is then a constant window, rung
   '... tint'). `Surface.rung` says which was used. Tests: `sharp_review_tests`, `stage_a_backdrop_tests`.
+- **An edge across the text** (`backdrop._inpaint_level`, `ring_spread`, rung 'inpainted'; test `highlight_tests`): when no closing level is clean AND the paper around the box
+  changes from place to place (`ring_spread` > `INPAINT_SPREAD` = 14 levels: the ring just outside the box in eight pieces, the paper colour of each, the 75th
+  percentile: a highlighter turned against the lines, a tinted row that ends inside the box; light paper only, a band has the page just outside it), the strokes are cut out (a pixel 35 % of the box's
+  contrast darker than the lightest within a window wider than a stroke, grown 4 px) and the hole is filled shell by shell with the mean of the known pixels, then
+  `ghost_parts` judges it like the other rungs. On a plain page the flat colour of the ring is right and stays (a blurred thick value has a halo that the fill would keep:
+  the A2 tests). Before this, a yellow highlighter turned 5 degrees on a tinted row was replaced by a flat light rectangle.
 
 ## 10d. Turned and bent pages (`dewarp.py`)
 
@@ -1248,6 +1260,7 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   edge and a blurred copy leave the background of the page and no ghost of the letters; a page turned by 9 degrees and a waved page
   are found, the maps go back and forth, only the painted pixels come back, and the scans of Dossier Test 22's `geom_tilt12` and
   `geom_bend_strong` are replaced at their place with nothing left.
+- Bands and highlighters across the text (`highlight_tests`): a navy / grey band with white text keeps its colour on a straight page and on a page turned 2 degrees, a tilted highlighter on a tinted row keeps its colour (median of the box within 40 / 60 levels of the clean page).
 - Run 2 (`sharp_review_tests`, `sharp_read_tests`, `sharp_tone_tests`): white text on a thin dark band, a blurred 150 dpi copy and a thin blurred
   highlighter leave no ghost (the surface, `_erase_patch`), black-box mode on a page turned 12 degrees covers every value; the block factors of
   coarse scans (3 x 3, a fax 1.5 x 3, smooth pages 1 x 1), the smooth page, the unread-page warning; a hard cut page gets a tone curve and a
@@ -1381,6 +1394,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   one-page scans (1650 x 900 px, 200 dpi, fake values: name, IBAN, phone, address, e-mail), families `bg_` (flat, paper,
   gradients, vignette, zebra stripes with the edge across the value, guilloche, ruled), `deco_` (underlines, strike, marker
   opaque / multiply / half the value, tinted box, frame, table cell, pen circle, stamp over the value, crease, specks),
+  `deco_tilthl` / `deco_band` / `deco_dark` / `deco_tilthl_zebra` / `deco_dark_tilt` (a highlighter turned against the text, a thin stripe across the value,
+  white text on a dark band, the same on a tinted row and on a page turned 2 degrees; decorations `hlt_<colour>_<deg>[_opaque]`, `band_<colour>_<deg>`, `darkband_<colour>`),
   `geom_` (tilt 1..18 degrees, book bend, wave, perspective, bend + tilt), `font_` (ten fonts NOT in `fontmatch.CATALOG`
   plus three controls), `tone_` (boosted, binarised, halo, dark, faded, coarse, blue ink, searchable scan with an
   invisible text layer in a wrong font). Each case is `dev` or `held`: tune on dev, a change is accepted when held does not
@@ -1394,7 +1409,8 @@ value in the text layer: `--folder "Dossier Test 01" --file releve_banque_mosane
   percentile: an artefact), `ink_rel` (|output - ideal| over the ink the ideal writes, best fit over a 2 px shift: 0 = the
   ideal, 1 = erased and nothing written; the text of the fake differs from the ideal's letters only by spacing, so a
   floor of about 0.5 is normal), `mass` / `dark` / `height` (weight, darkness, size of the ink against the ideal), `dx` /
-  `dy` (ink centre shift), `coll` (pixels far from any value changed by more than 40 levels, per 10 000). `compare a b`
+  `dy` (ink centre shift), `band` (the colour the box shows, median per channel, against the clean page's: a background that switched is far off, whatever the ink; the
+  ink masks assume dark ink, so `bg` is wrong for white text on a band), `coll` (pixels far from any value changed by more than 40 levels, per 10 000). `compare a b`
   prints before / after per group (family, deco, geom, bg, font, tone, split); `--sheet` writes the worst values with the
   original, clean, ideal and output crops. The numbers are for comparing two runs of the same bench, not absolute.
 - Run 2 adds `sharp_*` (five-row pages from a poor scan: bw at 100 / 150 / 200 dpi, thick and thin, contrast, harsh JPEG), `doc_sharp_*` (a statement,

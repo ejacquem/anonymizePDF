@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from . import morph, quality
+from . import backdrop, morph, quality
 from .pii import fitz
 
 # ---------------------------------------------------------------------------
@@ -867,17 +867,22 @@ def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: boo
     R = (max(x0 - mx, 0), max(y0 - m, 0), min(x1 + mx, img.width), min(y1 + m, img.height))
     patch = img.crop(R).convert("RGB")
     cx, cy = (x0 + x1) / 2 - R[0], (y0 + y1) / 2 - R[1]
+    arr = np.asarray(patch)
+    # the colour the corners of the turned patch are padded with: the edge of the patch (it was the brighter half of the patch,
+    # which is the page around a dark band, not the band)
+    border = tuple(int(v) for v in np.median(np.concatenate([arr[0], arr[-1], arr[:, 0], arr[:, -1]]), axis=0))
     lum = np.asarray(patch.convert("L")).astype(int)
-    pix = np.asarray(patch).reshape(-1, 3)
-    paper = tuple(int(v) for v in np.median(pix[lum.reshape(-1) >= np.percentile(lum, 50)], axis=0))
-    turned = patch.rotate(angle, resample=Image.BICUBIC, center=(cx, cy), fillcolor=paper)
+    paper = tuple(int(v) for v in np.median(arr.reshape(-1, 3)[lum.reshape(-1) >= np.percentile(lum, 50)], axis=0))   # the page's own paper
+    turned = patch.rotate(angle, resample=Image.BICUBIC, center=(cx, cy), fillcolor=border)
     # the word's box, turned with the same angle: its corners give the box of the word in the turned patch
     corners = [_turn((x - R[0], y - R[1]), (cx, cy), angle)
                for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
     bx0, by0 = max(int(min(c[0] for c in corners)) - 2, 0), max(int(min(c[1] for c in corners)) - 2, 0)
     bx1, by1 = min(int(max(c[0] for c in corners)) + 3, turned.width), min(int(max(c[1] for c in corners)) + 3, turned.height)
     gray = np.asarray(turned.convert("L")).astype(int)
-    tight = _ink_band(gray, (bx0, by0, bx1, by1))
+    dark = backdrop.is_dark_paper(np.asarray(turned), (bx0, by0, bx1, by1))        # light text on a dark band
+    # a dark band is looked at close to the word: farther out is the light page, which would count as ink against it
+    tight = _ink_band(gray, (bx0, by0, bx1, by1), reach=0.15 if dark else 1.2, dark=dark)
     if tight:                                                 # the ink of the word, in the turned patch
         bx0, by0, bx1, by1 = tight
     t = (bx0, by0, bx1, by1)
@@ -887,10 +892,23 @@ def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: boo
     if blackbox:
         d.rectangle(t, fill=(0, 0, 0))
     else:
+        # What the page shows under the value, as for a straight word (backdrop.Surface), where a flat colour is wrong: a dark band
+        # (the brighter half of the patch is the page around it, which turned the band light) or an edge across the box (a
+        # highlighter). On a plain page the paper colour does, as it always did: the surface of a poor copy keeps a faint ghost of the
+        # strokes that the second check reads back as letters.
+        fill, surf = paper, None
+        if q is not None and (dark or backdrop.ring_spread(np.asarray(turned), t) > backdrop.EDGE_SPREAD):
+            fill = background_color(turned, t)
+            surf = backdrop.Surface(turned, t)
+            if surf.ok:
+                fill = surf.colour(t, fill)
         if q is not None:
-            quality.erase(turned, t, paper, q, key)
+            quality.erase(turned, t, fill, q, key, surf)
         else:
-            d.rectangle(t, fill=paper)
+            d.rectangle(t, fill=fill)
+        lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
+        ink_lum = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2]
+        ink = ink if abs(lum - ink_lum) > 60 else (0, 0, 0) if lum > 128 else (255, 255, 255)      # readable on what is under it
         if new:
             # never wider than the original value: a longer replacement is written smaller, not over the next field
             face = look.face if look is not None else None
@@ -906,17 +924,17 @@ def paint_tilted(img, box, angle: float, original: str, new: str, ink, bold: boo
                        max(t[3], xy[1] + bt))
     mask = Image.new("L", turned.size, 0)
     ImageDraw.Draw(mask).rectangle((changed[0] - 1, changed[1] - 1, changed[2] + 1, changed[3] + 1), fill=255)
-    back = turned.rotate(-angle, resample=Image.BICUBIC, center=(cx, cy), fillcolor=paper)
+    back = turned.rotate(-angle, resample=Image.BICUBIC, center=(cx, cy), fillcolor=border)
     mask_back = mask.rotate(-angle, resample=Image.NEAREST, center=(cx, cy), fillcolor=0)
     img.paste(back, (R[0], R[1]), mask=mask_back)
     bb = mask_back.getbbox() or (0, 0, 0, 0)
     return (bb[0] + R[0], bb[1] + R[1], bb[2] + R[0], bb[3] + R[1])
 
 
-def _ink_band(gray: np.ndarray, box, reach: float = 1.2):
+def _ink_band(gray: np.ndarray, box, reach: float = 1.2, dark: bool = False):
     """The ink of a word in a turned patch, from its (approximate) box: OCR boxes of slanted words can be off by
     about a line. The band of ink rows nearest to the box (within `reach` box heights), then the ink columns of
-    that band. None when there is no ink."""
+    that band. None when there is no ink. `dark`: the paper is dark and the ink lighter than it."""
     x0, y0, x1, y1 = box
     h = max(y1 - y0, 4)
     w0, w1 = max(int(x0 + 1), 0), min(int(x1 - 1), gray.shape[1])
@@ -924,7 +942,7 @@ def _ink_band(gray: np.ndarray, box, reach: float = 1.2):
     win = gray[v0:v1, w0:w1]
     if win.size == 0:
         return None
-    ink = win < np.median(win) - 60
+    ink = win > np.median(win) + 60 if dark else win < np.median(win) - 60
     frac = ink.mean(axis=1)
     rows = frac > 0.02
     bands, start = [], None

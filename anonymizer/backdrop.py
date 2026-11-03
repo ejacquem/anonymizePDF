@@ -279,6 +279,85 @@ def _fill_around_ink(win: np.ndarray, level: np.ndarray, ink: np.ndarray, height
     return np.where(edge[..., None], soft, out)
 
 
+INPAINT_STROKE = 0.35                    # a pixel is a stroke when it is this share of the box's contrast darker than the area around it
+INPAINT_GROW = 4                         # pixels around the strokes that are filled too (their soft edge)
+INPAINT_ITERS = 40                       # the most a stroke (grown) can be thick, in pixels, for the fill to reach its middle
+
+
+INPAINT_SPREAD = 14.0                    # levels: the colours around the box differ by more than this (an edge crosses it) for the fill to run
+EDGE_SPREAD = 40.0                       # levels: ... by more than this (a highlighter, a tinted row, a band: not the shading of a card) for a turned word
+                                         # to be erased with the surface and not with the paper colour (render.paint_tilted)
+
+
+def ring_spread(win: np.ndarray, core, dark_paper: bool = False) -> float:
+    """How much the paper around the box changes from place to place: the ring just outside it in eight pieces (the top and the
+    bottom in three, the two ends), the largest difference per channel between the paper colours of the pieces (the 75th percentile
+    of each: the halo of a blurred stroke darkens the ring beside it, the paper is its lighter part; the 25th on a dark paper). About
+    the grain of the scan on a plain page (the flat colour of the ring is right), large when an edge of a highlighter or of a tinted
+    row crosses the box (no flat colour is)."""
+    ring = _ring_mask(win.shape[:2], core, POLARITY_GAP, POLARITY_WIDTH)
+    if ring.sum() < POLARITY_MIN:
+        return 0.0
+    x0, y0, x1, y1 = (int(round(v)) for v in core)
+    ys, xs = np.nonzero(ring)
+    cuts = [x0 + (x1 - x0) * k / 3 for k in (1, 2)]
+    piece = np.where(xs < x0, 0, np.where(xs >= x1, 1, 2 + (ys >= (y0 + y1) / 2) * 3 + (xs >= cuts[0]) + (xs >= cuts[1])))
+    pct = 25 if dark_paper else 75
+    meds = [np.percentile(win[ys[piece == k], xs[piece == k]].astype(float), pct, axis=0) for k in range(8) if (piece == k).sum() >= 4]
+    if len(meds) < 2:
+        return 0.0
+    m = np.array(meds)
+    return float((m.max(axis=0) - m.min(axis=0)).max())
+
+
+def _box3(a: np.ndarray) -> np.ndarray:
+    """The sum over each pixel's 3 x 3 neighbourhood (zero outside the array)."""
+    p = np.pad(a, 1)
+    return sum(p[dy:dy + a.shape[0], dx:dx + a.shape[1]] for dy in range(3) for dx in range(3))
+
+
+def _inpaint_level(win: np.ndarray, height: float, dark_paper: bool, core):
+    """(level, ink) of a window where the closing does not hold: the strokes are cut out of the picture and the hole is filled
+    from the pixels around it, so an edge that crosses the text (a highlighter turned against the lines, a tinted cell that
+    ends inside the box) keeps its place and its colour. A stroke is a pixel much darker (lighter on a dark paper) than the
+    lightest (darkest) pixel within a window wider than a stroke; the contrast is the box's own. The hole is grown by a margin
+    (the soft edge of the stroke) and filled shell by shell with the mean of the pixels that are known. None when the box has no
+    strokes to measure."""
+    w = win.astype(np.float32)
+    lum = _lum(w)
+    x0, y0, x1, y1 = (max(int(round(v)), 0) for v in core)
+    part = lum[y0:y1, x0:x1]
+    if part.size < 30:
+        return None
+    contrast = float(np.percentile(part, 98) - np.percentile(part, 2))
+    if contrast < 2 * MIN_INK:
+        return None
+    size = _odd(max(9, 0.6 * height))
+    u8 = np.clip(np.round(lum), 0, 255).astype(np.uint8)
+    far = morph.square_min(u8, size) if dark_paper else morph.square_max(u8, size)
+    gap = (lum - far.astype(np.float32)) if dark_paper else (far.astype(np.float32) - lum)
+    ink = gap > INPAINT_STROKE * contrast
+    if not ink.any():
+        return None
+    ink = morph.square_max(ink.astype(np.uint8), 2 * INPAINT_GROW + 1).astype(bool)
+    known = ~ink
+    if known.sum() < 0.05 * known.size:
+        return None
+    level = np.empty_like(w)
+    for c in range(3):
+        val = np.where(known, w[..., c], 0.0)
+        have = known.astype(np.float32)
+        for _ in range(INPAINT_ITERS):
+            if have.all():
+                break
+            sv, sw = _box3(val), _box3(have)
+            new = (sw > 0) & (have == 0)
+            val[new] = sv[new] / sw[new]
+            have[new] = 1.0
+        level[..., c] = val
+    return level, ink
+
+
 class Surface:
     """The reconstructed background of a window of the page image: `rgb` (float, h x w x 3) from `origin` = (x0, y0)."""
 
@@ -336,6 +415,13 @@ class Surface:
         g3 = ghost_parts(win, filled, ink, core, dark)
         if g3.clean:
             return filled, ink, f"lifted {g1.share:.3f} {g2.share:.3f} {g3.share:.3f}"
+        # an edge across the text (a highlighter turned against the lines): the strokes are cut out and filled from around them
+        inp = _inpaint_level(win, h, dark, core) if not dark and ring_spread(win, core) > INPAINT_SPREAD else None     # (a plain page: the flat colour; a band: the ring has the page outside it)
+        if inp is not None:
+            level4, ink4 = inp
+            g4 = ghost_parts(win, level4, ink4, core, dark)
+            if g4.clean:
+                return level4, ink4, f"inpainted {g1.share:.3f} {g2.share:.3f} {g3.share:.3f} {g4.share:.3f}"
         return None, ink, f"flat patch {g1.share:.3f} {g2.share:.3f} {g3.share:.3f}"
 
     @property
