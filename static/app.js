@@ -2506,7 +2506,8 @@ function exDataDirs(node, out = []) {
   node.children.forEach((c) => exDataDirs(c, out));
   return out;
 }
-const exUsable = (n) => (exFormat() === "zip" ? n.reviewed_count : exFormat() === "data" ? (n.has_config ? 1 : 0) : n.anon_count) > 0;
+const exRevOnly = () => $("#exRevOnly").checked;
+const exUsable = (n) => (exFormat() === "zip" || exRevOnly() ? n.reviewed_count : exFormat() === "data" ? (n.has_config ? 1 : 0) : n.anon_count) > 0;
 function exRender() {
   const box = $("#exFolders");
   box.innerHTML = "";
@@ -2535,6 +2536,7 @@ function exRender() {
     .reduce((s, d) => s + (exFormat() === "zip" ? d.reviewed_count : d.anon_count), 0);
   $("#exCount").textContent = exFormat() === "data" ? `${ex.sel.size} folder(s) · ${ex.sel.size} text file(s)` : `${ex.sel.size} folder(s) · ${total} file(s)`;
   $("#exPageOpts").hidden = exFormat() !== "page";
+  $("#exRevOnlyRow").hidden = exFormat() === "zip";
   $("#exGo").disabled = !ex.sel.size;
 }
 $("#btnExport").onclick = () => {
@@ -2551,6 +2553,8 @@ document.querySelectorAll("input[name=exFormat]").forEach((r) => {
     exRender();
   };
 });
+$("#exRevOnly").onchange = () => { ex.sel = new Set([...ex.sel].filter((p) => exUsable(state.nodes[p]))); exRender(); };
+$("#exRev").onclick = () => { ex.sel = new Set(exDataDirs(state.tree).filter((d) => d.reviewed_count > 0 && exUsable(d)).map((d) => d.path)); exRender(); };
 $("#exAll").onclick = () => { ex.sel = new Set(exDataDirs(state.tree).filter(exUsable).map((d) => d.path)); exRender(); };
 $("#exNone").onclick = () => { ex.sel.clear(); exRender(); };
 $("#exCancel").onclick = () => exDlg.close();
@@ -2582,9 +2586,9 @@ async function encryptBundle(bundle, password, progress) {
   }
   return { enc: { salt: b64(salt), iter }, meta: await seal(new TextEncoder().encode(JSON.stringify(bundle.meta))), pages };
 }
-async function exportPage(dirs, originals, password) {
+async function exportPage(dirs, originals, password, reviewedOnly) {
   setStatus("Export: reading the pages…", "busy");
-  const bundle = await post("/api/review-page", { dirs, originals });
+  const bundle = await post("/api/review-page", { dirs, originals, reviewed_only: !!reviewedOnly });
   let data = { meta: bundle.meta, pages: bundle.pages };
   if (password) {
     if (!(window.crypto && crypto.subtle)) throw new Error("This browser cannot encrypt here (needs localhost or https).");
@@ -2610,7 +2614,7 @@ $("#exGo").onclick = async () => {
   if (!dirs.length) return;
   if (exFormat() === "data") {
     exDlg.close();
-    location.href = "/api/export-data?" + dirs.map((d) => "dirs=" + encodeURIComponent(d)).join("&");
+    location.href = "/api/export-data?" + dirs.map((d) => "dirs=" + encodeURIComponent(d)).join("&") + (exRevOnly() ? "&reviewed_only=1" : "");
     setStatus(`Export: replaced values of ${dirs.length} folder(s)`, "ok");
     return;
   }
@@ -2625,7 +2629,7 @@ $("#exGo").onclick = async () => {
   exDlg.close();
   $("#btnExport").disabled = true;
   try {
-    await exportPage(dirs, originals, password);
+    await exportPage(dirs, originals, password, exRevOnly());
   } catch (e) {
     setStatus("Export: " + e.message, "err");
   }

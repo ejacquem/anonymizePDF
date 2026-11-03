@@ -4896,6 +4896,13 @@ def export_tests():
         check("replaced values: no original, no commented value", "Thomas" not in text and "FR7611\n" not in text and "Yan" not in text)
         with zipfile.ZipFile(io.BytesIO(client.get("/api/export-data?dirs=A&dirs=B").data)) as z:
             check("replaced values: several folders give one text file each, all at the top of the ZIP", sorted(z.namelist()) == ["A_data.txt", "B_data.txt"], z.namelist())
+        r = client.get("/api/export-data?dirs=A&dirs=B&reviewed_only=1")
+        check("replaced values: reviewed_only keeps the folders with a reviewed file (A and B are)", r.status_code == 200, r.status_code)
+        (tmp / "B" / "anon_review.json").write_text("{}", encoding="utf-8")
+        r = client.get("/api/export-data?dirs=A&dirs=B&reviewed_only=1")
+        check("replaced values: reviewed_only leaves out a folder with no reviewed file", r.status_code == 200 and "A_data.txt" in r.headers.get("Content-Disposition", ""), r.headers.get("Content-Disposition"))
+        r = client.get("/api/export-data?dirs=B&reviewed_only=1")
+        check("replaced values: reviewed_only with no reviewed file is a message", r.status_code == 404, r.status_code)
         check("replaced values: a folder with no config is a message", client.get("/api/export-data?dirs=A/sub").status_code == 404)
         check("replaced values: outside --root is refused", client.get("/api/export-data?dirs=../").status_code == 403)
     finally:
@@ -4957,6 +4964,12 @@ def review_page_tests():
               f0["items"] == [{"page": 1, "box": [40, 70, 120, 84], "replacement": "Marc Leroy", "type": "PERSON", "original": "Jean Dupont"}]
               and f0["removed"][0]["page"] == 2, f0)
         check("an original with no anonymized file is named and left out", data["skipped"] == ["FolderB/SubC/late.pdf"], data["skipped"])
+
+        r = client.post("/api/review-page", json={"dirs": dirs, "originals": True, "reviewed_only": True})
+        data = r.get_json()
+        check("reviewed_only: the page holds the reviewed file only, the other is named as not reviewed",
+              r.status_code == 200 and [f["name"] for f in data["meta"]["files"]] == ["doc.pdf"] and data["unreviewed"] == ["FolderB/SubC/doc.pdf"],
+              (r.status_code, [f["name"] for f in data["meta"]["files"]], data.get("unreviewed")))
 
         r = client.post("/api/review-page", json={"dirs": dirs, "originals": False})
         data = r.get_json()

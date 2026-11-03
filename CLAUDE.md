@@ -230,6 +230,8 @@ Directory tree | Original | Anonymized | right panel with tabs **Config / Recap 
   - **Replaced values (.txt)** (`GET /api/export-data?dirs=A&dirs=B/C`, `app.replaced_values_text`): per chosen folder with a config, `<folder>_data.txt` with the FAKE values of the active
     entries of `anon_config.yaml`, one block per type ('Person:' then the values, 'IBAN:' ...), no originals, no commented suggestions, no unchecked values (one file = the .txt itself, several = a ZIP
     with all the files side by side at its top (no sub-folders); a folder with no config is left out). Test: `export_tests`.
+  - **Only reviewed files** (`#exRevOnly`, `reviewed_only` in `POST /api/review-page` and `GET /api/export-data`) and the **All reviewed** button (`#exRev`: selects the folders that hold a reviewed file): the review
+    page then holds only the files whose output is marked as reviewed (the others are named in `unreviewed`), the text export only the folders with a reviewed file. The ZIP is always reviewed only. Tests: `review_page_tests`, `export_tests`.
   - **ZIP**: `GET /api/export?dirs=A&dirs=B/C` = the reviewed outputs of exactly those folders (`export_files_in`, names relative to the root);
     `GET /api/export?folder=` (a folder and everything below it, `export_files`) is unchanged. `GET /api/export/info?folder=` gives the file names,
     the `unreviewed` originals and those without output. None reviewed: a message, no empty ZIP. Outside --root: 403. Test: `export_tests`.

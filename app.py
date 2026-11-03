@@ -795,9 +795,11 @@ def review_page():
         return bad(str(e), 404)
     if not dirs:
         return bad("No folder with PDFs selected.")
-    built = reviewpage.build(STATE["root"], dirs, bool(data.get("originals", True)), doc_of, fitz, reviewed_files, rel_of)
+    built = reviewpage.build(STATE["root"], dirs, bool(data.get("originals", True)), doc_of, fitz, reviewed_files, rel_of,
+                             bool(data.get("reviewed_only", False)))
     if not built["meta"]["files"]:
-        return bad("No anonymized file in the selected folders: anonymize them first.", 404)
+        return bad("No anonymized file in the selected folders: anonymize them first." if not built["unreviewed"]
+                   else "No reviewed file in the selected folders: review the outputs (Mark as reviewed) first.", 404)
     return jsonify(built)
 
 
@@ -828,7 +830,8 @@ def replaced_values_text(folder: Path) -> str | None:
 @app.get("/api/export-data")
 def export_data():
     """The replaced (fake) values of the selected folders as text files, `<folder>_data.txt` each (a ZIP when there are several).
-    `dirs` (repeated) = folders relative to the root; a folder with no config is left out."""
+    `dirs` (repeated) = folders relative to the root; a folder with no config is left out; `reviewed_only=1` also leaves out the
+    folders with no reviewed file."""
     try:
         dirs = dirs_arg(request.args.getlist("dirs"))
     except PermissionError:
@@ -837,6 +840,8 @@ def export_data():
         return bad(str(e), 404)
     files = []
     for d in dirs:
+        if request.args.get("reviewed_only") and not reviewed_files(d):
+            continue                                   # only the folders that hold a reviewed file
         try:
             text = replaced_values_text(d)
         except ValueError as e:

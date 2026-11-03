@@ -179,8 +179,9 @@
     <label><input type="radio" name="exFormat" value="data"> Replaced values (.txt) <span class="muted small">one text file per folder: the fake values that are replaced, by type, no originals</span></label>
   </div>
   <div class="exsub">Folders <span class="muted small" id="exCount"></span>
-    <span class="exall"><button class="mini" id="exAll">All</button> <button class="mini" id="exNone">None</button></span></div>
+    <span class="exall"><button class="mini" id="exAll">All</button> <button class="mini" id="exRev" title="Select the folders that hold reviewed files">All reviewed</button> <button class="mini" id="exNone">None</button></span></div>
   <div id="exFolders" class="exfolders"></div>
+  <div class="exrow"><label id="exRevOnlyRow"><input type="checkbox" id="exRevOnly"> Only reviewed files <span class="muted small">(review page and replaced values; the ZIP is always reviewed files only)</span></label></div>
   <div id="exPageOpts" class="exrow">
     <label><input type="checkbox" id="exOriginals" checked> Include the original pages and values <span class="muted small">(uncheck to share the anonymized side only)</span></label>
     <label>Password <input type="password" id="exPassword" autocomplete="new-password" placeholder="none"> <span class="muted small">encrypts the page in the browser; whoever has the file but not the password sees nothing</span></label>

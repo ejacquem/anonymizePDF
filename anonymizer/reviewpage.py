@@ -68,12 +68,14 @@ def _changes(entry: dict, originals: bool) -> tuple[list[dict], list[dict]]:
     return items, removed
 
 
-def build(root: Path, dirs: list[Path], originals: bool, doc_of, fitz, reviewed_of, rel_of) -> dict:
+def build(root: Path, dirs: list[Path], originals: bool, doc_of, fitz, reviewed_of, rel_of, reviewed_only: bool = False) -> dict:
     """`dirs`: the folders to put in the page (each one holds PDFs); `doc_of` opens a source (app.doc_of), `reviewed_of(folder)`
-    is app.reviewed_files, `rel_of(path)` the path relative to the root."""
+    is app.reviewed_files, `rel_of(path)` the path relative to the root. `reviewed_only`: the files whose output is not
+    reviewed are left out (`unreviewed`)."""
     pages: dict[str, str] = {}
     files: list[dict] = []
     skipped: list[str] = []
+    unreviewed: list[str] = []
     tree = {"name": root.name or str(root), "path": "", "dirs": [], "files": []}
 
     def node_for(rel: str) -> dict:
@@ -97,6 +99,9 @@ def build(root: Path, dirs: list[Path], originals: bool, doc_of, fitz, reviewed_
             if not out.is_file():
                 skipped.append((rel + "/" if rel else "") + src.name)
                 continue
+            if reviewed_only and src.name not in reviewed:
+                unreviewed.append((rel + "/" if rel else "") + src.name)
+                continue
             fid = f"f{len(files)}"
             sizes = _pages_of(out, f"{fid}a", pages, doc_of, fitz)
             row = {"id": fid, "name": src.name, "folder": rel, "pages": sizes, "reviewed": src.name in reviewed}
@@ -107,4 +112,4 @@ def build(root: Path, dirs: list[Path], originals: bool, doc_of, fitz, reviewed_
             node_for(rel)["files"].append(fid)
     meta = {"title": tree["name"], "created": time.strftime("%Y-%m-%d %H:%M"), "originals": originals,
             "tree": tree, "files": files}
-    return {"meta": meta, "pages": pages, "skipped": skipped}
+    return {"meta": meta, "pages": pages, "skipped": skipped, "unreviewed": unreviewed}
