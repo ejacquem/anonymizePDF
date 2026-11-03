@@ -4895,7 +4895,7 @@ def export_tests():
               and text == "IBAN:\nFR761151\n\nPerson:\nLaura P\n", (r.status_code, text))
         check("replaced values: no original, no commented value", "Thomas" not in text and "FR7611\n" not in text and "Yan" not in text)
         with zipfile.ZipFile(io.BytesIO(client.get("/api/export-data?dirs=A&dirs=B").data)) as z:
-            check("replaced values: several folders give one text file each", sorted(z.namelist()) == ["A/A_data.txt", "B/B_data.txt"], z.namelist())
+            check("replaced values: several folders give one text file each, all at the top of the ZIP", sorted(z.namelist()) == ["A_data.txt", "B_data.txt"], z.namelist())
         check("replaced values: a folder with no config is a message", client.get("/api/export-data?dirs=A/sub").status_code == 404)
         check("replaced values: outside --root is refused", client.get("/api/export-data?dirs=../").status_code == 403)
     finally:

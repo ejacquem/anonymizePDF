@@ -851,7 +851,7 @@ def export_data():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for d, text in files:
-            z.writestr("/".join(p for p in (rel_of(d), f"{d.name}_data.txt") if p), text)
+            z.writestr(f"{d.name}_data.txt", text)
     buf.seek(0)
     return send_file(buf, mimetype="application/zip", as_attachment=True, download_name="replaced_values.zip")
 
